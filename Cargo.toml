@@ -14,3 +14,17 @@ path = "src/bin.rs"
 [dependencies]
 env_logger = "0.11.3"
 log = "0.4.21"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+libbpf-rs = "0.22.1"
+
+[target.'cfg(target_os = "android")'.dependencies]
+libbpf-rs = { version = "0.22.1", features = ["static"] }
+android_logger = "0.13"
+
+[build-dependencies]
+autotools = "0.2.7"
+cc = "1.0.97"
+copy_dir = "0.1.3"
+pkg-config = "0.3.30"
+
