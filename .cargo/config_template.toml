@@ -1,0 +1,20 @@
+[target.aarch64-linux-android]
+linker = "${CC_aarch64_linux_android}"
+rustflags = "${RUSTFLAGS_aarch64_linux_android}"
+
+[target.x86_64-linux-android]
+linker = "${CC_x86_64_linux_android}"
+rustflags = "${RUSTFLAGS_x86_64_linux_android}"
+
+[env]
+# needed for dependancies that use the `cc` crate.
+CC_aarch64_linux_android = "${CC_aarch64_linux_android}"
+CXX_aarch64_linux_android = "${CXX_aarch64_linux_android}"
+CC_x86_64_linux_android = "${CC_x86_64_linux_android}"
+CXX_x86_64_linux_android = "${CXX_x86_64_linux_android}"
+
+[target.aarch64-linux-android.libbpf]
+rustc-link-lib = [ "static=bpf", "static=elf", "z" ]
+
+[target.x86_64-linux-android.libbpf]
+rustc-link-lib = [ "static=bpf", "static=elf", "z" ]
