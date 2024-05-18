@@ -1,0 +1,97 @@
+.PHONY: libelf libbpf_
+all: libelf libbpf_
+
+ifeq ($(BUILD_DIR),)
+$(error "BUILD_DIR was not configured by the main Makefile") 
+endif
+
+ifeq ($(OUT_DIR),)
+$(error "OUT_DIR was not configured by the main Makefile") 
+endif
+
+ifeq ($(CC),)
+$(error "CC was not configured by the main Makefile")
+endif
+
+ifeq ($(CXX),)
+$(error "CXX was not configured by the main Makefile")
+endif
+
+CURRENT_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+
+# elfutils is annoying, it doesn't allow building only the required libelf,
+# so some patching is needed.
+# It seems that copying the sources to the OUT_DIR and building there is the best way to do that as:
+# 1. patches can be applied without modifiying the tree
+# 2. autoreconf won't change the mtime of files in the src directory, causing an unnecessary rebuild 
+ELFUTILS_SRC := aosp-elfutils
+ELFUTILS_PATCHES_DIR := aosp-elfutils-patches
+ELFUTILS_BUILD_DIR := $(BUILD_DIR)/$(ELFUTILS_SRC)
+
+# This directoy will hold an empty file for each patch so we can use them as dependencies
+ELFUTILS_BUILD_PATCHES_DIR := $(BUILD_DIR)/$(ELFUTILS_PATCHES_DIR)
+
+ELFUTILS_PATCHES := $(shell find $(ELFUTILS_PATCHES_DIR) -type f -name "*.patch")
+ELFUTILS_BUILD_PATCHES := $(patsubst $(ELFUTILS_PATCHES_DIR)/%, $(ELFUTILS_BUILD_PATCHES_DIR)/%, $(ELFUTILS_PATCHES))
+
+ELFUTILS_CFLAGS := $(CFLAGS) \
+	-include $(CURRENT_DIR)/$(ELFUTILS_PATCHES_DIR)/patch.h \
+	-include $(CURRENT_DIR)/$(ELFUTILS_BUILD_DIR)/bionic-fixup/AndroidFixup.h \
+	-I $(CURRENT_DIR)/$(ELFUTILS_BUILD_DIR)/bionic-fixup \
+	-D_FILE_OFFSET_BITS=64
+
+$(BUILD_DIR):
+	mkdir -p $@
+
+$(OUT_DIR):
+	mkdir -p $@
+
+$(ELFUTILS_BUILD_PATCHES_DIR):
+	mkdir -p $@
+
+$(ELFUTILS_BUILD_DIR): $(ELFUTILS_SRC) $(BUILD_DIR) Makefile_arch
+	rm -rf $@
+	cp -r $< $@
+
+$(ELFUTILS_BUILD_PATCHES_DIR)/%: $(ELFUTILS_PATCHES_DIR)/% $(ELFUTILS_SRC) | $(ELFUTILS_BUILD_PATCHES_DIR) $(ELFUTILS_BUILD_DIR)
+	patch -N -d$(ELFUTILS_BUILD_DIR) -p1 <$<
+	touch $@
+
+
+
+libelf: $(OUT_DIR)/lib/libelf.a
+
+$(OUT_DIR)/lib/libelf.a: $(OUT_DIR) $(ELFUTILS_BUILD_PATCHES) Makefile_arch
+	autoreconf -i $(ELFUTILS_BUILD_DIR)
+	cd $(ELFUTILS_BUILD_DIR) && CFLAGS="$(ELFUTILS_CFLAGS)" ./configure \
+		--enable-maintainer-mode \
+		--disable-debuginfod \
+		--disable-libdebuginfod \
+		--without-lzma \
+		--without-bzlib \
+		--without-zstd \
+		--host=$(HOST) \
+		--prefix=$(CURRENT_DIR)/$(OUT_DIR)
+	$(MAKE) -C $(ELFUTILS_BUILD_DIR) install -j$(nproc)
+
+
+libbpf_: $(OUT_DIR)/lib/libbpf.a
+
+LIBBPF_BUILD_DIR := $(BUILD_DIR)/libbpf
+
+LIBBPF_CFLAGS := $(CFLAGS) \
+	-include $(dir $(CC))/../sysroot/usr/include/linux/types.h \
+	-I$(CURRENT_DIR)/$(OUT_DIR)/include
+
+
+$(LIBBPF_BUILD_DIR):
+	mkdir -p $@
+
+$(OUT_DIR)/lib/libbpf.a: $(LIBBPF_BUILD_DIR) $(OUT_DIR) Makefile_arch libbpf $(OUT_DIR)/lib/libelf.a
+	BUILD_STATIC_ONLY=y \
+	PREFIX=/ \
+	OBJDIR=$(CURRENT_DIR)$(LIBBPF_BUILD_DIR) \
+	DESTDIR=$(CURRENT_DIR)$(OUT_DIR) \
+	LIBDIR=/lib \
+	CFLAGS="$(LIBBPF_CFLAGS)" \
+	$(MAKE) -C libbpf/src -j$(nproc) install

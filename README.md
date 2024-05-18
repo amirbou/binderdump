@@ -8,7 +8,7 @@ The goal is to produce pcap files containing binder transactions, that can be vi
 
 ## Development Setup
 
-* Initialize the libelf submodule with `git submodule update --init --recursive`
+* Initialize the libelf and libbpf submodules with `git submodule update --init --recursive`
 
 * Install Rust using rustup
 
@@ -16,18 +16,12 @@ The goal is to produce pcap files containing binder transactions, that can be vi
 
 * Download Android's latest NDK (I use r26d)
 
-* Add a cargo config file to `~/.cargo/config.toml`, with the following content:
-    ```toml
-    [target.aarch64-linux-android]
-    linker = "<NDK_HOME>/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang"
+* Install `m4 make autotools clang` and maybe more things that I missed
 
-    [target.x86_64-linux-android]
-    linker = "<NDK_HOME>/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android30-clang"
+* Set the envrionment variable `ANDROID_NDK_ROOT` to point to the extracted NDK (`.../android-ndk-r26d`).
 
-    [env]
-    # needed for some dependancies that use the `cc` crate.
-    CC_aarch64_linux_android = "<NDK_HOME>/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang"
-    CC_x86_64_linux_android = "<NDK_HOME>/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android30-clang"
-    ```
+    You may skip this step and pass `ANDROID_NDK_ROOT=...` to `make` instead.
 
-    `<NDK_HOME>` must be manually expanded to the root of the extracted NDK.
+* Run `make` to build libelf and libbpf, and configure cargo with the correct toolchain.
+
+    You should only have to call `make` once (unless updating the submodules). From that point, use `cargo` to build the project.
