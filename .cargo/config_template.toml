@@ -5,9 +5,13 @@ rustflags = "${RUSTFLAGS_aarch64_linux_android}"
 [target.x86_64-linux-android]
 linker = "${CC_x86_64_linux_android}"
 rustflags = "${RUSTFLAGS_x86_64_linux_android}"
+runner = "${CURRENT_DIR}/scripts/run.sh"
 
 [target.x86_64-unknown-linux-gnu]
 runner = "sudo -E"
+
+[build]
+target = "x86_64-linux-android"
 
 [env]
 # needed for dependancies that use the `cc` crate.

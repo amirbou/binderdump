@@ -27,7 +27,7 @@ export RUSTFLAGS_aarch64_linux_android := -L$(CURRENT_DIR)/$(OUT_DIR)/$(AARCH64_
 export RUSTFLAGS_x86_64_linux_android := -L$(CURRENT_DIR)/$(OUT_DIR)/$(X86_64_PREFIX)/lib
 
 $(CARGO_CONFIG): .cargo/config_template.toml
-	envsubst <$^ >$@
+	CURRENT_DIR=$(CURRENT_DIR) envsubst <$^ >$@
 
 $(BUILD_DIR):
 	mkdir -p $@
