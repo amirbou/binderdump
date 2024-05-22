@@ -4,6 +4,18 @@ use libbpf_cargo::SkeletonBuilder;
 const BPF_PROGRAMS_DIR: &str = "src/bpf";
 const BPF_SKEL_DIR: &str = "src/bpf-skel";
 
+fn bind_binder() {
+    let bindings = bindgen::Builder::default()
+        .header("binder_wrapper.h")
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
+        .generate()
+        .expect("failed to generate bindings for <linux/android/binder.h>");
+
+    let out_path = path::PathBuf::from(env::var("OUT_DIR").unwrap());
+    bindings
+        .write_to_file(out_path.join("binder_gen.rs"))
+        .expect("failed to write bindings for <linux/android/binder.h> to `binder_gen.rs`");
+}
 
 fn build_bpf_program(path: &path::Path, out_dir: &path::Path) {
     println!("building bpf program: {}", path.display());
@@ -33,5 +45,6 @@ fn build_bpf() {
 }
 
 fn main() {
+    bind_binder();
     build_bpf();
 }
