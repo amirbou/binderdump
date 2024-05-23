@@ -19,10 +19,10 @@ log = "0.4.21"
 nix = {version = "0.28.0", features = ["ioctl"] }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
-libbpf-rs = { version = "0.22.1" }
+libbpf-rs = { version = "0.23.2" }
 
 [target.'cfg(target_os = "android")'.dependencies]
-libbpf-rs = { version = "0.22.1", features = ["static"] }
+libbpf-rs = { version = "0.23.2", features = ["static"] }
 android_logger = "0.13"
 
 [build-dependencies]
