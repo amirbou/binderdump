@@ -2,7 +2,6 @@ use std::{env, fs, path};
 use libbpf_cargo::SkeletonBuilder;
 
 const BPF_PROGRAMS_DIR: &str = "src/bpf";
-const BPF_SKEL_DIR: &str = "src/bpf-skel";
 
 fn bind_binder() {
     let bindings = bindgen::Builder::default()
@@ -29,10 +28,7 @@ fn build_bpf_program(path: &path::Path, out_dir: &path::Path) {
 }
 
 fn build_bpf() {
-    let manifset = env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR environment variable must be set");
-    let out_dir = path::PathBuf::from(manifset).join(BPF_SKEL_DIR);
-
-    fs::create_dir_all(&out_dir).unwrap();
+    let out_dir = path::PathBuf::from(env::var_os("OUT_DIR").unwrap());
 
     let paths = fs::read_dir(BPF_PROGRAMS_DIR).expect("failed to ls bpf programs directory");
     for path in paths {
