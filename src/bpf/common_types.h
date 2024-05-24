@@ -1,6 +1,6 @@
 // common structures for userspace and ebpf
-#include <sys/types.h>
 #include <linux/types.h>
+#include <sys/types.h>
 
 typedef enum {
     BINDER_INVALID = 0,

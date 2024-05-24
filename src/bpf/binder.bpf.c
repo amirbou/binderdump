@@ -1,9 +1,9 @@
-#include <linux/bpf.h>
-#include <bpf/bpf_helpers.h>
-#include <unistd.h>
-#include <sys/syscall.h>
-#include "trace_binder.h"
 #include "common_types.h"
+#include "trace_binder.h"
+#include <bpf/bpf_helpers.h>
+#include <linux/bpf.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -23,54 +23,67 @@ struct {
 
 static const binder_process_state_t g_valid_transitions[BINDER_STATE_MAX][BINDER_STATE_MAX] = {
     // starting state
-    [BINDER_IOCTL] = { BINDER_INVALID },
+    [BINDER_IOCTL] = {BINDER_INVALID},
 
-    // binder commands are processed in a loop, that starts after IOCTL with write_size > 0
+    // binder commands are processed in a loop, that starts after IOCTL with
+    // write_size > 0
     // so its possible for
-    // BINDER_IOCTL -> BINDER_COMMAND // single command that isn't a transaction
-    // BINDER_IOCTL -> BINDER_COMMAND -> BINDER_COMMAND // two commands that are not transactions
-    // BINDER_IOCTL -> BINDER_COMMAND -> BINDER_TXN -> BINDER_COMMAND // two commands, the first is a TXN
-    [BINDER_COMMAND] = { BINDER_IOCTL, BINDER_COMMAND, BINDER_TXN },
+    // BINDER_IOCTL -> BINDER_COMMAND // single command that isn't a
+    // transaction
+    // BINDER_IOCTL -> BINDER_COMMAND -> BINDER_COMMAND // two commands that
+    // are not transactions
+    // BINDER_IOCTL -> BINDER_COMMAND -> BINDER_TXN -> BINDER_COMMAND // two
+    // commands, the first is a TXN
+    [BINDER_COMMAND] = {BINDER_IOCTL, BINDER_COMMAND, BINDER_TXN},
 
     // a transaction is a special kind of command
-    [BINDER_TXN] = { BINDER_COMMAND },
+    [BINDER_TXN] = {BINDER_COMMAND},
 
-    // after the BINDER_COMMAND loop ends we get the BINDER_WRITE_DONE event, so we might get
+    // after the BINDER_COMMAND loop ends we get the BINDER_WRITE_DONE
+    // event, so we might get
     // BINDER_COMMAND -> BINDER_WRITE_DONE
     // BINDER_COMMAND -> BINDER_TXN -> BINDER_WRITE_DONE
-    [BINDER_WRITE_DONE] = {BINDER_TXN, BINDER_COMMAND },
+    [BINDER_WRITE_DONE] = {BINDER_TXN, BINDER_COMMAND},
 
-    // binder wait_for_work is called at the start of binder_thread_read, so we might get:
-    // BINDER_IOCTL -> BINDER_WAIT_FOR_WORK // if write_size == 0 and read_size > 0
-    // BINDER_IOCTL -> ... -> BINDER_WRITE_DONE -> BINDER_WAIT_FOR_WORK // if write_size > 0 and read_size > 0
+    // binder wait_for_work is called at the start of binder_thread_read, so
+    // we might get:
+    // BINDER_IOCTL -> BINDER_WAIT_FOR_WORK // if write_size == 0 and
+    // read_size > 0
+    // BINDER_IOCTL -> ... -> BINDER_WRITE_DONE -> BINDER_WAIT_FOR_WORK //
+    // if write_size > 0 and read_size > 0
     [BINDER_WAIT_FOR_WORK] = {BINDER_IOCTL, BINDER_WRITE_DONE},
 
-    // binder_transaction_recieved is traced when the read loop encounters a BR_TRANSACTION, so we might get:
+    // binder_transaction_recieved is traced when the read loop encounters a
+    // BR_TRANSACTION, so we might get:
     // BINDER_WAIT_FOR_WORK -> BINDER_TXN_RECEIVED
-    // BINDER_WAIT_FOR_WORK -> BINDER_TXN_RECEIVED -> BINDER_RETURN -> BINDER_TXN_RECEIVED
+    // BINDER_WAIT_FOR_WORK -> BINDER_TXN_RECEIVED -> BINDER_RETURN ->
+    // BINDER_TXN_RECEIVED
     // BINDER_WAIT_FOR_WORK -> BINDER_RETURN -> BINDER_TXN_RECEIVED
-    [BINDER_TXN_RECEIVED] = { BINDER_WAIT_FOR_WORK,  BINDER_RETURN},
+    [BINDER_TXN_RECEIVED] = {BINDER_WAIT_FOR_WORK, BINDER_RETURN},
 
-    // binder_return is traced after the read loop handles a BR command, so we might get:
+    // binder_return is traced after the read loop handles a BR command, so
+    // we might get:
     // BINDER_WAIT_FOR_WORK -> BINDER_RETURN
     // BINDER_WAIT_FOR_WORK -> BINDER_TXN_RECEIVED -> BINDER_RETURN
     // BINDER_WAIT_FOR_WORK -> BINDER_RETURN -> BINDER_RETURN
     [BINDER_RETURN] = {BINDER_WAIT_FOR_WORK, BINDER_TXN_RECEIVED, BINDER_RETURN},
 
-    // binder_read_done is traced after `binder_thread_read` returns, so we might get:
+    // binder_read_done is traced after `binder_thread_read` returns, so we
+    // might get:
     // BINDER_WAIT_FOR_WORK -> BINDER_READ_DONE
     // BINDER_WAIT_FOR_WORK -> BINDER_RETURN -> BINDER_READ_DONE
-    // BINDER_WAIT_FOR_WORK -> BINDER_TXN_RECEIVED -> BINDER_RETURN -> BINDER_READ_DONE
+    // BINDER_WAIT_FOR_WORK -> BINDER_TXN_RECEIVED -> BINDER_RETURN ->
+    // BINDER_READ_DONE
     [BINDER_READ_DONE] = {BINDER_WAIT_FOR_WORK, BINDER_RETURN},
 
     // ioctl_done is traced at the end of `binder_ioctl`, so we might get:
     // BINDER_IOCTL -> BINDER_IOCTL_DONE
     // BINDER_IOCTL -> ... -> BINDER_WRITE_DONE -> BINDER_IOCTL_DONE
     // BINDER_IOCTL -> ... -> BINDER_READ_DONE -> BINDER_IOCTL_DONE
-    [BINDER_IOCTL_DONE] = {BINDER_IOCTL, BINDER_WRITE_DONE, BINDER_READ_DONE}
-};
+    [BINDER_IOCTL_DONE] = {BINDER_IOCTL, BINDER_WRITE_DONE, BINDER_READ_DONE}};
 
-static __always_inline bool is_valid_transition(binder_process_state_t from, binder_process_state_t to) {
+static __always_inline bool is_valid_transition(binder_process_state_t from,
+                                                binder_process_state_t to) {
     // >= 5.3 supports loops
     // #pragma unroll
     for (size_t i = 0; i < BINDER_STATE_MAX; i++) {
@@ -87,7 +100,7 @@ static __always_inline bool is_valid_transition(binder_process_state_t from, bin
 }
 
 static __always_inline int do_transition(pid_t pid, binder_process_state_t to) {
-    binder_process_state_t * from = bpf_map_lookup_elem(&binder_process_state, &pid);
+    binder_process_state_t *from = bpf_map_lookup_elem(&binder_process_state, &pid);
     if (!from) {
         bpf_printk("failed transition of proc %d to state %d: no such process\n", pid, to);
         return -1;
@@ -103,8 +116,6 @@ static __always_inline int do_transition(pid_t pid, binder_process_state_t to) {
     bpf_printk("proc %d %d -> %d\n", pid, *from, to);
     return 0;
 }
-
-
 
 SEC("tp/raw_syscalls/sys_enter")
 int sys_enter(struct trace_event_raw_sys_enter *ctx) {
