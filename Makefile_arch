@@ -2,11 +2,11 @@
 all: libelf libbpf_
 
 ifeq ($(BUILD_DIR),)
-$(error "BUILD_DIR was not configured by the main Makefile") 
+$(error "BUILD_DIR was not configured by the main Makefile")
 endif
 
 ifeq ($(OUT_DIR),)
-$(error "OUT_DIR was not configured by the main Makefile") 
+$(error "OUT_DIR was not configured by the main Makefile")
 endif
 
 ifeq ($(CC),)
@@ -23,7 +23,7 @@ CURRENT_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 # so some patching is needed.
 # It seems that copying the sources to the OUT_DIR and building there is the best way to do that as:
 # 1. patches can be applied without modifiying the tree
-# 2. autoreconf won't change the mtime of files in the src directory, causing an unnecessary rebuild 
+# 2. autoreconf won't change the mtime of files in the src directory, causing an unnecessary rebuild
 ELFUTILS_SRC := aosp-elfutils
 ELFUTILS_PATCHES_DIR := aosp-elfutils-patches
 ELFUTILS_BUILD_DIR := $(BUILD_DIR)/$(ELFUTILS_SRC)

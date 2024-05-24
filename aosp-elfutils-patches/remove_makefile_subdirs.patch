@@ -3,13 +3,13 @@ index 41badfd7..2d0004bd 100644
 --- a/Makefile.am
 +++ b/Makefile.am
 @@ -26,8 +26,8 @@ AM_MAKEFLAGS = --no-print-directory
- 
+
  pkginclude_HEADERS = version.h
- 
+
 -SUBDIRS = config lib libelf libcpu backends libebl libdwelf libdwfl libdw \
 -	  libasm debuginfod src po doc tests
 +SUBDIRS = config lib libelf #libcpu backends libebl libdwelf libdwfl libdw \
 +	  #libasm debuginfod src po doc tests
- 
+
  EXTRA_DIST = elfutils.spec GPG-KEY NOTES CONTRIBUTING SECURITY \
  	     COPYING COPYING-GPLV2 COPYING-LGPLV3
