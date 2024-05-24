@@ -9,11 +9,18 @@ struct trace_entry {
     int pid;
 };
 
-struct sys_enter_context {
-    struct trace_entry ent;
-    long id;
-    long unsigned args[6];
-    char __data[0];
+struct trace_event_raw_sys_enter {
+	struct trace_entry ent;
+	long id;
+	unsigned long args[6];
+	char __data[0];
+};
+
+struct trace_event_raw_sys_exit {
+	struct trace_entry ent;
+	long id;
+	long ret;
+	char __data[0];
 };
 
 struct trace_event_raw_sched_process_template {

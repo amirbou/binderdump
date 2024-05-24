@@ -51,5 +51,5 @@ libs_x86_64: Makefile_arch
 		OUT_DIR=$(OUT_DIR)/$(X86_64_PREFIX) \
 		HOST=$(X86_64_PREFIX)
 
-clean: 
+clean:
 	rm -rf $(CARGO_CONFIG) $(OUT_DIR)

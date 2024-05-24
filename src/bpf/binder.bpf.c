@@ -3,29 +3,9 @@
 #include <unistd.h>
 #include <sys/syscall.h>
 #include "trace_binder.h"
+#include "common_types.h"
 
 char LICENSE[] SEC("license") = "GPL";
-
-const volatile int my_pid = 0;
-const volatile unsigned long long my_dev = 0;
-const volatile unsigned long long my_ino = 0;
-const volatile int check_ns = 0;
-
-
-typedef enum {
-    BINDER_INVALID = 0,
-    BINDER_IOCTL,
-    BINDER_COMMAND,
-    BINDER_TXN,
-    BINDER_WRITE_DONE,
-    BINDER_WAIT_FOR_WORK,
-    BINDER_RETURN,
-    BINDER_READ_DONE,
-    BINDER_TXN_RECEIVED,
-    BINDER_IOCTL_DONE,
-
-    BINDER_STATE_MAX
-} binder_process_state_t;
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -34,6 +14,12 @@ struct {
     __type(value, binder_process_state_t);
 } binder_process_state SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 0x2000);
+    __type(key, pid_t);
+    __type(value, int);
+} ioctl_fd SEC(".maps");
 
 static const binder_process_state_t g_valid_transitions[BINDER_STATE_MAX][BINDER_STATE_MAX] = {
     // starting state
@@ -46,7 +32,7 @@ static const binder_process_state_t g_valid_transitions[BINDER_STATE_MAX][BINDER
     // BINDER_IOCTL -> BINDER_COMMAND -> BINDER_TXN -> BINDER_COMMAND // two commands, the first is a TXN
     [BINDER_COMMAND] = { BINDER_IOCTL, BINDER_COMMAND, BINDER_TXN },
 
-    // a transaction is a special kind of command    
+    // a transaction is a special kind of command
     [BINDER_TXN] = { BINDER_COMMAND },
 
     // after the BINDER_COMMAND loop ends we get the BINDER_WRITE_DONE event, so we might get
@@ -85,7 +71,8 @@ static const binder_process_state_t g_valid_transitions[BINDER_STATE_MAX][BINDER
 };
 
 static __always_inline bool is_valid_transition(binder_process_state_t from, binder_process_state_t to) {
-    #pragma unroll
+    // >= 5.3 supports loops
+    // #pragma unroll
     for (size_t i = 0; i < BINDER_STATE_MAX; i++) {
         binder_process_state_t state = g_valid_transitions[to][i];
         if (state == from) {
@@ -119,23 +106,26 @@ static __always_inline int do_transition(pid_t pid, binder_process_state_t to) {
 
 
 
-// SEC("tp/raw_syscalls/sys_enter")
-// int sys_enter(struct sys_enter_context *ctx) {
-//     struct bpf_pidns_info nsdata = {};
-//     int pid = bpf_get_current_pid_tgid() >> 32;
-//     int tid = bpf_get_current_pid_tgid() & 0xffffffff;
+SEC("tp/raw_syscalls/sys_enter")
+int sys_enter(struct trace_event_raw_sys_enter *ctx) {
+    pid_t pid = bpf_get_current_pid_tgid() & 0xffffffff;
+    if (ctx->id == SYS_ioctl) {
+        int fd = ctx->args[0];
+        if (bpf_map_update_elem(&ioctl_fd, &pid, &fd, BPF_NOEXIST)) {
+            bpf_printk("ioctl: invalid state for %d", pid);
+        };
+    }
+    return 0;
+}
 
-//     if (check_ns && 0 != bpf_get_ns_current_pid_tgid(my_dev, my_ino, &nsdata, sizeof(nsdata))) {
-//         return 0;
-//     } else {
-//         nsdata.tgid = pid;
-//     }
-//     if (nsdata.tgid != my_pid) {
-//         return 0;
-//     }
-//     bpf_printk("BPF triggered from PID %d (global PID %d) syscall: %d.\n", my_pid, pid, ctx->id);
-//     return 0;
-// }
+SEC("tp/raw_syscalls/sys_exit")
+int sys_exit(struct trace_event_raw_sys_exit *ctx) {
+    pid_t pid = bpf_get_current_pid_tgid() & 0xffffffff;
+    if (ctx->id == SYS_ioctl) {
+        bpf_map_delete_elem(&ioctl_fd, &pid);
+    }
+    return 0;
+}
 
 SEC("tp/sched/sched_process_exit")
 int sched_process_exit(const struct trace_event_raw_sched_process_template *ctx) {
@@ -144,6 +134,11 @@ int sched_process_exit(const struct trace_event_raw_sched_process_template *ctx)
         bpf_printk("binder task %d removed from map\n", pid);
         bpf_map_delete_elem(&binder_process_state, &pid);
     }
+    if (bpf_map_lookup_elem(&ioctl_fd, &pid)) {
+        bpf_printk("binder task %d removed from ioctl map\n", pid);
+        bpf_map_delete_elem(&ioctl_fd, &pid);
+    }
+
     return 0;
 }
 
