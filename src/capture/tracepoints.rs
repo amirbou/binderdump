@@ -38,7 +38,7 @@ pub fn attach_tracepoints<'a>() -> Result<BinderSkel<'a>> {
     prepare_tracepoints()?;
 
     let mut skel_builder = BinderSkelBuilder::default();
-    skel_builder.obj_builder.debug(true);
+    // skel_builder.obj_builder.debug(true);
 
     let open_skel = skel_builder.open()?;
 
