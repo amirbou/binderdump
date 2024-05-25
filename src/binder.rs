@@ -3,10 +3,12 @@
 
 mod gen;
 pub use gen::BINDER_CURRENT_PROTOCOL_VERSION;
+use nix::{request_code_readwrite, request_code_write};
+use num_derive;
+use num_derive::FromPrimitive;
 use std::mem::size_of;
 
-use nix::{request_code_readwrite, request_code_write};
-
+#[derive(Debug, FromPrimitive)]
 #[allow(non_camel_case_types)]
 #[repr(u32)]
 pub enum binder_type {
@@ -19,6 +21,7 @@ pub enum binder_type {
     PTR = gen::BINDER_TYPE_PTR,
 }
 
+#[derive(Debug, FromPrimitive)]
 #[allow(non_camel_case_types)]
 #[repr(u32)]
 pub enum flat_binder_flag {
@@ -27,13 +30,14 @@ pub enum flat_binder_flag {
     TXN_SECURITY_CTX = gen::FLAT_BINDER_FLAG_TXN_SECURITY_CTX,
 }
 
+#[derive(Debug, FromPrimitive)]
 #[allow(non_camel_case_types)]
 #[repr(u32)]
 pub enum binder_buffer_flag {
     HAS_PARENT = gen::BINDER_BUFFER_FLAG_HAS_PARENT,
 }
 
-#[derive(Debug)]
+#[derive(Debug, FromPrimitive)]
 #[allow(non_camel_case_types)]
 #[repr(i32)]
 pub enum binder_ioctl {
@@ -55,14 +59,7 @@ pub enum binder_ioctl {
     BINDER_ENABLE_ONEWAY_SPAM_DETECTION = request_code_write!('b', 16, size_of::<u32>()),
 }
 
-impl TryFrom<i32> for binder_ioctl {
-    type Error = anyhow::Error;
-
-    fn try_from(value: i32) -> Result<Self, Self::Error> {
-        todo!()
-    }
-}
-
+#[derive(Debug, FromPrimitive)]
 #[allow(non_camel_case_types)]
 #[repr(u32)]
 pub enum binder_command {
@@ -88,6 +85,7 @@ pub enum binder_command {
     BC_REPLY_SG = gen::binder_driver_command_protocol_BC_REPLY_SG,
 }
 
+#[derive(Debug, FromPrimitive)]
 #[allow(non_camel_case_types)]
 #[repr(u32)]
 pub enum binder_result {

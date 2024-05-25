@@ -1,4 +1,5 @@
 use anyhow::Result;
+use binderdump::capture::ringbuf::create_events_channel;
 use binderdump::capture::tracepoints::attach_tracepoints;
 use log::debug;
 
@@ -15,10 +16,14 @@ pub fn main() -> Result<()> {
     debug!("Hello");
     println!("mypid: {}", std::process::id());
 
-    let binder_skel = attach_tracepoints()?;
+    let mut binder_skel = attach_tracepoints()?;
 
-    loop {
-        std::thread::sleep(std::time::Duration::from_secs(60));
+    let event_channel = create_events_channel(&mut binder_skel)?;
+
+    println!("waiting for events");
+    for _ in 0..10 {
+        let event = event_channel.get_channel().recv()?;
+        println!("Got event {:?}", event);
     }
     Ok(())
 }
