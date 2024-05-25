@@ -21,6 +21,11 @@ struct {
     __type(value, int);
 } ioctl_fd SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 0x100 * 0x1000 /* 1MB */);
+} binder_events_buffer SEC(".maps");
+
 static const binder_process_state_t g_valid_transitions[BINDER_STATE_MAX][BINDER_STATE_MAX] = {
     // starting state
     [BINDER_IOCTL] = {BINDER_INVALID},
@@ -157,12 +162,37 @@ SEC("tp/binder/binder_ioctl")
 int binder_ioctl(struct trace_event_raw_binder_ioctl *ctx) {
     pid_t pid = bpf_get_current_pid_tgid() & 0xffffffff;
     binder_process_state_t state = BINDER_IOCTL;
+    int *fd = NULL;
+
     if (bpf_map_update_elem(&binder_process_state, &pid, &state, BPF_NOEXIST)) {
         bpf_printk("binder_ioctl: invalid binder state for task %d\n", pid);
         // TODO maybe remove from map?
         return 0;
     }
-    bpf_printk("binder_ioctl: %d\n", pid);
+
+    fd = bpf_map_lookup_elem(&ioctl_fd, &pid);
+    if (!fd) {
+        bpf_printk("binder_ioctl: no fd?\n");
+        return 0;
+    }
+
+    struct binder_event *event = bpf_ringbuf_reserve(
+        &binder_events_buffer, sizeof(struct binder_event) + sizeof(struct binder_event_ioctl), 0);
+    if (!event) {
+        bpf_printk("binder_ioctl: failed to reserved event\n");
+        return 0;
+    }
+    event->type = BINDER_IOCTL;
+    event->tid = pid;
+    event->timestamp = bpf_ktime_get_boot_ns();
+
+    struct binder_event_ioctl *ioctl_event = (struct binder_event_ioctl *)event->data;
+    ioctl_event->fd = *fd;
+    ioctl_event->cmd = ctx->cmd;
+    ioctl_event->arg = ctx->arg;
+
+    bpf_ringbuf_submit(event, 0);
+
     return 0;
 }
 

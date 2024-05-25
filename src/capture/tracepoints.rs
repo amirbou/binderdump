@@ -3,7 +3,7 @@ use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
 use libc;
 use std::os::unix::fs::MetadataExt;
 
-mod binder {
+pub mod binder {
     include!(concat!(env!("OUT_DIR"), "/binder.skel.rs"));
 }
 use binder::*;

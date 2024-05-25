@@ -16,7 +16,11 @@ anyhow = "1.0.85"
 env_logger = "0.11.3"
 libc = "0.2.155"
 log = "0.4.21"
-nix = {version = "0.28.0", features = ["ioctl"] }
+nix = { version = "0.29.0", features = ["ioctl"] }
+num = "0.4"
+num-derive = "0.4"
+num-traits = "0.2"
+plain = "0.2"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 libbpf-rs = { version = "0.23.2" }
