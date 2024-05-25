@@ -19,6 +19,7 @@ typedef enum {
 
 struct binder_event {
     binder_process_state_t type;
+    pid_t pid;
     pid_t tid;
     // CLOCK_BOOTTIME at time of event capture
     // this requires kernel >=5.8, but so does ring buffer
@@ -27,7 +28,12 @@ struct binder_event {
 };
 
 struct binder_event_ioctl {
+    // this is the first message to userspace about this ioctl,
+    // so we send all metadata here, once.
     int fd;
+    char comm[16];
+    uid_t uid;
+    uid_t gid;
     unsigned int cmd;
     unsigned long arg;
 };

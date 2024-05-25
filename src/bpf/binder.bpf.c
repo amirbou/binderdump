@@ -6,17 +6,28 @@
 #include <unistd.h>
 
 char LICENSE[] SEC("license") = "GPL";
+#define DEBUG
+#ifdef DEBUG
+#define LOG(fmt, ...) bpf_printk(fmt, ##__VA_ARGS__)
+#else
+#define LOG(...)
+#endif
+
+#define GET_TID() (bpf_get_current_pid_tgid() & 0xffffffff)
+
+// Default value in Android
+#define PID_MAX 32768
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 0x2000);
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, PID_MAX);
     __type(key, pid_t);
     __type(value, binder_process_state_t);
 } binder_process_state SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 0x2000);
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, PID_MAX);
     __type(key, pid_t);
     __type(value, int);
 } ioctl_fd SEC(".maps");
@@ -104,31 +115,46 @@ static __always_inline bool is_valid_transition(binder_process_state_t from,
     return false;
 }
 
-static __always_inline int do_transition(pid_t pid, binder_process_state_t to) {
-    binder_process_state_t *from = bpf_map_lookup_elem(&binder_process_state, &pid);
+static __always_inline int do_transition(pid_t tid, binder_process_state_t to) {
+    struct binder_event *event = NULL;
+    binder_process_state_t *from = bpf_map_lookup_elem(&binder_process_state, &tid);
     if (!from) {
-        bpf_printk("failed transition of proc %d to state %d: no such process\n", pid, to);
+        LOG("failed transition of thread %d to state %d: no such process\n", tid, to);
+        // no need to send BINDER_INVALID message to userspace
         return -1;
     }
     if (!is_valid_transition(*from, to)) {
-        bpf_printk("transition of proc %d from state %d to %d is invalid\n", pid, *from, to);
-        return -1;
+        LOG("transition of thread %d from state %d to %d is invalid\n", tid, *from, to);
+        goto l_error;
     }
-    if (bpf_map_update_elem(&binder_process_state, &pid, &to, BPF_EXIST)) {
-        bpf_printk("failed to update state of proc %d %d -> %d\n", pid, *from, to);
-        return -1;
+    if (bpf_map_update_elem(&binder_process_state, &tid, &to, BPF_ANY)) {
+        LOG("failed to update state of thread %d %d -> %d\n", tid, *from, to);
+        goto l_error;
     }
-    bpf_printk("proc %d %d -> %d\n", pid, *from, to);
+    LOG("thread %d %d -> %d\n", tid, *from, to);
     return 0;
+
+l_error:
+    event = bpf_ringbuf_reserve(&binder_events_buffer, sizeof(struct binder_event), 0);
+    if (!event) {
+        LOG("do_transition: failed to reserved event\n");
+        return -1;
+    }
+    event->type = BINDER_INVALID;
+    event->tid = tid;
+    event->timestamp = bpf_ktime_get_boot_ns();
+
+    bpf_ringbuf_submit(event, 0);
+    return -1;
 }
 
 SEC("tp/raw_syscalls/sys_enter")
 int sys_enter(struct trace_event_raw_sys_enter *ctx) {
-    pid_t pid = bpf_get_current_pid_tgid() & 0xffffffff;
+    pid_t tid = GET_TID();
     if (ctx->id == SYS_ioctl) {
         int fd = ctx->args[0];
-        if (bpf_map_update_elem(&ioctl_fd, &pid, &fd, BPF_NOEXIST)) {
-            bpf_printk("ioctl: invalid state for %d", pid);
+        if (bpf_map_update_elem(&ioctl_fd, &tid, &fd, BPF_ANY)) {
+            LOG("ioctl: invalid state for %d", tid);
         };
     }
     return 0;
@@ -136,23 +162,29 @@ int sys_enter(struct trace_event_raw_sys_enter *ctx) {
 
 SEC("tp/raw_syscalls/sys_exit")
 int sys_exit(struct trace_event_raw_sys_exit *ctx) {
-    pid_t pid = bpf_get_current_pid_tgid() & 0xffffffff;
+    pid_t tid = GET_TID();
     if (ctx->id == SYS_ioctl) {
-        bpf_map_delete_elem(&ioctl_fd, &pid);
+        int fd = -1;
+        // bpf_map_delete_elem(&ioctl_fd, &tid);
+        bpf_map_update_elem(&ioctl_fd, &tid, &fd, BPF_ANY);
     }
     return 0;
 }
 
 SEC("tp/sched/sched_process_exit")
 int sched_process_exit(const struct trace_event_raw_sched_process_template *ctx) {
-    pid_t pid = ctx->pid;
-    if (bpf_map_lookup_elem(&binder_process_state, &pid)) {
-        bpf_printk("binder task %d removed from map\n", pid);
-        bpf_map_delete_elem(&binder_process_state, &pid);
+    pid_t tid = ctx->pid;
+    if (bpf_map_lookup_elem(&binder_process_state, &tid)) {
+        LOG("binder task %d removed from map\n", tid);
+        binder_process_state_t state = BINDER_INVALID;
+        // bpf_map_delete_elem(&binder_process_state, &tid);
+        bpf_map_update_elem(&binder_process_state, &tid, &state, BPF_ANY);
     }
-    if (bpf_map_lookup_elem(&ioctl_fd, &pid)) {
-        bpf_printk("binder task %d removed from ioctl map\n", pid);
-        bpf_map_delete_elem(&ioctl_fd, &pid);
+    if (bpf_map_lookup_elem(&ioctl_fd, &tid)) {
+        LOG("binder task %d removed from ioctl map\n", tid);
+        int fd = -1;
+        // bpf_map_delete_elem(&ioctl_fd, &tid);
+        bpf_map_update_elem(&ioctl_fd, &tid, &fd, BPF_ANY);
     }
 
     return 0;
@@ -160,34 +192,42 @@ int sched_process_exit(const struct trace_event_raw_sched_process_template *ctx)
 
 SEC("tp/binder/binder_ioctl")
 int binder_ioctl(struct trace_event_raw_binder_ioctl *ctx) {
-    pid_t pid = bpf_get_current_pid_tgid() & 0xffffffff;
+    __u64 task_id = bpf_get_current_pid_tgid();
+    pid_t pid = task_id >> 32;
+    pid_t tid = task_id & 0xffffffff;
     binder_process_state_t state = BINDER_IOCTL;
     int *fd = NULL;
 
-    if (bpf_map_update_elem(&binder_process_state, &pid, &state, BPF_NOEXIST)) {
-        bpf_printk("binder_ioctl: invalid binder state for task %d\n", pid);
+    if (bpf_map_update_elem(&binder_process_state, &tid, &state, BPF_ANY)) {
+        LOG("binder_ioctl: invalid binder state for task %d\n", tid);
         // TODO maybe remove from map?
         return 0;
     }
 
-    fd = bpf_map_lookup_elem(&ioctl_fd, &pid);
+    fd = bpf_map_lookup_elem(&ioctl_fd, &tid);
     if (!fd) {
-        bpf_printk("binder_ioctl: no fd?\n");
+        LOG("binder_ioctl: no fd?\n");
         return 0;
     }
 
     struct binder_event *event = bpf_ringbuf_reserve(
         &binder_events_buffer, sizeof(struct binder_event) + sizeof(struct binder_event_ioctl), 0);
     if (!event) {
-        bpf_printk("binder_ioctl: failed to reserved event\n");
+        LOG("binder_ioctl: failed to reserved event\n");
         return 0;
     }
     event->type = BINDER_IOCTL;
-    event->tid = pid;
+    event->pid = pid;
+    event->tid = tid;
     event->timestamp = bpf_ktime_get_boot_ns();
 
     struct binder_event_ioctl *ioctl_event = (struct binder_event_ioctl *)event->data;
+    __u64 creds = bpf_get_current_uid_gid();
+
     ioctl_event->fd = *fd;
+    bpf_get_current_comm(ioctl_event->comm, sizeof(ioctl_event->comm));
+    ioctl_event->uid = creds & 0xffffffff;
+    ioctl_event->gid = creds >> 32;
     ioctl_event->cmd = ctx->cmd;
     ioctl_event->arg = ctx->arg;
 
@@ -198,59 +238,61 @@ int binder_ioctl(struct trace_event_raw_binder_ioctl *ctx) {
 
 SEC("tp/binder/binder_command")
 int binder_command(struct trace_event_raw_binder_command *ctx) {
-    pid_t pid = bpf_get_current_pid_tgid() & 0xffffffff;
-    do_transition(pid, BINDER_COMMAND);
+    pid_t tid = GET_TID();
+    do_transition(tid, BINDER_COMMAND);
     return 0;
 }
 
 SEC("tp/binder/binder_transaction")
 int binder_transaction(struct trace_event_raw_binder_transaction *ctx) {
-    pid_t pid = bpf_get_current_pid_tgid() & 0xffffffff;
-    do_transition(pid, BINDER_TXN);
+    pid_t tid = GET_TID();
+    do_transition(tid, BINDER_TXN);
     return 0;
 }
 
 SEC("tp/binder/binder_transaction_received")
 int binder_transaction_received(struct trace_event_raw_binder_transaction_received *ctx) {
-    pid_t pid = bpf_get_current_pid_tgid() & 0xffffffff;
-    do_transition(pid, BINDER_TXN_RECEIVED);
+    pid_t tid = GET_TID();
+    do_transition(tid, BINDER_TXN_RECEIVED);
     return 0;
 }
 
 SEC("tp/binder/binder_write_done")
 int binder_write_done(struct trace_event_raw_binder_write_done *ctx) {
-    pid_t pid = bpf_get_current_pid_tgid() & 0xffffffff;
-    do_transition(pid, BINDER_WRITE_DONE);
+    pid_t tid = GET_TID();
+    do_transition(tid, BINDER_WRITE_DONE);
     return 0;
 }
 
 SEC("tp/binder/binder_wait_for_work")
 int binder_wait_for_work(void *ctx) {
-    pid_t pid = bpf_get_current_pid_tgid() & 0xffffffff;
-    do_transition(pid, BINDER_WAIT_FOR_WORK);
+    pid_t tid = GET_TID();
+    do_transition(tid, BINDER_WAIT_FOR_WORK);
     return 0;
 }
 
 SEC("tp/binder/binder_read_done")
 int binder_read_done(struct trace_event_raw_binder_read_done *ctx) {
-    pid_t pid = bpf_get_current_pid_tgid() & 0xffffffff;
-    do_transition(pid, BINDER_READ_DONE);
+    pid_t tid = GET_TID();
+    do_transition(tid, BINDER_READ_DONE);
     return 0;
 }
 
 SEC("tp/binder/binder_return")
 int binder_return(void *ctx) {
-    pid_t pid = bpf_get_current_pid_tgid() & 0xffffffff;
-    do_transition(pid, BINDER_RETURN);
+    pid_t tid = GET_TID();
+    do_transition(tid, BINDER_RETURN);
     return 0;
 }
 
 SEC("tp/binder/binder_ioctl_done")
 int binder_ioctl_done(void *ctx) {
-    pid_t pid = bpf_get_current_pid_tgid() & 0xffffffff;
-    if (!do_transition(pid, BINDER_IOCTL_DONE)) {
-        bpf_printk("removing %d\n", pid);
-        bpf_map_delete_elem(&binder_process_state, &pid);
+    pid_t tid = GET_TID();
+    if (!do_transition(tid, BINDER_IOCTL_DONE)) {
+        LOG("removing %d\n", tid);
+        // bpf_map_delete_elem(&binder_process_state, &tid);
+        binder_process_state_t state = BINDER_INVALID;
+        bpf_map_update_elem(&binder_process_state, &tid, &state, BPF_ANY);
     }
     return 0;
 }

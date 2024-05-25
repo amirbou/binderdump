@@ -1,3 +1,5 @@
+use std::ffi::{CStr, CString};
+
 use super::common_types::{self, binder_event};
 use crate::binder::binder_ioctl;
 use anyhow::{anyhow, Context, Error};
@@ -32,9 +34,10 @@ pub enum BinderEventData {
 
 #[derive(Debug)]
 pub struct BinderEvent {
-    tid: i32,
-    timestamp: u64,
-    data: BinderEventData,
+    pub pid: i32,
+    pub tid: i32,
+    pub timestamp: u64,
+    pub data: BinderEventData,
 }
 
 const header_size: usize = std::mem::size_of::<binder_event>();
@@ -80,6 +83,7 @@ impl TryFrom<&[u8]> for BinderEvent {
             BinderProcessState::BINDER_IOCTL_DONE => todo!(),
         };
         Ok(Self {
+            pid: header.pid,
             tid: header.tid,
             timestamp: header.timestamp,
             data: data,
@@ -89,9 +93,12 @@ impl TryFrom<&[u8]> for BinderEvent {
 
 #[derive(Debug)]
 pub struct BinderEventIoctl {
-    fd: i32,
-    cmd: binder_ioctl,
-    arg: u64,
+    pub fd: i32,
+    pub comm: CString,
+    pub uid: u32,
+    pub gid: u32,
+    pub cmd: binder_ioctl,
+    pub arg: u64,
 }
 
 impl TryFrom<&common_types::binder_event_ioctl> for BinderEventIoctl {
@@ -100,9 +107,14 @@ impl TryFrom<&common_types::binder_event_ioctl> for BinderEventIoctl {
     fn try_from(value: &common_types::binder_event_ioctl) -> Result<Self, Self::Error> {
         let cmd = binder_ioctl::from_i32(value.cmd as i32)
             .context(format!("Invalid binder ioctl cmd {}", value.cmd))?;
+        let comm = unsafe { CStr::from_ptr(value.comm.as_ptr()) };
+        let comm = comm.to_owned();
 
         Ok(BinderEventIoctl {
             fd: value.fd,
+            comm: comm,
+            uid: value.uid,
+            gid: value.gid,
             cmd: cmd,
             arg: value.arg,
         })
