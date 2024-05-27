@@ -24,12 +24,14 @@ pub enum BinderProcessState {
     BINDER_READ_DONE = common_types::binder_process_state_t_BINDER_READ_DONE,
     BINDER_TXN_RECEIVED = common_types::binder_process_state_t_BINDER_TXN_RECEIVED,
     BINDER_IOCTL_DONE = common_types::binder_process_state_t_BINDER_IOCTL_DONE,
+    BINDER_INVALIDATE_PROCES = common_types::binder_process_state_t_BINDER_INVALIDATE_PROCESS,
 }
 
 #[derive(Debug)]
 pub enum BinderEventData {
     BinderInvalidate,
     BinderIoctl(BinderEventIoctl),
+    BinderInvalidateProcess,
 }
 
 #[derive(Debug)]
@@ -81,6 +83,9 @@ impl TryFrom<&[u8]> for BinderEvent {
             BinderProcessState::BINDER_READ_DONE => todo!(),
             BinderProcessState::BINDER_TXN_RECEIVED => todo!(),
             BinderProcessState::BINDER_IOCTL_DONE => todo!(),
+            BinderProcessState::BINDER_INVALIDATE_PROCES => {
+                BinderEventData::BinderInvalidateProcess
+            }
         };
         Ok(Self {
             pid: header.pid,

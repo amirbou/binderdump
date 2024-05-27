@@ -14,7 +14,9 @@ typedef enum {
     BINDER_TXN_RECEIVED,
     BINDER_IOCTL_DONE,
 
-    BINDER_STATE_MAX
+    BINDER_STATE_MAX,
+    // psuedo state sent from sched_process_exit to invalidate the ProcessCache entry
+    BINDER_INVALIDATE_PROCESS = BINDER_STATE_MAX,
 } binder_process_state_t;
 
 struct binder_event {
