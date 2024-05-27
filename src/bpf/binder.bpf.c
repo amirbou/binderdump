@@ -1,6 +1,7 @@
 #include "common_types.h"
 #include "trace_binder.h"
 #include <bpf/bpf_helpers.h>
+#include <linux/android/binder.h>
 #include <linux/bpf.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -25,12 +26,17 @@ struct {
     __type(value, binder_process_state_t);
 } binder_process_state SEC(".maps");
 
+struct ioctl_context {
+    int fd;
+    struct binder_write_read binder_write_read;
+};
+
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, PID_MAX);
     __type(key, pid_t);
-    __type(value, int);
-} ioctl_fd SEC(".maps");
+    __type(value, struct ioctl_context);
+} ioctl_context_map SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -152,8 +158,8 @@ SEC("tp/raw_syscalls/sys_enter")
 int sys_enter(struct trace_event_raw_sys_enter *ctx) {
     pid_t tid = GET_TID();
     if (ctx->id == SYS_ioctl) {
-        int fd = ctx->args[0];
-        if (bpf_map_update_elem(&ioctl_fd, &tid, &fd, BPF_ANY)) {
+        struct ioctl_context ioctl_ctx = {.fd = ctx->args[0]};
+        if (bpf_map_update_elem(&ioctl_context_map, &tid, &ioctl_ctx, BPF_ANY)) {
             LOG("ioctl: invalid state for %d", tid);
         };
     }
@@ -164,9 +170,8 @@ SEC("tp/raw_syscalls/sys_exit")
 int sys_exit(struct trace_event_raw_sys_exit *ctx) {
     pid_t tid = GET_TID();
     if (ctx->id == SYS_ioctl) {
-        int fd = -1;
-        // bpf_map_delete_elem(&ioctl_fd, &tid);
-        bpf_map_update_elem(&ioctl_fd, &tid, &fd, BPF_ANY);
+        struct ioctl_context ioctl_ctx = {.fd = -1};
+        bpf_map_update_elem(&ioctl_context_map, &tid, &ioctl_ctx, BPF_ANY);
     }
     return 0;
 }
@@ -174,18 +179,30 @@ int sys_exit(struct trace_event_raw_sys_exit *ctx) {
 SEC("tp/sched/sched_process_exit")
 int sched_process_exit(const struct trace_event_raw_sched_process_template *ctx) {
     pid_t tid = ctx->pid;
+    pid_t pid = bpf_get_current_pid_tgid() >> 32;
+
     if (bpf_map_lookup_elem(&binder_process_state, &tid)) {
         LOG("binder task %d removed from map\n", tid);
         binder_process_state_t state = BINDER_INVALID;
         // bpf_map_delete_elem(&binder_process_state, &tid);
         bpf_map_update_elem(&binder_process_state, &tid, &state, BPF_ANY);
     }
-    if (bpf_map_lookup_elem(&ioctl_fd, &tid)) {
+    if (bpf_map_lookup_elem(&ioctl_context_map, &tid)) {
         LOG("binder task %d removed from ioctl map\n", tid);
-        int fd = -1;
-        // bpf_map_delete_elem(&ioctl_fd, &tid);
-        bpf_map_update_elem(&ioctl_fd, &tid, &fd, BPF_ANY);
+        struct ioctl_context ioctl_ctx = {.fd = -1};
+        bpf_map_update_elem(&ioctl_context_map, &tid, &ioctl_ctx, BPF_ANY);
     }
+
+    struct binder_event *event = bpf_ringbuf_reserve(&binder_events_buffer, sizeof(*event), 0);
+    if (!event) {
+        LOG("Failed to send process invalidate message\n");
+        return 0;
+    }
+    event->type = BINDER_INVALIDATE_PROCESS;
+    event->pid = pid;
+    event->tid = tid;
+    event->timestamp = 0;
+    bpf_ringbuf_submit(event, 0);
 
     return 0;
 }
@@ -196,7 +213,7 @@ int binder_ioctl(struct trace_event_raw_binder_ioctl *ctx) {
     pid_t pid = task_id >> 32;
     pid_t tid = task_id & 0xffffffff;
     binder_process_state_t state = BINDER_IOCTL;
-    int *fd = NULL;
+    struct ioctl_context *ioctl_ctx = NULL;
 
     if (bpf_map_update_elem(&binder_process_state, &tid, &state, BPF_ANY)) {
         LOG("binder_ioctl: invalid binder state for task %d\n", tid);
@@ -204,8 +221,8 @@ int binder_ioctl(struct trace_event_raw_binder_ioctl *ctx) {
         return 0;
     }
 
-    fd = bpf_map_lookup_elem(&ioctl_fd, &tid);
-    if (!fd) {
+    ioctl_ctx = bpf_map_lookup_elem(&ioctl_context_map, &tid);
+    if (!ioctl_ctx) {
         LOG("binder_ioctl: no fd?\n");
         return 0;
     }
@@ -224,7 +241,7 @@ int binder_ioctl(struct trace_event_raw_binder_ioctl *ctx) {
     struct binder_event_ioctl *ioctl_event = (struct binder_event_ioctl *)event->data;
     __u64 creds = bpf_get_current_uid_gid();
 
-    ioctl_event->fd = *fd;
+    ioctl_event->fd = ioctl_ctx->fd;
     bpf_get_current_comm(ioctl_event->comm, sizeof(ioctl_event->comm));
     ioctl_event->uid = creds & 0xffffffff;
     ioctl_event->gid = creds >> 32;
@@ -232,6 +249,15 @@ int binder_ioctl(struct trace_event_raw_binder_ioctl *ctx) {
     ioctl_event->arg = ctx->arg;
 
     bpf_ringbuf_submit(event, 0);
+
+    if (ctx->cmd == BINDER_WRITE_READ) {
+        if (bpf_probe_read_user(&ioctl_ctx->binder_write_read, sizeof(ioctl_ctx->binder_write_read),
+                                ctx->arg)) {
+            bpf_printk("Failed to read BINDER_WRITE_READ arg from user");
+        } else {
+            bpf_map_update_elem(&ioctl_context_map, &tid, ioctl_ctx, BPF_ANY);
+        }
+    }
 
     return 0;
 }

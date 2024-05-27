@@ -150,7 +150,7 @@ impl ProcessCache {
         Ok(proc_info)
     }
 
-    pub fn invalidate_proc(&mut self, pid: i32, tid: i32) {
-        self.map.remove(&ProcessKey { pid, tid });
+    pub fn invalidate_proc(&mut self, pid: i32, tid: i32) -> Option<ProcessInfo> {
+        self.map.remove(&ProcessKey { pid, tid })
     }
 }
