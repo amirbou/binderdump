@@ -2,7 +2,7 @@ use std::ffi::{CStr, CString};
 
 use super::common_types::{self, binder_event};
 use crate::binder::binder_ioctl;
-use anyhow::{anyhow, Context, Error};
+use anyhow::{anyhow, Context};
 use num::FromPrimitive;
 use num_derive::FromPrimitive;
 use plain::Plain;
@@ -42,7 +42,7 @@ pub struct BinderEvent {
     pub data: BinderEventData,
 }
 
-const header_size: usize = std::mem::size_of::<binder_event>();
+const HEADER_SIZE: usize = std::mem::size_of::<binder_event>();
 
 trait ToAnyhow {
     fn to_anyhow(&self, msg: &str) -> anyhow::Error;
@@ -69,7 +69,7 @@ impl TryFrom<&[u8]> for BinderEvent {
         let data = match kind {
             BinderProcessState::BINDER_INVALID => BinderEventData::BinderInvalidate,
             BinderProcessState::BINDER_IOCTL => {
-                let ioctl_data = &value[header_size..];
+                let ioctl_data = &value[HEADER_SIZE..];
                 let raw_ioctl_event: &common_types::binder_event_ioctl =
                     plain::from_bytes(ioctl_data)
                         .map_err(|err| err.to_anyhow("Failed to parse binder_event_ioctl"))?;

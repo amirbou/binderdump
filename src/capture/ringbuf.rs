@@ -1,14 +1,12 @@
 // will handle ringbuf polling and comsuming
-use super::{common_types, events, tracepoints::binder::BinderSkel};
+use super::{events, tracepoints::binder::BinderSkel};
 use anyhow::Result;
-use libbpf_rs::{RingBuffer, RingBufferBuilder};
+use libbpf_rs::RingBufferBuilder;
 use log::{error, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Condvar};
-use std::thread::{self, Thread};
+use std::sync::{mpsc, Arc};
+use std::thread;
 use std::time::Duration;
-
-use super::events::BinderEvent;
 
 pub struct EventChannel {
     consumer_thread: Option<thread::JoinHandle<()>>,
