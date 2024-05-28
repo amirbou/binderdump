@@ -1,6 +1,6 @@
 use anyhow::Result;
-use binderdump::capture::events::{BinderEvent, BinderEventData, BinderEventIoctl};
-use binderdump::capture::process_cache::{ProcessCache, ProcessInfo};
+use binderdump::capture::events::BinderEventData;
+use binderdump::capture::process_cache::ProcessCache;
 use binderdump::capture::ringbuf::create_events_channel;
 use binderdump::capture::tracepoints::attach_tracepoints;
 use log::debug;

@@ -1,9 +1,6 @@
 use anyhow::{anyhow, Result};
-use log::warn;
 use procfs;
 use std::collections::{hash_map::Entry, HashMap};
-use std::ffi::{CStr, CString};
-use std::fmt::Display;
 use std::path::Path;
 
 enum BinderType {

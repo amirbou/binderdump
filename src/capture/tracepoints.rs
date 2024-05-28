@@ -1,7 +1,6 @@
 use anyhow::{bail, Context, Result};
 use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
 use libc;
-use std::os::unix::fs::MetadataExt;
 
 pub mod binder {
     include!(concat!(env!("OUT_DIR"), "/binder.skel.rs"));
@@ -37,7 +36,7 @@ fn prepare_tracepoints() -> Result<()> {
 pub fn attach_tracepoints<'a>() -> Result<BinderSkel<'a>> {
     prepare_tracepoints()?;
 
-    let mut skel_builder = BinderSkelBuilder::default();
+    let skel_builder = BinderSkelBuilder::default();
     // skel_builder.obj_builder.debug(true);
 
     let open_skel = skel_builder.open()?;
