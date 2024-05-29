@@ -27,7 +27,9 @@ pub fn main() -> Result<()> {
     println!("waiting for events");
     loop {
         let event = event_channel.get_channel().recv()?;
-        println!("Got event {:?}", event);
+        if !matches!(event.data, BinderEventData::BinderWriteRead(_)) {
+            println!("Got event {:?}", event);
+        }
         match event.data {
             BinderEventData::BinderInvalidate => (),
             BinderEventData::BinderIoctl(ioctl_data) => {
@@ -55,6 +57,7 @@ pub fn main() -> Result<()> {
                     break;
                 }
             }
+            BinderEventData::BinderWriteRead(bwr) => println!("{}", bwr),
         }
     }
     Ok(())

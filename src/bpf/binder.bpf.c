@@ -19,6 +19,11 @@ char LICENSE[] SEC("license") = "GPL";
 // Default value in Android
 #define PID_MAX 32768
 
+// https://github.com/iovisor/bcc/issues/2519#issuecomment-534359316
+#define SZ_16K 0x00004000
+#define SZ_32K 0x00008000
+#define SZ_64M 0x04000000
+
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, PID_MAX);
@@ -28,7 +33,6 @@ struct {
 
 struct ioctl_context {
     int fd;
-    struct binder_write_read binder_write_read;
 };
 
 struct {
@@ -40,8 +44,26 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 0x100 * 0x1000 /* 1MB */);
+    __uint(max_entries, SZ_64M);
 } binder_events_buffer SEC(".maps");
+
+struct write_read_buffer {
+    union {
+        struct {
+            struct binder_event event;
+            struct binder_write_read bwr;
+            char data[];
+        };
+        char _reserved[SZ_32K];
+    };
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct write_read_buffer);
+} binder_write_read_buffers SEC(".maps");
 
 static const binder_process_state_t g_valid_transitions[BINDER_STATE_MAX][BINDER_STATE_MAX] = {
     // starting state
@@ -214,6 +236,11 @@ int binder_ioctl(struct trace_event_raw_binder_ioctl *ctx) {
     pid_t tid = task_id & 0xffffffff;
     binder_process_state_t state = BINDER_IOCTL;
     struct ioctl_context *ioctl_ctx = NULL;
+    size_t extra_size = 0;
+    size_t read_size = 0;
+    size_t write_size = 0;
+    __u32 key = 0;
+    struct write_read_buffer *buffer = NULL;
 
     if (bpf_map_update_elem(&binder_process_state, &tid, &state, BPF_ANY)) {
         LOG("binder_ioctl: invalid binder state for task %d\n", tid);
@@ -238,7 +265,7 @@ int binder_ioctl(struct trace_event_raw_binder_ioctl *ctx) {
     event->tid = tid;
     event->timestamp = bpf_ktime_get_boot_ns();
 
-    struct binder_event_ioctl *ioctl_event = (struct binder_event_ioctl *)event->data;
+    struct binder_event_ioctl *ioctl_event = (struct binder_event_ioctl *)(event + 1);
     __u64 creds = bpf_get_current_uid_gid();
 
     ioctl_event->fd = ioctl_ctx->fd;
@@ -247,18 +274,73 @@ int binder_ioctl(struct trace_event_raw_binder_ioctl *ctx) {
     ioctl_event->gid = creds >> 32;
     ioctl_event->cmd = ctx->cmd;
     ioctl_event->arg = ctx->arg;
+    // if this is the first event from that process, force wakeup so we can capture its cmdline
+    // and fds before it can exit
+    bpf_ringbuf_submit(event, BPF_RB_FORCE_WAKEUP);
 
-    bpf_ringbuf_submit(event, 0);
+    if (ctx->cmd != BINDER_WRITE_READ) {
+        return 0;
+    }
 
-    if (ctx->cmd == BINDER_WRITE_READ) {
-        if (bpf_probe_read_user(&ioctl_ctx->binder_write_read, sizeof(ioctl_ctx->binder_write_read),
-                                ctx->arg)) {
-            bpf_printk("Failed to read BINDER_WRITE_READ arg from user");
-        } else {
-            bpf_map_update_elem(&ioctl_context_map, &tid, ioctl_ctx, BPF_ANY);
+    buffer = bpf_map_lookup_elem(&binder_write_read_buffers, &key);
+    if (!buffer) {
+        goto l_invalidate;
+    }
+
+    if (bpf_probe_read_user(&buffer->bwr, sizeof(buffer->bwr), (const void *)ctx->arg)) {
+        LOG("binder_ioctl: failed to read BINDER_WRITE_READ arg from user\n");
+        __builtin_memset(&buffer->bwr, 0, sizeof(buffer->bwr));
+        goto l_invalidate;
+    }
+    bpf_map_update_elem(&ioctl_context_map, &tid, ioctl_ctx, BPF_ANY);
+    write_size = buffer->bwr.write_size;
+    read_size = buffer->bwr.read_size;
+    extra_size = offsetof(struct write_read_buffer, data) + write_size + read_size;
+    if (extra_size > sizeof(struct write_read_buffer)) {
+        goto l_invalidate;
+    }
+
+    // BIG TODO - fix this to actually support all the required data
+    // dumb verifier...
+    __u32 _write_size = (__u32)(*(volatile binder_size_t *)&buffer->bwr.write_size);
+    _write_size &= (SZ_16K - 1);
+    if (_write_size > 0) {
+
+        if (bpf_probe_read_user(buffer->data, _write_size,
+                                (const void *)buffer->bwr.write_buffer)) {
+            LOG("binder_ioctl: failed to read write_buffer");
+            goto l_invalidate;
         }
     }
 
+    // dumb verifier...
+    __u32 _read_size = (__u32)(*(volatile binder_size_t *)&buffer->bwr.read_size);
+    _read_size &= (SZ_16K - 0xff - 1);
+    if (_read_size > 0) {
+        if (bpf_probe_read_user(buffer->data + _write_size, _read_size,
+                                (const void *)buffer->bwr.read_buffer)) {
+            LOG("binder_ioctl: failed to read read_buffer");
+            goto l_invalidate;
+        }
+    }
+    buffer->event.type = BINDER_IOCTL_WRITE_READ;
+    buffer->event.pid = pid;
+    buffer->event.tid = tid;
+    buffer->event.timestamp = bpf_ktime_get_boot_ns();
+    if (bpf_ringbuf_output(&binder_events_buffer, buffer, extra_size, 0)) {
+        LOG("binder_ioctl: failed to output write_read data");
+    }
+    return 0;
+l_invalidate: {
+    struct binder_event invalidate = {};
+    invalidate.type = BINDER_INVALID;
+    invalidate.pid = pid;
+    invalidate.tid = tid;
+
+    if (bpf_ringbuf_output(&binder_events_buffer, &invalidate, sizeof(invalidate), 0)) {
+        LOG("binder_ioctl: failed to invalidate binder_write_read ioctl\n");
+    }
+}
     return 0;
 }
 
