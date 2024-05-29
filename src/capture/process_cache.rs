@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use log::trace;
 use procfs;
 use std::collections::{hash_map::Entry, HashMap};
 use std::path::Path;
@@ -136,12 +137,18 @@ impl ProcessCache {
             Entry::Occupied(mut proc_info) => {
                 if let Some(comm) = comm {
                     if comm.ne(&proc_info.get().comm) {
+                        trace!("cache invalid");
                         proc_info.insert(Self::create_process_info(tid as u32)?);
+                    } else {
+                        trace!("cache hit");
                     }
                 }
                 proc_info.into_mut()
             }
-            Entry::Vacant(v) => v.insert(Self::create_process_info(tid as u32)?),
+            Entry::Vacant(v) => {
+                trace!("cache miss");
+                v.insert(Self::create_process_info(tid as u32)?)
+            }
         };
 
         Ok(proc_info)

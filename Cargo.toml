@@ -21,6 +21,7 @@ num = "0.4"
 num-derive = "0.4"
 num-traits = "0.2"
 plain = "0.2"
+pretty-hex = "0.4.1"
 procfs = { version = "0.16.0", default-features = false }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]

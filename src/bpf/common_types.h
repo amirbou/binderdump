@@ -17,6 +17,7 @@ typedef enum {
     BINDER_STATE_MAX,
     // psuedo state sent from sched_process_exit to invalidate the ProcessCache entry
     BINDER_INVALIDATE_PROCESS = BINDER_STATE_MAX,
+    BINDER_IOCTL_WRITE_READ,
 } binder_process_state_t;
 
 struct binder_event {
@@ -26,7 +27,6 @@ struct binder_event {
     // CLOCK_BOOTTIME at time of event capture
     // this requires kernel >=5.8, but so does ring buffer
     __u64 timestamp;
-    char data[];
 };
 
 struct binder_event_ioctl {

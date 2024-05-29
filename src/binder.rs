@@ -2,7 +2,7 @@
 //! interfaces, nodes, processes, threads, refs etc. are used in the transaction.
 
 mod gen;
-pub use gen::BINDER_CURRENT_PROTOCOL_VERSION;
+pub use gen::{binder_write_read, BINDER_CURRENT_PROTOCOL_VERSION};
 use nix::{request_code_readwrite, request_code_write};
 use num_derive;
 use num_derive::FromPrimitive;
