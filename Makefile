@@ -22,6 +22,7 @@ export CC_aarch64_linux_android := $(NDK_BIN_PATH)/$(AARCH64_PREFIX)$(ANDROID_AP
 export CXX_aarch64_linux_android := $(NDK_BIN_PATH)/$(AARCH64_PREFIX)$(ANDROID_API_LEVEL)-clang++
 export CC_x86_64_linux_android := $(NDK_BIN_PATH)/$(X86_64_PREFIX)$(ANDROID_API_LEVEL)-clang
 export CXX_x86_64_linux_android := $(NDK_BIN_PATH)/$(X86_64_PREFIX)$(ANDROID_API_LEVEL)-clang++
+export AR_NDK := $(NDK_BIN_PATH)/llvm-ar
 
 export RUSTFLAGS_aarch64_linux_android := -L$(CURRENT_DIR)/$(OUT_DIR)/$(AARCH64_PREFIX)/lib
 export RUSTFLAGS_x86_64_linux_android := -L$(CURRENT_DIR)/$(OUT_DIR)/$(X86_64_PREFIX)/lib
