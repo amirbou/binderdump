@@ -16,9 +16,11 @@ target = "x86_64-linux-android"
 [env]
 # needed for dependancies that use the `cc` crate.
 CC_aarch64_linux_android = "${CC_aarch64_linux_android}"
+AR_aarch64_linux_android = "${AR_NDK}"
 CXX_aarch64_linux_android = "${CXX_aarch64_linux_android}"
 CC_x86_64_linux_android = "${CC_x86_64_linux_android}"
 CXX_x86_64_linux_android = "${CXX_x86_64_linux_android}"
+AR_x86_64_linux_android = "${AR_NDK}"
 
 [target.aarch64-linux-android.libbpf]
 rustc-link-lib = [ "static=bpf", "static=elf", "z" ]
