@@ -16,7 +16,7 @@ The goal is to produce pcap files containing binder transactions, that can be vi
 
 * Download Android's latest NDK (I use r26d)
 
-* Install `m4 make autotools clang` and maybe more things that I missed
+* Install `m4 make autotools clang gcc-multilib gawk clang-format` and maybe more things that I missed
 
 * Set the envrionment variable `ANDROID_NDK_ROOT` to point to the extracted NDK (`.../android-ndk-r26d`).
 
