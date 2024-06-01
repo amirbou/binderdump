@@ -37,6 +37,12 @@ struct trace_event_raw_binder_ioctl {
     char __data[0];
 };
 
+struct trace_event_raw_binder_ioctl_done {
+    struct trace_entry ent;
+    int ret;
+    char __data[0];
+};
+
 struct trace_event_raw_binder_lock_class {
     struct trace_entry ent;
     const char *tag;

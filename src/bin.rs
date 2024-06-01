@@ -58,6 +58,7 @@ pub fn main() -> Result<()> {
                 }
             }
             BinderEventData::BinderWriteRead(bwr) => println!("{}", bwr),
+            BinderEventData::BinderIoctlDone(_) => (),
         }
     }
     Ok(())
