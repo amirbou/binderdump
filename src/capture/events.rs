@@ -1,4 +1,6 @@
-use super::common_types::{self, binder_event};
+use super::common_types::{
+    self, binder_event, binder_event_ioctl, binder_event_ioctl_done, binder_event_write_read,
+};
 use crate::binder::{binder_ioctl, binder_write_read};
 use anyhow::{anyhow, Context};
 use num::FromPrimitive;
@@ -10,9 +12,11 @@ use std::{
     fmt::Display,
 };
 
-unsafe impl Plain for common_types::binder_event_ioctl {}
-unsafe impl Plain for common_types::binder_event {}
+unsafe impl Plain for binder_event_ioctl {}
+unsafe impl Plain for binder_event {}
 unsafe impl Plain for binder_write_read {}
+unsafe impl Plain for binder_event_write_read {}
+unsafe impl Plain for binder_event_ioctl_done {}
 
 #[derive(Debug, FromPrimitive)]
 #[allow(non_camel_case_types)]
@@ -29,7 +33,8 @@ pub enum BinderProcessState {
     BINDER_TXN_RECEIVED = common_types::binder_process_state_t_BINDER_TXN_RECEIVED,
     BINDER_IOCTL_DONE = common_types::binder_process_state_t_BINDER_IOCTL_DONE,
     BINDER_INVALIDATE_PROCES = common_types::binder_process_state_t_BINDER_INVALIDATE_PROCESS,
-    BINDER_IOCTL_WRITE_READ = common_types::binder_process_state_t_BINDER_IOCTL_WRITE_READ,
+    BINDER_WRITE = common_types::binder_process_state_t_BINDER_WRITE,
+    BINDER_READ = common_types::binder_process_state_t_BINDER_READ,
 }
 
 #[derive(Debug)]
@@ -37,6 +42,7 @@ pub enum BinderEventData {
     BinderInvalidate,
     BinderIoctl(BinderEventIoctl),
     BinderWriteRead(BinderEventWriteRead),
+    BinderIoctlDone(i32),
     BinderInvalidateProcess,
 }
 
@@ -88,13 +94,26 @@ impl TryFrom<&[u8]> for BinderEvent {
             BinderProcessState::BINDER_RETURN => todo!(),
             BinderProcessState::BINDER_READ_DONE => todo!(),
             BinderProcessState::BINDER_TXN_RECEIVED => todo!(),
-            BinderProcessState::BINDER_IOCTL_DONE => todo!(),
+            BinderProcessState::BINDER_IOCTL_DONE => {
+                let data = &value[HEADER_SIZE..];
+                let raw_ioctl_done_event: &binder_event_ioctl_done = plain::from_bytes(data)
+                    .map_err(|err| err.to_anyhow("Failed to parse binder_event_ioctl_done"))?;
+                BinderEventData::BinderIoctlDone(raw_ioctl_done_event.ret)
+            }
             BinderProcessState::BINDER_INVALIDATE_PROCES => {
                 BinderEventData::BinderInvalidateProcess
             }
-            BinderProcessState::BINDER_IOCTL_WRITE_READ => {
+            BinderProcessState::BINDER_WRITE => {
                 let data = &value[HEADER_SIZE..];
-                BinderEventData::BinderWriteRead(BinderEventWriteRead::try_from(data)?)
+                BinderEventData::BinderWriteRead(BinderEventWriteRead::BinderEventWrite(
+                    BinderEventWriteReadData::try_from(data)?,
+                ))
+            }
+            BinderProcessState::BINDER_READ => {
+                let data = &value[HEADER_SIZE..];
+                BinderEventData::BinderWriteRead(BinderEventWriteRead::BinderEventRead(
+                    BinderEventWriteReadData::try_from(data)?,
+                ))
             }
         };
         Ok(Self {
@@ -137,77 +156,83 @@ impl TryFrom<&common_types::binder_event_ioctl> for BinderEventIoctl {
 }
 
 #[derive(Debug)]
-pub struct BinderEventWriteRead {
+pub struct BinderEventWriteReadData {
     bwr: binder_write_read,
-    write_buffer: Vec<u8>,
-    read_buffer: Vec<u8>,
+    buffer: Vec<u8>,
 }
 
-impl BinderEventWriteRead {
-    pub fn total_size(&self) -> usize {
-        self.write_buffer.len() + self.read_buffer.len()
-    }
-
-    pub fn write_size(&self) -> usize {
-        self.write_buffer.len()
-    }
-
-    pub fn read_size(&self) -> usize {
-        self.read_buffer.len()
-    }
-
-    pub fn write_data(&self) -> &[u8] {
-        &self.write_buffer
-    }
-
-    pub fn read_data(&self) -> &[u8] {
-        &self.read_buffer
+impl BinderEventWriteReadData {
+    pub fn size(&self) -> usize {
+        self.buffer.len()
     }
 
     pub fn raw(&self) -> &binder_write_read {
         &self.bwr
     }
+
+    pub fn data(&self) -> &[u8] {
+        &self.buffer
+    }
+}
+
+#[derive(Debug)]
+pub enum BinderEventWriteRead {
+    BinderEventRead(BinderEventWriteReadData),
+    BinderEventWrite(BinderEventWriteReadData),
+}
+
+impl BinderEventWriteRead {
+    pub fn is_write(&self) -> bool {
+        match self {
+            BinderEventWriteRead::BinderEventWrite(_) => true,
+            _ => false,
+        }
+    }
 }
 
 impl Display for BinderEventWriteRead {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let event = match self {
+            BinderEventWriteRead::BinderEventRead(e) => e,
+            BinderEventWriteRead::BinderEventWrite(e) => e,
+        };
         writeln!(f, "BinderEventWriteRead (")?;
         writeln!(
             f,
-            "  write_size: {} write_buffer: 0x{:x} read_size: {} read_buffer: 0x{:x}",
-            self.bwr.write_size, self.bwr.write_buffer, self.bwr.read_size, self.bwr.read_buffer
+            "  size: {}/{} buffer: 0x{:x} read: {}/{} buffer: 0x{:x}",
+            event.bwr.write_consumed,
+            event.bwr.write_size,
+            event.bwr.write_buffer,
+            event.bwr.read_consumed,
+            event.bwr.read_size,
+            event.bwr.read_buffer
         )?;
         let mut hexconfig = HexConfig::default();
-        hexconfig.max_bytes = 64;
+        hexconfig.max_bytes = 0x100;
 
-        writeln!(f, "  write data:")?;
-        writeln!(f, "{:?}", self.write_data().hex_conf(hexconfig.clone()))?;
-
-        writeln!(f, "  read data:")?;
-        writeln!(f, "{:?}", self.read_data().hex_conf(hexconfig))?;
+        if self.is_write() {
+            writeln!(f, "  write data:")?;
+        } else {
+            writeln!(f, "  read data:")?;
+        }
+        writeln!(f, "{:?}", event.data().hex_conf(hexconfig))?;
         writeln!(f, ")")
     }
 }
 
 const BWR_SIZE: usize = std::mem::size_of::<binder_write_read>();
 
-impl TryFrom<&[u8]> for BinderEventWriteRead {
+impl TryFrom<&[u8]> for BinderEventWriteReadData {
     type Error = anyhow::Error;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         let raw_bwr: &binder_write_read = plain::from_bytes(value)
             .map_err(|err| err.to_anyhow("Failed to parse binder_write_read struct"))?;
-        let bufs = &value[BWR_SIZE..];
-        let write_buf = &bufs[..raw_bwr.write_size as usize];
-        let read_buf = &bufs[raw_bwr.write_size as usize..];
-        if read_buf.len() != raw_bwr.read_size as usize {
-            return Err(anyhow!("BINDER_WRITE_READ data was truncated"));
-        }
+        let buffer = &value[BWR_SIZE..];
 
         Ok(Self {
             bwr: *raw_bwr,
-            write_buffer: write_buf.into(),
-            read_buffer: read_buf.into(),
+            buffer: buffer.into(),
         })
     }
 }
