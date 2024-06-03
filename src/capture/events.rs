@@ -1,7 +1,8 @@
 use super::common_types::{
     self, binder_event, binder_event_ioctl, binder_event_ioctl_done, binder_event_write_read,
+    binder_transaction_data,
 };
-use crate::binder::{binder_ioctl, binder_write_read};
+use crate::binder::{binder_command, binder_ioctl, binder_write_read};
 use anyhow::{anyhow, Context};
 use num::FromPrimitive;
 use num_derive::FromPrimitive;
@@ -234,5 +235,215 @@ impl TryFrom<&[u8]> for BinderEventWriteReadData {
             bwr: *raw_bwr,
             buffer: buffer.into(),
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(C)]
+pub struct RefCommand {
+    // target == 0 && (IncRefs || Acquire) -> get handle to context manager (servicemanager)
+    target: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(C)]
+pub struct RefDoneCommand {
+    node_ptr: u64,
+    cookie: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(C)]
+pub struct FreeBufferCommand {
+    data_ptr: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct ScatterGatherCommand {
+    transaction_data: [u8; std::mem::size_of::<binder_transaction_data>()],
+    buffers_size: u64,
+}
+
+impl Default for ScatterGatherCommand {
+    fn default() -> Self {
+        Self {
+            transaction_data: [0; std::mem::size_of::<binder_transaction_data>()],
+            buffers_size: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct TransactionCommand {
+    transaction_data: [u8; std::mem::size_of::<binder_transaction_data>()],
+}
+
+impl Default for TransactionCommand {
+    fn default() -> Self {
+        Self {
+            transaction_data: [0; std::mem::size_of::<binder_transaction_data>()],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(C)]
+pub struct DeathCommand {
+    target: u32,
+    cookie: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(C)]
+pub struct DeathDoneCommand {
+    cookie: u64,
+}
+
+#[derive(Debug)]
+#[repr(C)]
+pub enum BinderCommand {
+    IncRefs(RefCommand),
+    Acquire(RefCommand),
+    Release(RefCommand),
+    DecRefs(RefCommand),
+    IncRefsDone(RefDoneCommand),
+    AcquireDone(RefDoneCommand),
+    FreeBuffer(FreeBufferCommand),
+    TransactionSg(ScatterGatherCommand),
+    ReplySg(ScatterGatherCommand),
+    Transaction(TransactionCommand),
+    Reply(TransactionCommand),
+    RegisterLooper,
+    EnterLooper,
+    ExitLooper,
+    RequestDeathNotification(DeathCommand),
+    ClearDeathNotification(DeathCommand),
+    DeadBinderDone(DeathDoneCommand),
+}
+
+unsafe impl Plain for RefCommand {}
+unsafe impl Plain for RefDoneCommand {}
+unsafe impl Plain for FreeBufferCommand {}
+unsafe impl Plain for ScatterGatherCommand {}
+unsafe impl Plain for TransactionCommand {}
+unsafe impl Plain for DeathCommand {}
+unsafe impl Plain for DeathDoneCommand {}
+
+impl BinderCommand {
+    pub fn command_size(&self) -> usize {
+        let inner_size = match self {
+            BinderCommand::IncRefs(_)
+            | BinderCommand::Acquire(_)
+            | BinderCommand::Release(_)
+            | BinderCommand::DecRefs(_) => std::mem::size_of::<RefCommand>(),
+            BinderCommand::IncRefsDone(_) | BinderCommand::AcquireDone(_) => {
+                std::mem::size_of::<RefDoneCommand>()
+            }
+            BinderCommand::FreeBuffer(_) => std::mem::size_of::<FreeBufferCommand>(),
+            BinderCommand::TransactionSg(_) | BinderCommand::ReplySg(_) => {
+                std::mem::size_of::<ScatterGatherCommand>()
+            }
+            BinderCommand::Transaction(_) | BinderCommand::Reply(_) => {
+                std::mem::size_of::<TransactionCommand>()
+            }
+            BinderCommand::RegisterLooper
+            | BinderCommand::EnterLooper
+            | BinderCommand::ExitLooper => 0,
+            BinderCommand::RequestDeathNotification(_)
+            | BinderCommand::ClearDeathNotification(_) => std::mem::size_of::<DeathCommand>(),
+            BinderCommand::DeadBinderDone(_) => std::mem::size_of::<DeathDoneCommand>(),
+        };
+        4 + inner_size
+    }
+}
+
+impl TryFrom<&[u8]> for BinderCommand {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        let bc: &u32 =
+            plain::from_bytes(value).map_err(|err| err.to_anyhow("Failed to read BC"))?;
+        let bc = binder_command::from_u32(*bc).context("Failed to cast BC to enum")?;
+
+        let data = &value[4..];
+        let s = match bc {
+            binder_command::BC_TRANSACTION | binder_command::BC_REPLY => {
+                let command = *TransactionCommand::from_bytes(data)
+                    .map_err(|err| err.to_anyhow(&format!("Failed to read {:?}", bc)))?;
+                match bc {
+                    binder_command::BC_TRANSACTION => Self::Transaction(command),
+                    binder_command::BC_REPLY => Self::Reply(command),
+                    _ => unreachable!(),
+                }
+            }
+            binder_command::BC_ACQUIRE_RESULT => todo!(),
+            binder_command::BC_FREE_BUFFER => {
+                let mut command = FreeBufferCommand::default();
+                command.copy_from_bytes(data).map_err(|err| {
+                    err.to_anyhow(&format!(
+                        "Failed to read BC_FREE_BUFFER data: {:?}",
+                        data.hex_dump()
+                    ))
+                })?;
+                Self::FreeBuffer(command)
+            }
+            binder_command::BC_INCREFS
+            | binder_command::BC_ACQUIRE
+            | binder_command::BC_RELEASE
+            | binder_command::BC_DECREFS => {
+                let command = *RefCommand::from_bytes(data)
+                    .map_err(|err| err.to_anyhow(&format!("Failed to read {:?}", bc)))?;
+                match bc {
+                    binder_command::BC_INCREFS => Self::IncRefs(command),
+                    binder_command::BC_ACQUIRE => Self::Acquire(command),
+                    binder_command::BC_RELEASE => Self::Release(command),
+                    binder_command::BC_DECREFS => Self::DecRefs(command),
+                    _ => unreachable!(),
+                }
+            }
+            binder_command::BC_INCREFS_DONE | binder_command::BC_ACQUIRE_DONE => {
+                let command = *RefDoneCommand::from_bytes(data)
+                    .map_err(|err| err.to_anyhow(&format!("Failed to read {:?}", bc)))?;
+                match bc {
+                    binder_command::BC_INCREFS_DONE => Self::IncRefsDone(command),
+                    binder_command::BC_ACQUIRE_DONE => Self::AcquireDone(command),
+                    _ => unreachable!(),
+                }
+            }
+            binder_command::BC_ATTEMPT_ACQUIRE => todo!(),
+            binder_command::BC_REGISTER_LOOPER => Self::RegisterLooper,
+            binder_command::BC_ENTER_LOOPER => Self::EnterLooper,
+            binder_command::BC_EXIT_LOOPER => Self::ExitLooper,
+            binder_command::BC_REQUEST_DEATH_NOTIFICATION
+            | binder_command::BC_CLEAR_DEATH_NOTIFICATION => {
+                let command = *DeathCommand::from_bytes(data)
+                    .map_err(|err| err.to_anyhow(&format!("Failed to read {:?}", bc)))?;
+                match bc {
+                    binder_command::BC_REQUEST_DEATH_NOTIFICATION => {
+                        Self::RequestDeathNotification(command)
+                    }
+                    binder_command::BC_CLEAR_DEATH_NOTIFICATION => {
+                        Self::ClearDeathNotification(command)
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            binder_command::BC_DEAD_BINDER_DONE => Self::DeadBinderDone(
+                *DeathDoneCommand::from_bytes(data)
+                    .map_err(|err| err.to_anyhow("Failed to read BC_DEAD_BINDER_DONE"))?,
+            ),
+            binder_command::BC_TRANSACTION_SG | binder_command::BC_REPLY_SG => {
+                let command = *ScatterGatherCommand::from_bytes(data)
+                    .map_err(|err| err.to_anyhow(&format!("Failed to read {:?}", bc)))?;
+                match bc {
+                    binder_command::BC_TRANSACTION_SG => Self::TransactionSg(command),
+                    binder_command::BC_REPLY_SG => Self::ReplySg(command),
+                    _ => unreachable!(),
+                }
+            }
+        };
+        Ok(s)
     }
 }
