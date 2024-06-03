@@ -1,9 +1,23 @@
 use anyhow::Result;
-use binderdump::capture::events::BinderEventData;
+use binderdump::capture::events::{
+    BinderCommand, BinderEventData, BinderEventWriteRead, BinderEventWriteReadData,
+};
 use binderdump::capture::process_cache::ProcessCache;
 use binderdump::capture::ringbuf::create_events_channel;
 use binderdump::capture::tracepoints::attach_tracepoints;
 use log::debug;
+
+fn do_write(write: &BinderEventWriteReadData) -> Result<()> {
+    let data = write.data();
+    let mut pos = 0;
+    while pos < data.len() {
+        let bc = BinderCommand::try_from(&data[pos..])?;
+        println!("bc: {:x?}", bc);
+        pos += bc.command_size();
+    }
+    assert_eq!(pos, data.len());
+    Ok(())
+}
 
 pub fn main() -> Result<()> {
     #[cfg(target_os = "android")]
@@ -27,6 +41,16 @@ pub fn main() -> Result<()> {
     println!("waiting for events");
     loop {
         let event = event_channel.get_channel().recv()?;
+        if let Ok(proc_info) = cache.get_proc(event.pid, event.tid, None) {
+            if proc_info.get_comm() != "service"
+                && proc_info.get_comm() != "servicemanager"
+                && proc_info.get_comm() != "dumpsys"
+            {
+                continue;
+            }
+        } else {
+            continue;
+        }
         if !matches!(event.data, BinderEventData::BinderWriteRead(_)) {
             println!("Got event {:?}", event);
         }
@@ -57,7 +81,12 @@ pub fn main() -> Result<()> {
                     break;
                 }
             }
-            BinderEventData::BinderWriteRead(bwr) => println!("{}", bwr),
+            BinderEventData::BinderWriteRead(bwr) => {
+                println!("{}", bwr);
+                if let BinderEventWriteRead::BinderEventWrite(write) = &bwr {
+                    do_write(write)?;
+                }
+            }
             BinderEventData::BinderIoctlDone(_) => (),
         }
     }
