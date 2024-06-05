@@ -3,7 +3,8 @@ use super::common_types::{
     binder_transaction_data,
 };
 use crate::binder::{binder_command, binder_ioctl, binder_write_read};
-use anyhow::{anyhow, Context};
+use crate::errors::ToAnyhow;
+use anyhow::Context;
 use num::FromPrimitive;
 use num_derive::FromPrimitive;
 use plain::Plain;
@@ -56,19 +57,6 @@ pub struct BinderEvent {
 }
 
 const HEADER_SIZE: usize = std::mem::size_of::<binder_event>();
-
-trait ToAnyhow {
-    fn to_anyhow(&self, msg: &str) -> anyhow::Error;
-}
-
-impl ToAnyhow for plain::Error {
-    fn to_anyhow(&self, msg: &str) -> anyhow::Error {
-        match self {
-            plain::Error::TooShort => anyhow!("{} - not enough data", msg),
-            plain::Error::BadAlignment => anyhow!("{} - bad alignment", msg),
-        }
-    }
-}
 
 impl TryFrom<&[u8]> for BinderEvent {
     type Error = anyhow::Error;
@@ -176,19 +164,9 @@ impl BinderEventWriteReadData {
     }
 }
 
-#[derive(Debug)]
 pub enum BinderEventWriteRead {
     BinderEventRead(BinderEventWriteReadData),
     BinderEventWrite(BinderEventWriteReadData),
-}
-
-impl BinderEventWriteRead {
-    pub fn is_write(&self) -> bool {
-        match self {
-            BinderEventWriteRead::BinderEventWrite(_) => true,
-            _ => false,
-        }
-    }
 }
 
 impl Display for BinderEventWriteRead {
@@ -197,27 +175,22 @@ impl Display for BinderEventWriteRead {
             BinderEventWriteRead::BinderEventRead(e) => e,
             BinderEventWriteRead::BinderEventWrite(e) => e,
         };
-        writeln!(f, "BinderEventWriteRead (")?;
-        writeln!(
+        write!(
             f,
-            "  size: {}/{} buffer: 0x{:x} read: {}/{} buffer: 0x{:x}",
+            "BinderEventWriteRead (write: {}/{} 0x{:x} read: {}/{} 0x{:x})",
             event.bwr.write_consumed,
             event.bwr.write_size,
             event.bwr.write_buffer,
             event.bwr.read_consumed,
             event.bwr.read_size,
             event.bwr.read_buffer
-        )?;
-        let mut hexconfig = HexConfig::default();
-        hexconfig.max_bytes = 0x100;
+        )
+    }
+}
 
-        if self.is_write() {
-            writeln!(f, "  write data:")?;
-        } else {
-            writeln!(f, "  read data:")?;
-        }
-        writeln!(f, "{:?}", event.data().hex_conf(hexconfig))?;
-        writeln!(f, ")")
+impl std::fmt::Debug for BinderEventWriteRead {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "BinderEventWriteRead(...)")
     }
 }
 
@@ -235,301 +208,5 @@ impl TryFrom<&[u8]> for BinderEventWriteReadData {
             bwr: *raw_bwr,
             buffer: buffer.into(),
         })
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-#[repr(C)]
-pub struct RefCommand {
-    // target == 0 && (IncRefs || Acquire) -> get handle to context manager (servicemanager)
-    target: u32,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-#[repr(C)]
-pub struct RefDoneCommand {
-    node_ptr: u64,
-    cookie: u64,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-#[repr(C)]
-pub struct FreeBufferCommand {
-    data_ptr: u64,
-}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct ScatterGatherCommand {
-    transaction_data: [u8; std::mem::size_of::<binder_transaction_data>()],
-    buffers_size: u64,
-}
-
-impl Default for ScatterGatherCommand {
-    fn default() -> Self {
-        Self {
-            transaction_data: [0; std::mem::size_of::<binder_transaction_data>()],
-            buffers_size: 0,
-        }
-    }
-}
-
-#[allow(non_snake_case)]
-const fn B_PACK_CHARS(c1: char, c2: char, c3: char, c4: char) -> u32 {
-    ((c1 as u32) << 24) | ((c2 as u32) << 16) | ((c3 as u32) << 8) | (c4 as u32)
-}
-
-const PING_TRANSACTION: u32 = B_PACK_CHARS('_', 'P', 'N', 'G');
-const START_RECORDING_TRANSACTION: u32 = B_PACK_CHARS('_', 'S', 'R', 'D');
-const STOP_RECORDING_TRANSACTION: u32 = B_PACK_CHARS('_', 'E', 'R', 'D');
-const DUMP_TRANSACTION: u32 = B_PACK_CHARS('_', 'D', 'M', 'P');
-const SHELL_COMMAND_TRANSACTION: u32 = B_PACK_CHARS('_', 'C', 'M', 'D');
-const INTERFACE_TRANSACTION: u32 = B_PACK_CHARS('_', 'N', 'T', 'F');
-const SYSPROPS_TRANSACTION: u32 = B_PACK_CHARS('_', 'S', 'P', 'R');
-const EXTENSION_TRANSACTION: u32 = B_PACK_CHARS('_', 'E', 'X', 'T');
-const DEBUG_PID_TRANSACTION: u32 = B_PACK_CHARS('_', 'P', 'I', 'D');
-const SET_RPC_CLIENT_TRANSACTION: u32 = B_PACK_CHARS('_', 'R', 'P', 'C');
-
-// See android.os.IBinder.TWEET_TRANSACTION
-// Most importantly, messages can be anything not exceeding 130 UTF-8
-// characters, and callees should exclaim "jolly good message old boy!"
-const TWEET_TRANSACTION: u32 = B_PACK_CHARS('_', 'T', 'W', 'T');
-
-// See android.os.IBinder.LIKE_TRANSACTION
-// Improve binder self-esteem.
-const LIKE_TRANSACTION: u32 = B_PACK_CHARS('_', 'L', 'I', 'K');
-
-struct Code {
-    code: u32,
-}
-
-impl Code {
-    fn new(code: u32) -> Self {
-        Self { code }
-    }
-}
-
-impl Display for Code {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.code {
-            PING_TRANSACTION => write!(f, "'_PNG'"),
-            START_RECORDING_TRANSACTION => write!(f, "'_SRD'"),
-            STOP_RECORDING_TRANSACTION => write!(f, "'_ERD'"),
-            DUMP_TRANSACTION => write!(f, "'_DMP'"),
-            SHELL_COMMAND_TRANSACTION => write!(f, "'_CMD'"),
-            INTERFACE_TRANSACTION => write!(f, "'_NTF'"),
-            SYSPROPS_TRANSACTION => write!(f, "'_SPR'"),
-            EXTENSION_TRANSACTION => write!(f, "'_EXT'"),
-            DEBUG_PID_TRANSACTION => write!(f, "'_PID'"),
-            SET_RPC_CLIENT_TRANSACTION => write!(f, "'_RPC'"),
-            TWEET_TRANSACTION => write!(f, "'_TWT'"),
-            LIKE_TRANSACTION => write!(f, "'_LIK'"),
-            _ => write!(f, "{}", self.code),
-        }
-    }
-}
-
-impl std::fmt::Debug for binder_transaction_data {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("binder_transaction_data")
-            .field(
-                "target",
-                &format_args!(
-                    "handle {:x} - ptr {:x}",
-                    unsafe { &self.target.handle },
-                    unsafe { &self.target.ptr }
-                ),
-            )
-            .field("cookie", &self.cookie)
-            .field("code", &format_args!("{}", Code::new(self.code)))
-            .field("flags", &self.flags)
-            .field("sender_pid", &self.sender_pid)
-            .field("sender_euid", &self.sender_euid)
-            .field("data_size", &self.data_size)
-            .field("offsets_size", &self.offsets_size)
-            .field(
-                "data",
-                &format_args!("{:x} - {:x?}", unsafe { &self.data.ptr.buffer }, unsafe {
-                    &self.data.buf
-                }),
-            )
-            .finish()
-    }
-}
-
-unsafe impl Plain for binder_transaction_data {}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct TransactionCommand {
-    transaction_data: binder_transaction_data,
-}
-
-impl Default for TransactionCommand {
-    fn default() -> Self {
-        let transaction_data = unsafe { std::mem::zeroed::<binder_transaction_data>() };
-        Self { transaction_data }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-#[repr(C)]
-pub struct DeathCommand {
-    target: u32,
-    cookie: u64,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-#[repr(C)]
-pub struct DeathDoneCommand {
-    cookie: u64,
-}
-
-#[derive(Debug)]
-#[repr(C)]
-pub enum BinderCommand {
-    IncRefs(RefCommand),
-    Acquire(RefCommand),
-    Release(RefCommand),
-    DecRefs(RefCommand),
-    IncRefsDone(RefDoneCommand),
-    AcquireDone(RefDoneCommand),
-    FreeBuffer(FreeBufferCommand),
-    TransactionSg(ScatterGatherCommand),
-    ReplySg(ScatterGatherCommand),
-    Transaction(TransactionCommand),
-    Reply(TransactionCommand),
-    RegisterLooper,
-    EnterLooper,
-    ExitLooper,
-    RequestDeathNotification(DeathCommand),
-    ClearDeathNotification(DeathCommand),
-    DeadBinderDone(DeathDoneCommand),
-}
-
-unsafe impl Plain for RefCommand {}
-unsafe impl Plain for RefDoneCommand {}
-unsafe impl Plain for FreeBufferCommand {}
-unsafe impl Plain for ScatterGatherCommand {}
-unsafe impl Plain for TransactionCommand {}
-unsafe impl Plain for DeathCommand {}
-unsafe impl Plain for DeathDoneCommand {}
-
-impl BinderCommand {
-    pub fn command_size(&self) -> usize {
-        let inner_size = match self {
-            BinderCommand::IncRefs(_)
-            | BinderCommand::Acquire(_)
-            | BinderCommand::Release(_)
-            | BinderCommand::DecRefs(_) => std::mem::size_of::<RefCommand>(),
-            BinderCommand::IncRefsDone(_) | BinderCommand::AcquireDone(_) => {
-                std::mem::size_of::<RefDoneCommand>()
-            }
-            BinderCommand::FreeBuffer(_) => std::mem::size_of::<FreeBufferCommand>(),
-            BinderCommand::TransactionSg(_) | BinderCommand::ReplySg(_) => {
-                std::mem::size_of::<ScatterGatherCommand>()
-            }
-            BinderCommand::Transaction(_) | BinderCommand::Reply(_) => {
-                std::mem::size_of::<TransactionCommand>()
-            }
-            BinderCommand::RegisterLooper
-            | BinderCommand::EnterLooper
-            | BinderCommand::ExitLooper => 0,
-            BinderCommand::RequestDeathNotification(_)
-            | BinderCommand::ClearDeathNotification(_) => std::mem::size_of::<DeathCommand>(),
-            BinderCommand::DeadBinderDone(_) => std::mem::size_of::<DeathDoneCommand>(),
-        };
-        4 + inner_size
-    }
-}
-
-impl TryFrom<&[u8]> for BinderCommand {
-    type Error = anyhow::Error;
-
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        let bc: &u32 =
-            plain::from_bytes(value).map_err(|err| err.to_anyhow("Failed to read BC"))?;
-        let bc = binder_command::from_u32(*bc).context("Failed to cast BC to enum")?;
-
-        let data = &value[4..];
-        let s = match bc {
-            binder_command::BC_TRANSACTION | binder_command::BC_REPLY => {
-                let mut command = TransactionCommand::default();
-                command
-                    .copy_from_bytes(data)
-                    .map_err(|err| err.to_anyhow(&format!("Failed to read {:?}", bc)))?;
-                match bc {
-                    binder_command::BC_TRANSACTION => Self::Transaction(command),
-                    binder_command::BC_REPLY => Self::Reply(command),
-                    _ => unreachable!(),
-                }
-            }
-            binder_command::BC_ACQUIRE_RESULT => todo!(),
-            binder_command::BC_FREE_BUFFER => {
-                let mut command = FreeBufferCommand::default();
-                command.copy_from_bytes(data).map_err(|err| {
-                    err.to_anyhow(&format!(
-                        "Failed to read BC_FREE_BUFFER data: {:?}",
-                        data.hex_dump()
-                    ))
-                })?;
-                Self::FreeBuffer(command)
-            }
-            binder_command::BC_INCREFS
-            | binder_command::BC_ACQUIRE
-            | binder_command::BC_RELEASE
-            | binder_command::BC_DECREFS => {
-                let command = *RefCommand::from_bytes(data)
-                    .map_err(|err| err.to_anyhow(&format!("Failed to read {:?}", bc)))?;
-                match bc {
-                    binder_command::BC_INCREFS => Self::IncRefs(command),
-                    binder_command::BC_ACQUIRE => Self::Acquire(command),
-                    binder_command::BC_RELEASE => Self::Release(command),
-                    binder_command::BC_DECREFS => Self::DecRefs(command),
-                    _ => unreachable!(),
-                }
-            }
-            binder_command::BC_INCREFS_DONE | binder_command::BC_ACQUIRE_DONE => {
-                let command = *RefDoneCommand::from_bytes(data)
-                    .map_err(|err| err.to_anyhow(&format!("Failed to read {:?}", bc)))?;
-                match bc {
-                    binder_command::BC_INCREFS_DONE => Self::IncRefsDone(command),
-                    binder_command::BC_ACQUIRE_DONE => Self::AcquireDone(command),
-                    _ => unreachable!(),
-                }
-            }
-            binder_command::BC_ATTEMPT_ACQUIRE => todo!(),
-            binder_command::BC_REGISTER_LOOPER => Self::RegisterLooper,
-            binder_command::BC_ENTER_LOOPER => Self::EnterLooper,
-            binder_command::BC_EXIT_LOOPER => Self::ExitLooper,
-            binder_command::BC_REQUEST_DEATH_NOTIFICATION
-            | binder_command::BC_CLEAR_DEATH_NOTIFICATION => {
-                let command = *DeathCommand::from_bytes(data)
-                    .map_err(|err| err.to_anyhow(&format!("Failed to read {:?}", bc)))?;
-                match bc {
-                    binder_command::BC_REQUEST_DEATH_NOTIFICATION => {
-                        Self::RequestDeathNotification(command)
-                    }
-                    binder_command::BC_CLEAR_DEATH_NOTIFICATION => {
-                        Self::ClearDeathNotification(command)
-                    }
-                    _ => unreachable!(),
-                }
-            }
-            binder_command::BC_DEAD_BINDER_DONE => Self::DeadBinderDone(
-                *DeathDoneCommand::from_bytes(data)
-                    .map_err(|err| err.to_anyhow("Failed to read BC_DEAD_BINDER_DONE"))?,
-            ),
-            binder_command::BC_TRANSACTION_SG | binder_command::BC_REPLY_SG => {
-                let command = *ScatterGatherCommand::from_bytes(data)
-                    .map_err(|err| err.to_anyhow(&format!("Failed to read {:?}", bc)))?;
-                match bc {
-                    binder_command::BC_TRANSACTION_SG => Self::TransactionSg(command),
-                    binder_command::BC_REPLY_SG => Self::ReplySg(command),
-                    _ => unreachable!(),
-                }
-            }
-        };
-        Ok(s)
     }
 }

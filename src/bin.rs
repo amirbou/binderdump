@@ -1,19 +1,33 @@
 use anyhow::Result;
+use binderdump::binder::{binder_command::BinderCommand, binder_return::BinderReturn};
 use binderdump::capture::events::{
-    BinderCommand, BinderEventData, BinderEventWriteRead, BinderEventWriteReadData,
+    BinderEventData, BinderEventWriteRead, BinderEventWriteReadData,
 };
 use binderdump::capture::process_cache::ProcessCache;
 use binderdump::capture::ringbuf::create_events_channel;
 use binderdump::capture::tracepoints::attach_tracepoints;
 use log::debug;
+use yansi::Paint;
 
 fn do_write(write: &BinderEventWriteReadData) -> Result<()> {
     let data = write.data();
     let mut pos = 0;
     while pos < data.len() {
         let bc = BinderCommand::try_from(&data[pos..])?;
-        println!("bc: {:x?}", bc);
-        pos += bc.command_size();
+        println!("{:x?}", bc.green());
+        pos += bc.size();
+    }
+    assert_eq!(pos, data.len());
+    Ok(())
+}
+
+fn do_read(read: &BinderEventWriteReadData) -> Result<()> {
+    let data = read.data();
+    let mut pos = 0;
+    while pos < data.len() {
+        let br = BinderReturn::try_from(&data[pos..])?;
+        println!("{:x?}", br.blue());
+        pos += br.size();
     }
     assert_eq!(pos, data.len());
     Ok(())
@@ -51,9 +65,8 @@ pub fn main() -> Result<()> {
         } else {
             continue;
         }
-        if !matches!(event.data, BinderEventData::BinderWriteRead(_)) {
-            println!("Got event {:?}", event);
-        }
+
+        println!("Got event {:?}", event);
         match event.data {
             BinderEventData::BinderInvalidate => (),
             BinderEventData::BinderIoctl(ioctl_data) => {
@@ -83,11 +96,12 @@ pub fn main() -> Result<()> {
             }
             BinderEventData::BinderWriteRead(bwr) => {
                 println!("{}", bwr);
-                if let BinderEventWriteRead::BinderEventWrite(write) = &bwr {
-                    do_write(write)?;
-                }
+                match &bwr {
+                    BinderEventWriteRead::BinderEventRead(read) => do_read(read)?,
+                    BinderEventWriteRead::BinderEventWrite(write) => do_write(write)?,
+                };
             }
-            BinderEventData::BinderIoctlDone(_) => (),
+            BinderEventData::BinderIoctlDone(_) => println!("{}", "----------".yellow()),
         }
     }
     Ok(())
