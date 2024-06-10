@@ -59,6 +59,7 @@ pub fn main() -> Result<()> {
             if proc_info.get_comm() != "service"
                 && proc_info.get_comm() != "servicemanager"
                 && proc_info.get_comm() != "dumpsys"
+                && proc_info.get_comm() != "WifiHandlerThr"
             {
                 continue;
             }
@@ -102,6 +103,8 @@ pub fn main() -> Result<()> {
                 };
             }
             BinderEventData::BinderIoctlDone(_) => println!("{}", "----------".yellow()),
+            BinderEventData::BinderTransaction(_) => (),
+            BinderEventData::BinderTransactionReceived(_) => (),
         }
     }
     Ok(())

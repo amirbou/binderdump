@@ -1,10 +1,11 @@
 use super::common_types::{
-    self, binder_event, binder_event_ioctl, binder_event_ioctl_done, binder_event_write_read,
-    binder_transaction_data,
+    self, binder_event, binder_event_ioctl, binder_event_ioctl_done, binder_event_transaction,
+    binder_event_transaction_received, binder_event_write_read, binder_transaction_data,
 };
 use crate::binder::{binder_command, binder_ioctl, binder_write_read};
 use crate::errors::ToAnyhow;
 use anyhow::Context;
+use binrw::binrw;
 use num::FromPrimitive;
 use num_derive::FromPrimitive;
 use plain::Plain;
@@ -19,6 +20,8 @@ unsafe impl Plain for binder_event {}
 unsafe impl Plain for binder_write_read {}
 unsafe impl Plain for binder_event_write_read {}
 unsafe impl Plain for binder_event_ioctl_done {}
+unsafe impl Plain for binder_event_transaction {}
+unsafe impl Plain for binder_event_transaction_received {}
 
 #[derive(Debug, FromPrimitive)]
 #[allow(non_camel_case_types)]
@@ -40,11 +43,43 @@ pub enum BinderProcessState {
 }
 
 #[derive(Debug)]
+pub struct BinderEventTransaction {
+    debug_id: i32,
+    target_node: i32,
+    to_proc: i32,
+    to_thread: i32,
+    reply: i32,
+    code: u32,
+    flags: u32,
+}
+
+impl From<&binder_event_transaction> for BinderEventTransaction {
+    fn from(value: &binder_event_transaction) -> Self {
+        Self {
+            debug_id: value.debug_id,
+            target_node: value.target_node,
+            to_proc: value.to_proc,
+            to_thread: value.to_thread,
+            reply: value.reply,
+            code: value.code,
+            flags: value.flags,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct BinderEventTransactionReceived {
+    debug_id: i32,
+}
+
+#[derive(Debug)]
 pub enum BinderEventData {
     BinderInvalidate,
     BinderIoctl(BinderEventIoctl),
     BinderWriteRead(BinderEventWriteRead),
     BinderIoctlDone(i32),
+    BinderTransaction(BinderEventTransaction),
+    BinderTransactionReceived(BinderEventTransactionReceived),
     BinderInvalidateProcess,
 }
 
@@ -77,12 +112,26 @@ impl TryFrom<&[u8]> for BinderEvent {
                 BinderEventData::BinderIoctl(BinderEventIoctl::try_from(raw_ioctl_event)?)
             }
             BinderProcessState::BINDER_COMMAND => todo!(),
-            BinderProcessState::BINDER_TXN => todo!(),
+            BinderProcessState::BINDER_TXN => {
+                let data = &value[HEADER_SIZE..];
+                let raw_event: &binder_event_transaction = plain::from_bytes(data)
+                    .map_err(|err| err.to_anyhow("Failed to parse binder_event_transaction"))?;
+                BinderEventData::BinderTransaction(BinderEventTransaction::from(raw_event))
+            }
             BinderProcessState::BINDER_WRITE_DONE => todo!(),
             BinderProcessState::BINDER_WAIT_FOR_WORK => todo!(),
             BinderProcessState::BINDER_RETURN => todo!(),
             BinderProcessState::BINDER_READ_DONE => todo!(),
-            BinderProcessState::BINDER_TXN_RECEIVED => todo!(),
+            BinderProcessState::BINDER_TXN_RECEIVED => {
+                let data = &value[HEADER_SIZE..];
+                let raw_event: &binder_event_transaction_received = plain::from_bytes(data)
+                    .map_err(|err| {
+                        err.to_anyhow("Failed to parse binder_event_transaction_received")
+                    })?;
+                BinderEventData::BinderTransactionReceived(BinderEventTransactionReceived {
+                    debug_id: raw_event.debug_id,
+                })
+            }
             BinderProcessState::BINDER_IOCTL_DONE => {
                 let data = &value[HEADER_SIZE..];
                 let raw_ioctl_done_event: &binder_event_ioctl_done = plain::from_bytes(data)

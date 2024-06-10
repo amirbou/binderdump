@@ -12,7 +12,9 @@ name = "binderdump"
 path = "src/bin.rs"
 
 [dependencies]
+android_system_properties = "0.1.5"
 anyhow = "1.0.85"
+binrw = "0.14.0"
 env_logger = "0.11.3"
 libc = "0.2.155"
 log = "0.4.21"
@@ -20,6 +22,7 @@ nix = { version = "0.29.0", features = ["ioctl"] }
 num = "0.4"
 num-derive = "0.4"
 num-traits = "0.2"
+pcap-file = "2.0.0"
 plain = "0.2"
 pretty-hex = "0.4.1"
 procfs = { version = "0.16.0", default-features = false }

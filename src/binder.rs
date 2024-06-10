@@ -5,6 +5,7 @@ pub mod binder_command;
 pub mod binder_return;
 mod gen;
 mod transaction;
+use binrw::binrw;
 pub use gen::{binder_write_read, BINDER_CURRENT_PROTOCOL_VERSION};
 use nix::{request_code_readwrite, request_code_write};
 use num_derive;
@@ -43,6 +44,8 @@ pub enum binder_buffer_flag {
 #[derive(Debug, FromPrimitive)]
 #[allow(non_camel_case_types)]
 #[repr(i32)]
+#[binrw]
+#[brw(repr(i32))]
 pub enum binder_ioctl {
     BINDER_WRITE_READ = request_code_readwrite!('b', 1, size_of::<gen::binder_write_read>()),
     BINDER_SET_IDLE_TIMEOUT = request_code_write!('b', 3, size_of::<i64>()),
