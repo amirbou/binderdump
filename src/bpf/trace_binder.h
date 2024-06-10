@@ -1,3 +1,4 @@
+#include <inttypes.h>
 #include <stdbool.h>
 #include <sys/types.h>
 
@@ -78,6 +79,18 @@ struct trace_event_raw_binder_transaction {
 struct trace_event_raw_binder_transaction_received {
     struct trace_entry ent;
     int debug_id;
+    char __data[0];
+};
+
+struct trace_event_raw_binder_command {
+    struct trace_entry ent;
+    uint32_t cmd;
+    char __data[0];
+};
+
+struct trace_event_raw_binder_return {
+    struct trace_entry ent;
+    uint32_t cmd;
     char __data[0];
 };
 

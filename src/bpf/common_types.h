@@ -56,3 +56,17 @@ struct binder_event_write_read {
     struct binder_write_read bwr;
     char data[];
 };
+
+struct binder_event_transaction {
+    int debug_id;
+    int target_node;
+    int to_proc;
+    int to_thread;
+    int reply;
+    unsigned int code;
+    unsigned int flags;
+};
+
+struct binder_event_transaction_received {
+    int debug_id;
+};

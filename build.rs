@@ -22,7 +22,7 @@ fn bindgen_generate(src: &path::Path, dst: &path::Path) {
 }
 
 fn bind_binder() {
-    let src = path::PathBuf::from("binder_wrapper.h");
+    let src = path::PathBuf::from("src/binder/binder_wrapper.h");
     let dst = path::PathBuf::from("binder_gen.rs");
     bindgen_generate(&src, &dst);
 }
@@ -41,6 +41,7 @@ fn build_bpf_program(path: &path::Path, out_dir: &path::Path) {
 
     SkeletonBuilder::new()
         .source(path)
+        .clang_args(["-std=gnu11"])
         .build_and_generate(&out)
         .unwrap();
 }

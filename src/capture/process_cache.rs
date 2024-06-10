@@ -1,13 +1,16 @@
 use anyhow::{anyhow, Result};
+use binrw::binrw;
 use log::trace;
 use procfs;
 use std::collections::{hash_map::Entry, HashMap};
 use std::path::Path;
 
-enum BinderType {
-    BINDER,
-    HWBINDER,
-    VNDBINDER,
+#[binrw]
+#[brw(repr(u8))]
+pub enum BinderType {
+    BINDER = 0,
+    HWBINDER = 1,
+    VNDBINDER = 2,
 }
 
 impl TryFrom<std::path::PathBuf> for BinderType {

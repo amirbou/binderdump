@@ -258,8 +258,7 @@ static __always_inline int do_binder_write_read(pid_t tid, pid_t pid,
 
     if (bpf_probe_read_user(&buffer->bwr, sizeof(buffer->bwr), (const void *)ioctl_ctx->arg)) {
         LOG("bwr: failed to read BINDER_WRITE_READ arg from user addr: %p (is_done %d)\n",
-            (const void *)ioctl_ctx->arg),
-            is_done;
+            (const void *)ioctl_ctx->arg, is_done);
         __builtin_memset(&buffer->bwr, 0, sizeof(buffer->bwr));
         return -1;
     }
@@ -368,15 +367,65 @@ int binder_command(struct trace_event_raw_binder_command *ctx) {
 
 SEC("tp/binder/binder_transaction")
 int binder_transaction(struct trace_event_raw_binder_transaction *ctx) {
-    pid_t tid = GET_TID();
+    __u64 task_id = bpf_get_current_pid_tgid();
+    pid_t pid = task_id >> 32;
+    pid_t tid = task_id & 0xffffffff;
+    struct binder_event *event = NULL;
+    struct binder_event_transaction *txn_event = NULL;
     do_transition(tid, BINDER_TXN);
+
+    event = bpf_ringbuf_reserve(&binder_events_buffer,
+                                sizeof(*event) + sizeof(struct binder_event_transaction), 0);
+    if (!event) {
+        LOG("Failed to reserved txn event\n");
+        return 0;
+    }
+    event->type = BINDER_TXN;
+    event->pid = pid;
+    event->tid = tid;
+    event->timestamp = bpf_ktime_get_boot_ns();
+
+    txn_event = (struct binder_event_transaction *)(event + 1);
+    txn_event->debug_id = ctx->debug_id;
+    txn_event->target_node = ctx->target_node;
+    txn_event->to_proc = ctx->to_proc;
+    txn_event->to_thread = ctx->to_thread;
+    txn_event->reply = ctx->reply;
+    txn_event->code = ctx->code;
+    txn_event->flags = ctx->flags;
+
+    bpf_ringbuf_submit(event, 0);
+
     return 0;
 }
 
 SEC("tp/binder/binder_transaction_received")
 int binder_transaction_received(struct trace_event_raw_binder_transaction_received *ctx) {
-    pid_t tid = GET_TID();
+
+    __u64 task_id = bpf_get_current_pid_tgid();
+    pid_t pid = task_id >> 32;
+    pid_t tid = task_id & 0xffffffff;
+    struct binder_event *event = NULL;
+    struct binder_event_transaction_received *txn_event = NULL;
     do_transition(tid, BINDER_TXN_RECEIVED);
+
+    event =
+        bpf_ringbuf_reserve(&binder_events_buffer,
+                            sizeof(*event) + sizeof(struct binder_event_transaction_received), 0);
+    if (!event) {
+        LOG("Failed to reserved txn event\n");
+        return 0;
+    }
+    event->type = BINDER_TXN_RECEIVED;
+    event->pid = pid;
+    event->tid = tid;
+    event->timestamp = bpf_ktime_get_boot_ns();
+
+    txn_event = (struct binder_event_transaction_received *)(event + 1);
+    txn_event->debug_id = ctx->debug_id;
+
+    bpf_ringbuf_submit(event, 0);
+
     return 0;
 }
 
