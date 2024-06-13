@@ -120,6 +120,16 @@ impl BinderCommand {
         };
         4 + inner_size
     }
+
+    pub fn is_transaction(&self) -> bool {
+        match self {
+            BinderCommand::TransactionSg(_)
+            | BinderCommand::ReplySg(_)
+            | BinderCommand::Transaction(_)
+            | BinderCommand::Reply(_) => true,
+            _ => false,
+        }
+    }
 }
 
 impl BinderCommand {

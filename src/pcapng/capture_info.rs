@@ -29,7 +29,9 @@ impl CaptureInfo {
             .context("Failed to getprop device fingerprint")?;
 
         let mut kernel_version = String::new();
-        File::open("/proc/vesrion")?.read_to_string(&mut kernel_version)?;
+        File::open("/proc/version")
+            .context("Failed to open /proc/version")?
+            .read_to_string(&mut kernel_version)?;
 
         let capture_app = concat!("binderdump (version ", env!("CARGO_PKG_VERSION"), ")");
 

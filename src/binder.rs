@@ -41,7 +41,7 @@ pub enum binder_buffer_flag {
     HAS_PARENT = gen::BINDER_BUFFER_FLAG_HAS_PARENT,
 }
 
-#[derive(Debug, FromPrimitive)]
+#[derive(Debug, FromPrimitive, Clone, Copy, PartialEq, Eq, Default)]
 #[allow(non_camel_case_types)]
 #[repr(i32)]
 #[binrw]
@@ -53,6 +53,7 @@ pub enum binder_ioctl {
     BINDER_SET_IDLE_PRIORITY = request_code_write!('b', 6, size_of::<i32>()),
     BINDER_SET_CONTEXT_MGR = request_code_write!('b', 7, size_of::<i32>()),
     BINDER_THREAD_EXIT = request_code_write!('b', 8, size_of::<i32>()),
+    #[default]
     BINDER_VERSION = request_code_readwrite!('b', 9, size_of::<gen::binder_version>()),
     BINDER_GET_NODE_DEBUG_INFO =
         request_code_readwrite!('b', 11, size_of::<gen::binder_node_debug_info>()),

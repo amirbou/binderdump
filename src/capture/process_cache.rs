@@ -7,7 +7,9 @@ use std::path::Path;
 
 #[binrw]
 #[brw(repr(u8))]
+#[derive(Default, Clone, Copy)]
 pub enum BinderType {
+    #[default]
     BINDER = 0,
     HWBINDER = 1,
     VNDBINDER = 2,
@@ -61,6 +63,19 @@ impl ProcessInfo {
         }
         if self.vndbinder_fd.is_some_and(|x| fd == x) {
             return Some("/dev/vndbinder");
+        }
+        None
+    }
+
+    pub fn get_binder_type(&self, fd: i32) -> Option<BinderType> {
+        if self.binder_fd.is_some_and(|x| fd == x) {
+            return Some(BinderType::BINDER);
+        }
+        if self.hwbinder_fd.is_some_and(|x| fd == x) {
+            return Some(BinderType::HWBINDER);
+        }
+        if self.vndbinder_fd.is_some_and(|x| fd == x) {
+            return Some(BinderType::VNDBINDER);
         }
         None
     }
