@@ -60,8 +60,9 @@ impl<W: Write> PacketGenerator<W> {
                 snaplen: 0,
                 options: vec![
                     InterfaceDescriptionOption::IfName(interface.into()),
-                    // seems like the pcapng library implicitly uses nanoseconds when writing Duration to a packet block,
+                    // seems like the pcap-file library implicitly uses nanoseconds when writing Duration to a packet block,
                     // so we tell wireshark about it
+                    // this seems to be fixed pcap-file 3.0.0-rc1
                     InterfaceDescriptionOption::IfTsResol(0x9),
                 ],
             };

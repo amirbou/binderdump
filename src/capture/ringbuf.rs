@@ -1,6 +1,7 @@
 // will handle ringbuf polling and comsuming
 use super::{events, tracepoints::binder::BinderSkel};
-use anyhow::Result;
+use anyhow::{Context, Result};
+use ctrlc;
 use libbpf_rs::RingBufferBuilder;
 use log::{error, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -62,10 +63,28 @@ pub fn create_events_channel(skel: &mut BinderSkel) -> Result<EventChannel> {
     let running_copy = running.clone();
     let thread = std::thread::spawn(move || {
         while running_copy.load(Ordering::Relaxed) {
-            events_buffer.poll(Duration::from_millis(10)).unwrap();
+            match events_buffer.poll(Duration::from_millis(10)) {
+                Ok(_) => (),
+                Err(err) => match err.kind() {
+                    libbpf_rs::ErrorKind::Interrupted => (),
+                    _ => panic!("error polling ringbuf: {}", err),
+                },
+            }
         }
         println!("Events thread exiting...");
     });
+    let running_copy = running.clone();
+    ctrlc::set_handler(move || {
+        if running_copy.load(Ordering::Relaxed) {
+            running_copy.store(false, Ordering::Relaxed);
+            // if we get sighup, eprintln! will panic
+            eprintln!("Ctrl-C received, exiting cleanly...");
+        } else {
+            eprintln!("Second Ctrl-C received, exiting immediately!");
+            std::process::exit(1);
+        }
+    })
+    .context("failed to set ctrlc handler")?;
     Ok(EventChannel {
         consumer_thread: Some(thread),
         running: running,
