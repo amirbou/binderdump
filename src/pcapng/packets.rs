@@ -35,6 +35,7 @@ pub struct PacketGenerator<W: Write> {
     pcap_writer: PcapNgWriter<W>,
     process_cache: process_cache::ProcessCache,
     events_aggregator: Option<EventsAggregator>,
+    timeshift: Duration,
 }
 
 impl<W: Write> PacketGenerator<W> {
@@ -57,7 +58,12 @@ impl<W: Write> PacketGenerator<W> {
             let interface_block = interface_description::InterfaceDescriptionBlock {
                 linktype: DataLink::WIRESHARK_UPPER_PDU,
                 snaplen: 0,
-                options: vec![InterfaceDescriptionOption::IfName(interface.into())],
+                options: vec![
+                    InterfaceDescriptionOption::IfName(interface.into()),
+                    // seems like the pcapng library implicitly uses nanoseconds when writing Duration to a packet block,
+                    // so we tell wireshark about it
+                    InterfaceDescriptionOption::IfTsResol(0x9),
+                ],
             };
 
             pcap_writer.write_pcapng_block(interface_block)?;
@@ -67,6 +73,7 @@ impl<W: Write> PacketGenerator<W> {
             pcap_writer,
             process_cache: ProcessCache::new(),
             events_aggregator: Some(EventsAggregator::new(channel)),
+            timeshift: capture_info.get_timeshift().clone(),
         })
     }
 
@@ -108,7 +115,7 @@ impl<W: Write> PacketGenerator<W> {
 
     pub fn handle_events(&mut self, events: Vec<BinderEvent>) -> Result<EventProtocol> {
         let last_event = events.last().context("empty events vector")?;
-        let timestamp = events.first().context("empty events vector")?.timestamp;
+        let timestamp = last_event.timestamp;
         let pid = last_event.pid;
         let tid = last_event.tid;
 
@@ -174,7 +181,7 @@ impl<W: Write> PacketGenerator<W> {
 
         let packet = EnhancedPacketBlock {
             interface_id: proto.binder_type() as u32,
-            timestamp: Duration::from_nanos(proto.timestamp()),
+            timestamp: Duration::from_nanos(proto.timestamp()) + self.timeshift,
             original_len: data.len() as u32,
             data: data.into(),
             options: vec![],

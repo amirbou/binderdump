@@ -225,7 +225,7 @@ int sched_process_exit(const struct trace_event_raw_sched_process_template *ctx)
     event->type = BINDER_INVALIDATE_PROCESS;
     event->pid = pid;
     event->tid = tid;
-    event->timestamp = 0;
+    event->timestamp = bpf_ktime_get_boot_ns();
     bpf_ringbuf_submit(event, 0);
 
     return 0;
@@ -372,7 +372,9 @@ int binder_transaction(struct trace_event_raw_binder_transaction *ctx) {
     pid_t tid = task_id & 0xffffffff;
     struct binder_event *event = NULL;
     struct binder_event_transaction *txn_event = NULL;
-    do_transition(tid, BINDER_TXN);
+    if (do_transition(tid, BINDER_TXN)) {
+        return 0;
+    }
 
     event = bpf_ringbuf_reserve(&binder_events_buffer,
                                 sizeof(*event) + sizeof(struct binder_event_transaction), 0);
@@ -407,7 +409,9 @@ int binder_transaction_received(struct trace_event_raw_binder_transaction_receiv
     pid_t tid = task_id & 0xffffffff;
     struct binder_event *event = NULL;
     struct binder_event_transaction_received *txn_event = NULL;
-    do_transition(tid, BINDER_TXN_RECEIVED);
+    if (do_transition(tid, BINDER_TXN_RECEIVED)) {
+        return 0;
+    }
 
     event =
         bpf_ringbuf_reserve(&binder_events_buffer,

@@ -1,7 +1,8 @@
-use std::{fs::File, io::Read};
+use std::{fs::File, io::Read, time::Duration};
 
 use android_system_properties::AndroidSystemProperties;
 use anyhow::{Context, Result};
+use nix;
 
 #[derive(Debug)]
 pub struct CaptureInfo {
@@ -10,6 +11,7 @@ pub struct CaptureInfo {
     fingerprint: String,
     kernel_version: String,
     capture_app: &'static str,
+    timeshift: Duration,
 }
 
 impl CaptureInfo {
@@ -35,12 +37,20 @@ impl CaptureInfo {
 
         let capture_app = concat!("binderdump (version ", env!("CARGO_PKG_VERSION"), ")");
 
+        let real_clock = nix::time::clock_gettime(nix::time::ClockId::CLOCK_REALTIME)
+            .context("failed to get CLOCK_REALTIME")?;
+        let boot_clock = nix::time::clock_gettime(nix::time::ClockId::CLOCK_BOOTTIME)
+            .context("failed to get CLOCK_BOOTTIME")?;
+
+        let timeshift = real_clock - boot_clock;
+
         Ok(Self {
             model,
             os,
             fingerprint,
             kernel_version,
             capture_app,
+            timeshift: timeshift.into(),
         })
     }
 
@@ -62,5 +72,9 @@ impl CaptureInfo {
 
     pub fn get_capture_app(&self) -> &'static str {
         self.capture_app
+    }
+
+    pub fn get_timeshift(&self) -> &Duration {
+        &self.timeshift
     }
 }
