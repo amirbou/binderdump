@@ -4,6 +4,7 @@
 mod bwr_layer;
 mod capture_info;
 mod event_layer;
+mod events_aggregator;
 mod link_layer;
 pub mod packets;
 mod transaction_layer;

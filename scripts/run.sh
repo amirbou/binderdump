@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 set -e
 EXE="$1"
 
@@ -8,4 +8,5 @@ if [ $# -ne 1 ]; then
 fi
 
 adb push $EXE /data/local/tmp
-exec adb shell /data/local/tmp/$(basename $1)
+trap "adb pull /data/local/tmp/out.pcapng /mnt/d/pcaps" EXIT
+adb shell RUST_BACKTRACE=$RUST_BACKTRACE /data/local/tmp/$(basename $1)
