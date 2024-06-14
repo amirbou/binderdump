@@ -1,12 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use backtrace::{self, Backtrace};
 use binderdump::binder::{binder_command::BinderCommand, binder_return::BinderReturn};
-use binderdump::capture::events::{
-    BinderEventData, BinderEventWriteRead, BinderEventWriteReadData,
-};
-use binderdump::capture::process_cache::ProcessCache;
+use binderdump::capture::events::BinderEventWriteReadData;
 use binderdump::capture::ringbuf::create_events_channel;
 use binderdump::capture::tracepoints::attach_tracepoints;
 use binderdump::pcapng::packets;
