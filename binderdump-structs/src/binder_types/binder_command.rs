@@ -1,9 +1,7 @@
-use super::{
-    gen,
-    transaction::{Transaction, TransactionSg},
-};
+use super::transaction::{Transaction, TransactionSg};
 use crate::errors::ToAnyhow;
 use anyhow::Context;
+use binderdump_sys;
 use num::FromPrimitive;
 use num_derive;
 use num_derive::FromPrimitive;
@@ -14,26 +12,27 @@ use std::mem::size_of;
 #[allow(non_camel_case_types)]
 #[repr(u32)]
 pub enum binder_command {
-    BC_TRANSACTION = gen::binder_driver_command_protocol_BC_TRANSACTION,
-    BC_REPLY = gen::binder_driver_command_protocol_BC_REPLY,
-    BC_ACQUIRE_RESULT = gen::binder_driver_command_protocol_BC_ACQUIRE_RESULT,
-    BC_FREE_BUFFER = gen::binder_driver_command_protocol_BC_FREE_BUFFER,
-    BC_INCREFS = gen::binder_driver_command_protocol_BC_INCREFS,
-    BC_ACQUIRE = gen::binder_driver_command_protocol_BC_ACQUIRE,
-    BC_RELEASE = gen::binder_driver_command_protocol_BC_RELEASE,
-    BC_DECREFS = gen::binder_driver_command_protocol_BC_DECREFS,
-    BC_INCREFS_DONE = gen::binder_driver_command_protocol_BC_INCREFS_DONE,
-    BC_ACQUIRE_DONE = gen::binder_driver_command_protocol_BC_ACQUIRE_DONE,
-    BC_ATTEMPT_ACQUIRE = gen::binder_driver_command_protocol_BC_ATTEMPT_ACQUIRE,
-    BC_REGISTER_LOOPER = gen::binder_driver_command_protocol_BC_REGISTER_LOOPER,
-    BC_ENTER_LOOPER = gen::binder_driver_command_protocol_BC_ENTER_LOOPER,
-    BC_EXIT_LOOPER = gen::binder_driver_command_protocol_BC_EXIT_LOOPER,
+    BC_TRANSACTION = binderdump_sys::binder_driver_command_protocol_BC_TRANSACTION,
+    BC_REPLY = binderdump_sys::binder_driver_command_protocol_BC_REPLY,
+    BC_ACQUIRE_RESULT = binderdump_sys::binder_driver_command_protocol_BC_ACQUIRE_RESULT,
+    BC_FREE_BUFFER = binderdump_sys::binder_driver_command_protocol_BC_FREE_BUFFER,
+    BC_INCREFS = binderdump_sys::binder_driver_command_protocol_BC_INCREFS,
+    BC_ACQUIRE = binderdump_sys::binder_driver_command_protocol_BC_ACQUIRE,
+    BC_RELEASE = binderdump_sys::binder_driver_command_protocol_BC_RELEASE,
+    BC_DECREFS = binderdump_sys::binder_driver_command_protocol_BC_DECREFS,
+    BC_INCREFS_DONE = binderdump_sys::binder_driver_command_protocol_BC_INCREFS_DONE,
+    BC_ACQUIRE_DONE = binderdump_sys::binder_driver_command_protocol_BC_ACQUIRE_DONE,
+    BC_ATTEMPT_ACQUIRE = binderdump_sys::binder_driver_command_protocol_BC_ATTEMPT_ACQUIRE,
+    BC_REGISTER_LOOPER = binderdump_sys::binder_driver_command_protocol_BC_REGISTER_LOOPER,
+    BC_ENTER_LOOPER = binderdump_sys::binder_driver_command_protocol_BC_ENTER_LOOPER,
+    BC_EXIT_LOOPER = binderdump_sys::binder_driver_command_protocol_BC_EXIT_LOOPER,
     BC_REQUEST_DEATH_NOTIFICATION =
-        gen::binder_driver_command_protocol_BC_REQUEST_DEATH_NOTIFICATION,
-    BC_CLEAR_DEATH_NOTIFICATION = gen::binder_driver_command_protocol_BC_CLEAR_DEATH_NOTIFICATION,
-    BC_DEAD_BINDER_DONE = gen::binder_driver_command_protocol_BC_DEAD_BINDER_DONE,
-    BC_TRANSACTION_SG = gen::binder_driver_command_protocol_BC_TRANSACTION_SG,
-    BC_REPLY_SG = gen::binder_driver_command_protocol_BC_REPLY_SG,
+        binderdump_sys::binder_driver_command_protocol_BC_REQUEST_DEATH_NOTIFICATION,
+    BC_CLEAR_DEATH_NOTIFICATION =
+        binderdump_sys::binder_driver_command_protocol_BC_CLEAR_DEATH_NOTIFICATION,
+    BC_DEAD_BINDER_DONE = binderdump_sys::binder_driver_command_protocol_BC_DEAD_BINDER_DONE,
+    BC_TRANSACTION_SG = binderdump_sys::binder_driver_command_protocol_BC_TRANSACTION_SG,
+    BC_REPLY_SG = binderdump_sys::binder_driver_command_protocol_BC_REPLY_SG,
 }
 
 #[derive(Debug, Clone, Copy, Default)]

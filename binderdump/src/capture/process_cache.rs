@@ -1,42 +1,8 @@
 use anyhow::{anyhow, Result};
-use binrw::binrw;
+use binderdump_structs::binder_types::BinderInterface;
 use log::trace;
 use procfs;
 use std::collections::{hash_map::Entry, HashMap};
-use std::path::Path;
-
-#[binrw]
-#[brw(repr(u8))]
-#[derive(Default, Clone, Copy)]
-pub enum BinderType {
-    #[default]
-    BINDER = 0,
-    HWBINDER = 1,
-    VNDBINDER = 2,
-}
-
-impl TryFrom<std::path::PathBuf> for BinderType {
-    type Error = anyhow::Error;
-
-    fn try_from(path: std::path::PathBuf) -> std::prelude::v1::Result<Self, Self::Error> {
-        match path {
-            _ if path == Path::new("/dev/binder") || path == Path::new("/dev/binderfs/binder") => {
-                Ok(BinderType::BINDER)
-            }
-            _ if path == Path::new("/dev/hwbinder")
-                || path == Path::new("/dev/binderfs/hwbinder") =>
-            {
-                Ok(BinderType::HWBINDER)
-            }
-            _ if path == Path::new("/dev/vndbinder")
-                || path == Path::new("/dev/binderfs/vndbinder") =>
-            {
-                Ok(BinderType::VNDBINDER)
-            }
-            _ => Err(anyhow!("Not a binder path")),
-        }
-    }
-}
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 struct ProcessKey {
@@ -67,15 +33,15 @@ impl ProcessInfo {
         None
     }
 
-    pub fn get_binder_type(&self, fd: i32) -> Option<BinderType> {
+    pub fn get_binder_interface(&self, fd: i32) -> Option<BinderInterface> {
         if self.binder_fd.is_some_and(|x| fd == x) {
-            return Some(BinderType::BINDER);
+            return Some(BinderInterface::BINDER);
         }
         if self.hwbinder_fd.is_some_and(|x| fd == x) {
-            return Some(BinderType::HWBINDER);
+            return Some(BinderInterface::HWBINDER);
         }
         if self.vndbinder_fd.is_some_and(|x| fd == x) {
-            return Some(BinderType::VNDBINDER);
+            return Some(BinderInterface::VNDBINDER);
         }
         None
     }
@@ -119,7 +85,7 @@ impl ProcessCache {
             }
             let fd = fd.unwrap();
             let binder_type = match fd.target {
-                procfs::process::FDTarget::Path(path) => BinderType::try_from(path).ok(),
+                procfs::process::FDTarget::Path(path) => BinderInterface::try_from(path).ok(),
                 _ => None,
             };
             if binder_type.is_none() {
@@ -127,9 +93,9 @@ impl ProcessCache {
             }
             // TODO - check that there is only one fd of each type / support multiple fds (does anybody do that?)
             match binder_type.unwrap() {
-                BinderType::BINDER => proc_info.binder_fd = Some(fd.fd),
-                BinderType::HWBINDER => proc_info.hwbinder_fd = Some(fd.fd),
-                BinderType::VNDBINDER => proc_info.vndbinder_fd = Some(fd.fd),
+                BinderInterface::BINDER => proc_info.binder_fd = Some(fd.fd),
+                BinderInterface::HWBINDER => proc_info.hwbinder_fd = Some(fd.fd),
+                BinderInterface::VNDBINDER => proc_info.vndbinder_fd = Some(fd.fd),
             }
             if proc_info.binder_fd.is_some()
                 && proc_info.hwbinder_fd.is_some()

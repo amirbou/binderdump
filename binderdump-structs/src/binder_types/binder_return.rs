@@ -1,7 +1,7 @@
-use super::gen;
 use super::transaction::{binder_transaction_data, Transaction};
 use crate::errors::ToAnyhow;
 use anyhow::{Context, Error};
+use binderdump_sys;
 use num::FromPrimitive;
 use num_derive;
 use num_derive::FromPrimitive;
@@ -12,28 +12,28 @@ use std::mem::size_of;
 #[allow(non_camel_case_types)]
 #[repr(u32)]
 pub enum binder_return {
-    BR_ERROR = gen::binder_driver_return_protocol_BR_ERROR,
-    BR_OK = gen::binder_driver_return_protocol_BR_OK,
-    BR_TRANSACTION_SEC_CTX = gen::binder_driver_return_protocol_BR_TRANSACTION_SEC_CTX,
-    BR_TRANSACTION = gen::binder_driver_return_protocol_BR_TRANSACTION,
-    BR_REPLY = gen::binder_driver_return_protocol_BR_REPLY,
-    BR_ACQUIRE_RESULT = gen::binder_driver_return_protocol_BR_ACQUIRE_RESULT,
-    BR_DEAD_REPLY = gen::binder_driver_return_protocol_BR_DEAD_REPLY,
-    BR_TRANSACTION_COMPLETE = gen::binder_driver_return_protocol_BR_TRANSACTION_COMPLETE,
-    BR_INCREFS = gen::binder_driver_return_protocol_BR_INCREFS,
-    BR_ACQUIRE = gen::binder_driver_return_protocol_BR_ACQUIRE,
-    BR_RELEASE = gen::binder_driver_return_protocol_BR_RELEASE,
-    BR_DECREFS = gen::binder_driver_return_protocol_BR_DECREFS,
-    BR_ATTEMPT_ACQUIRE = gen::binder_driver_return_protocol_BR_ATTEMPT_ACQUIRE,
-    BR_NOOP = gen::binder_driver_return_protocol_BR_NOOP,
-    BR_SPAWN_LOOPER = gen::binder_driver_return_protocol_BR_SPAWN_LOOPER,
-    BR_FINISHED = gen::binder_driver_return_protocol_BR_FINISHED,
-    BR_DEAD_BINDER = gen::binder_driver_return_protocol_BR_DEAD_BINDER,
+    BR_ERROR = binderdump_sys::binder_driver_return_protocol_BR_ERROR,
+    BR_OK = binderdump_sys::binder_driver_return_protocol_BR_OK,
+    BR_TRANSACTION_SEC_CTX = binderdump_sys::binder_driver_return_protocol_BR_TRANSACTION_SEC_CTX,
+    BR_TRANSACTION = binderdump_sys::binder_driver_return_protocol_BR_TRANSACTION,
+    BR_REPLY = binderdump_sys::binder_driver_return_protocol_BR_REPLY,
+    BR_ACQUIRE_RESULT = binderdump_sys::binder_driver_return_protocol_BR_ACQUIRE_RESULT,
+    BR_DEAD_REPLY = binderdump_sys::binder_driver_return_protocol_BR_DEAD_REPLY,
+    BR_TRANSACTION_COMPLETE = binderdump_sys::binder_driver_return_protocol_BR_TRANSACTION_COMPLETE,
+    BR_INCREFS = binderdump_sys::binder_driver_return_protocol_BR_INCREFS,
+    BR_ACQUIRE = binderdump_sys::binder_driver_return_protocol_BR_ACQUIRE,
+    BR_RELEASE = binderdump_sys::binder_driver_return_protocol_BR_RELEASE,
+    BR_DECREFS = binderdump_sys::binder_driver_return_protocol_BR_DECREFS,
+    BR_ATTEMPT_ACQUIRE = binderdump_sys::binder_driver_return_protocol_BR_ATTEMPT_ACQUIRE,
+    BR_NOOP = binderdump_sys::binder_driver_return_protocol_BR_NOOP,
+    BR_SPAWN_LOOPER = binderdump_sys::binder_driver_return_protocol_BR_SPAWN_LOOPER,
+    BR_FINISHED = binderdump_sys::binder_driver_return_protocol_BR_FINISHED,
+    BR_DEAD_BINDER = binderdump_sys::binder_driver_return_protocol_BR_DEAD_BINDER,
     BR_CLEAR_DEATH_NOTIFICATION_DONE =
-        gen::binder_driver_return_protocol_BR_CLEAR_DEATH_NOTIFICATION_DONE,
-    BR_FAILED_REPLY = gen::binder_driver_return_protocol_BR_FAILED_REPLY,
-    BR_FROZEN_REPLY = gen::binder_driver_return_protocol_BR_FROZEN_REPLY,
-    BR_ONEWAY_SPAM_SUSPECT = gen::binder_driver_return_protocol_BR_ONEWAY_SPAM_SUSPECT,
+        binderdump_sys::binder_driver_return_protocol_BR_CLEAR_DEATH_NOTIFICATION_DONE,
+    BR_FAILED_REPLY = binderdump_sys::binder_driver_return_protocol_BR_FAILED_REPLY,
+    BR_FROZEN_REPLY = binderdump_sys::binder_driver_return_protocol_BR_FROZEN_REPLY,
+    BR_ONEWAY_SPAM_SUSPECT = binderdump_sys::binder_driver_return_protocol_BR_ONEWAY_SPAM_SUSPECT,
 }
 
 #[derive(Debug, Clone, Copy, Default)]

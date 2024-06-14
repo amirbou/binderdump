@@ -1,22 +1,22 @@
+use super::builders::{EventProtocolBuilder, IoctlProtocolBuilder};
 use super::capture_info::CaptureInfo;
-use super::event_layer::{EventProtocol, EventType, IoctlProtocol};
 use super::events_aggregator::EventsAggregator;
-use super::link_layer;
-use crate::binder::binder_command::BinderCommand;
-use crate::binder::binder_return::BinderReturn;
 use crate::capture::events::BinderEventWriteRead;
 use crate::capture::events::{BinderEvent, BinderEventData};
-use crate::capture::process_cache;
 use crate::capture::process_cache::ProcessCache;
 use crate::capture::ringbuf::EventChannel;
 use anyhow::{Context, Result};
+use binderdump_structs::binder_types::{
+    binder_command::BinderCommand, binder_return::BinderReturn,
+};
+use binderdump_structs::event_layer::{EventProtocol, EventType};
+use binderdump_structs::link_layer;
 use binrw::BinWrite;
 use log::error;
-use pcap_file::pcapng::blocks::enhanced_packet::EnhancedPacketBlock;
-use pcap_file::pcapng::blocks::interface_description;
-use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionOption;
 use pcap_file::pcapng::{
     blocks::{
+        enhanced_packet::EnhancedPacketBlock,
+        interface_description::{InterfaceDescriptionBlock, InterfaceDescriptionOption},
         section_header::{SectionHeaderBlock, SectionHeaderOption},
         PcapNgBlock,
     },
@@ -29,7 +29,7 @@ use yansi::Paint;
 
 pub struct PacketGenerator<W: Write> {
     pcap_writer: PcapNgWriter<W>,
-    process_cache: process_cache::ProcessCache,
+    process_cache: ProcessCache,
     events_aggregator: Option<EventsAggregator>,
     timeshift: Duration,
 }
@@ -51,7 +51,7 @@ impl<W: Write> PacketGenerator<W> {
         let mut pcap_writer = PcapNgWriter::with_section_header(writer, header)?;
 
         for interface in ["/dev/binder", "/dev/hwbinder", "/dev/vndbinder"] {
-            let interface_block = interface_description::InterfaceDescriptionBlock {
+            let interface_block = InterfaceDescriptionBlock {
                 linktype: DataLink::WIRESHARK_UPPER_PDU,
                 snaplen: 0,
                 options: vec![
@@ -100,7 +100,7 @@ impl<W: Write> PacketGenerator<W> {
 
     fn handle_invalidate_process(&mut self, event: &BinderEvent) -> Result<EventProtocol> {
         let info = self.process_cache.invalidate_proc(event.pid, event.tid);
-        let mut builder = EventProtocol::builder(event.timestamp, event.pid, event.tid)
+        let mut builder = EventProtocolBuilder::new(event.timestamp, event.pid, event.tid)
             .event_type(EventType::DeadProcess);
         if let Some(info) = info {
             builder = builder
@@ -120,8 +120,8 @@ impl<W: Write> PacketGenerator<W> {
             return self.handle_invalidate_process(last_event);
         }
 
-        let mut builder = EventProtocol::builder(timestamp, pid, tid);
-        let mut ioctl_builder = IoctlProtocol::builder();
+        let mut builder = EventProtocolBuilder::new(timestamp, pid, tid);
+        let mut ioctl_builder = IoctlProtocolBuilder::default();
         let mut comm: Option<String> = None;
 
         for event in events {
@@ -161,8 +161,8 @@ impl<W: Write> PacketGenerator<W> {
         };
 
         let ioctl = ioctl_builder.build();
-        if let Some(binder_type) = info.get_binder_type(ioctl.fd()) {
-            builder = builder.binder_type(binder_type);
+        if let Some(binder_interface) = info.get_binder_interface(ioctl.fd()) {
+            builder = builder.binder_interface(binder_interface);
         }
         builder
             .cmdline(info.get_cmdline().into())
@@ -177,7 +177,7 @@ impl<W: Write> PacketGenerator<W> {
         let data = cursor.into_inner();
 
         let packet = EnhancedPacketBlock {
-            interface_id: proto.binder_type() as u32,
+            interface_id: proto.binder_interface() as u32,
             timestamp: Duration::from_nanos(proto.timestamp()) + self.timeshift,
             original_len: data.len() as u32,
             data: data.into(),

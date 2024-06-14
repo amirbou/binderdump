@@ -21,12 +21,6 @@ fn bindgen_generate(src: &path::Path, dst: &path::Path) {
     ));
 }
 
-fn bind_binder() {
-    let src = path::PathBuf::from("src/binder/binder_wrapper.h");
-    let dst = path::PathBuf::from("binder_gen.rs");
-    bindgen_generate(&src, &dst);
-}
-
 fn bind_common_types() {
     let src = path::PathBuf::from("src/bpf/common_types.h");
     let dst = path::PathBuf::from("common_types.rs");
@@ -63,7 +57,6 @@ fn build_bpf() {
 }
 
 fn main() {
-    bind_binder();
     bind_common_types();
     build_bpf();
 }

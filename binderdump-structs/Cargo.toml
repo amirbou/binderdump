@@ -1,0 +1,14 @@
+[package]
+name = "binderdump-structs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.86"
+binrw = "0.14.0"
+binderdump-sys = { path = "../binderdump-sys" }
+num = "0.4"
+num-derive = "0.4"
+num-traits = "0.2"
+nix = { version = "0.29.0", features = ["ioctl"] }
+plain = "0.2"

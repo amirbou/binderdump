@@ -146,6 +146,8 @@ dependencies = [
  "android_system_properties",
  "anyhow",
  "backtrace",
+ "binderdump-structs",
+ "binderdump-sys",
  "bindgen",
  "binrw",
  "ctrlc",
@@ -163,6 +165,28 @@ dependencies = [
  "pretty-hex",
  "procfs",
  "yansi",
+]
+
+[[package]]
+name = "binderdump-structs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "binderdump-sys",
+ "binrw",
+ "nix 0.29.0",
+ "num",
+ "num-derive",
+ "num-traits",
+ "plain",
+]
+
+[[package]]
+name = "binderdump-sys"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
+ "plain",
 ]
 
 [[package]]
