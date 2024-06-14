@@ -1,7 +1,5 @@
 use binrw::binrw;
 
-use crate::capture::events::BinderEventTransaction;
-
 #[binrw]
 #[brw(repr(u8))]
 #[derive(Default, Eq, PartialEq)]
@@ -56,9 +54,21 @@ pub struct BinderWriteReadProtocol {
 }
 
 #[binrw]
+#[derive(Debug, Clone, Default)]
+pub struct Transaction {
+    debug_id: i32,
+    target_node: i32,
+    to_proc: i32,
+    to_thread: i32,
+    reply: i32,
+    code: u32,
+    flags: u32,
+}
+
+#[binrw]
 #[derive(Default)]
 pub struct TransactionProtocol {
-    transaction: BinderEventTransaction,
+    transaction: Transaction,
     target_comm: [u8; 16],
     #[bw(calc = target_cmdline.len() as u16)]
     target_cmdline_length: u16,

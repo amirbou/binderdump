@@ -1,6 +1,6 @@
 [workspace]
 
 members = [
-    "binderdump",
+    "binderdump", "binderdump-sys", "binderdump-structs",
 ]
 resolver = "2"

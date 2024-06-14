@@ -19,7 +19,7 @@ binrw = "0.14.0"
 env_logger = "0.11.3"
 libc = "0.2.155"
 log = "0.4.21"
-nix = { version = "0.29.0", features = ["ioctl", "time"] }
+nix = { version = "0.29.0", features = ["time"] }
 num = "0.4"
 num-derive = "0.4"
 num-traits = "0.2"
@@ -29,6 +29,8 @@ pretty-hex = "0.4.1"
 procfs = { version = "0.16.0", default-features = false }
 yansi = "1.0.1"
 ctrlc = { version = "3.4.4", features = ["termination"] }
+binderdump-structs = { path = "../binderdump-structs" }
+binderdump-sys = { path = "../binderdump-sys" }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 libbpf-rs = { version = "0.23.2" }
