@@ -1,6 +1,6 @@
 use super::common_types::{
     self, binder_event, binder_event_ioctl, binder_event_ioctl_done, binder_event_transaction,
-    binder_event_transaction_received, binder_event_write_read, binder_transaction_data,
+    binder_event_transaction_received, binder_event_write_read,
 };
 use crate::binder::{binder_command, binder_ioctl, binder_return, binder_write_read};
 use crate::errors::ToAnyhow;
@@ -9,8 +9,6 @@ use binrw::binrw;
 use num::FromPrimitive;
 use num_derive::FromPrimitive;
 use plain::Plain;
-use pretty_hex::*;
-use std::result;
 use std::{
     ffi::{CStr, CString},
     fmt::Display,

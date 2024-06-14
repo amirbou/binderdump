@@ -1,11 +1,8 @@
-use std::{default, ffi::CString};
-
 use crate::{
-    binder::{binder_ioctl, binder_write_read},
+    binder::binder_ioctl,
     capture::{events::BinderEventIoctl, process_cache::BinderType},
 };
 use binrw::binrw;
-use libbpf_rs::ErrorExt;
 
 use super::bwr_layer::BinderWriteReadProtocol;
 

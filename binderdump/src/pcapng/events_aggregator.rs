@@ -1,8 +1,4 @@
-use std::{
-    collections::HashMap,
-    sync::mpsc::{RecvError, RecvTimeoutError},
-    time::Duration,
-};
+use std::{collections::HashMap, sync::mpsc::RecvTimeoutError, time::Duration};
 
 use log::{error, warn};
 
