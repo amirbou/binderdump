@@ -1,42 +1,6 @@
-[package]
-name = "binderdump"
-version = "0.1.0"
-edition = "2021"
+[workspace]
 
-[lib]
-name = "binderdump"
-path = "src/lib.rs"
-
-[[bin]]
-name = "binderdump"
-path = "src/bin.rs"
-
-[dependencies]
-android_system_properties = "0.1.5"
-anyhow = { version = "1.0.85", features = ["backtrace"] }
-backtrace = "0.3.73"
-binrw = "0.14.0"
-env_logger = "0.11.3"
-libc = "0.2.155"
-log = "0.4.21"
-nix = { version = "0.29.0", features = ["ioctl", "time"] }
-num = "0.4"
-num-derive = "0.4"
-num-traits = "0.2"
-pcap-file = "2.0.0"
-plain = "0.2"
-pretty-hex = "0.4.1"
-procfs = { version = "0.16.0", default-features = false }
-yansi = "1.0.1"
-ctrlc = { version = "3.4.4", features = ["termination"] }
-
-[target.'cfg(not(target_os = "android"))'.dependencies]
-libbpf-rs = { version = "0.23.2" }
-
-[target.'cfg(target_os = "android")'.dependencies]
-libbpf-rs = { version = "0.23.2", features = ["static"] }
-android_logger = "0.13"
-
-[build-dependencies]
-bindgen = "0.69.4"
-libbpf-cargo = "0.23.1"
+members = [
+    "binderdump",
+]
+resolver = "2"
