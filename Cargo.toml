@@ -1,6 +1,11 @@
+cargo-features = ["per-package-target"]
 [workspace]
 
 members = [
-    "binderdump", "binderdump-sys", "binderdump-structs",
+    "binderdump",
+    "binderdump-sys",
+    "binderdump-structs",
+    "binderdump-dissector",
 ]
+
 resolver = "2"

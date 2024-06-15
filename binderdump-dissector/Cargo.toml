@@ -1,8 +1,11 @@
+cargo-features = ["per-package-target"]
+
 [package]
 name = "binderdump-dissector"
 version = "0.1.0"
 edition = "2021"
 links = "wireshark"
+forced-target = "x86_64-unknown-linux-gnu"
 
 [lib]
 crate-type = ["cdylib"]
