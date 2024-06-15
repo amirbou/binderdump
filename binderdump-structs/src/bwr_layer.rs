@@ -1,3 +1,4 @@
+use crate::PosRWValue;
 use binrw::binrw;
 
 #[binrw]
@@ -34,23 +35,23 @@ impl BinderWriteReadType {
 #[binrw]
 #[derive(Default)]
 pub struct BinderWriteReadProtocol {
-    bwr_type: BinderWriteReadType,
-    write_size: u64,
-    write_consumed: u64,
-    write_buffer: u64,
-    read_size: u64,
-    read_consumed: u64,
-    read_buffer: u64,
+    bwr_type: PosRWValue<BinderWriteReadType>,
+    write_size: PosRWValue<u64>,
+    write_consumed: PosRWValue<u64>,
+    write_buffer: PosRWValue<u64>,
+    read_size: PosRWValue<u64>,
+    read_consumed: PosRWValue<u64>,
+    read_buffer: PosRWValue<u64>,
     #[brw(if(bwr_type.is_read()))]
-    #[br(count = read_consumed)]
-    read_data: Vec<u8>,
+    #[br(count = *read_consumed)]
+    read_data: PosRWValue<Vec<u8>>,
 
     #[brw(if(bwr_type.is_write()))]
-    #[br(count = write_size)]
-    write_data: Vec<u8>,
+    #[br(count = *write_size)]
+    write_data: PosRWValue<Vec<u8>>,
 
     #[brw(if(bwr_type.is_transaction()))]
-    transaction: TransactionProtocol,
+    transaction: PosRWValue<TransactionProtocol>,
 }
 
 #[binrw]
@@ -68,10 +69,10 @@ pub struct Transaction {
 #[binrw]
 #[derive(Default)]
 pub struct TransactionProtocol {
-    transaction: Transaction,
-    target_comm: [u8; 16],
-    #[bw(calc = target_cmdline.len() as u16)]
-    target_cmdline_length: u16,
-    #[br(count = target_cmdline_length)]
-    target_cmdline: Vec<u8>,
+    transaction: PosRWValue<Transaction>,
+    target_comm: PosRWValue<[u8; 16]>,
+    #[bw(calc = (target_cmdline.len() as u16).into())]
+    target_cmdline_length: PosRWValue<u16>,
+    #[br(count = *target_cmdline_length)]
+    target_cmdline: PosRWValue<Vec<u8>>,
 }
