@@ -1,11 +1,7 @@
 use crate::epan;
-use bitmask::bitmask;
 use core::slice;
 use std::{
-    default,
-    ffi::{c_int, c_void, CStr, CString},
-    ops::DerefMut,
-    os::linux::raw,
+    ffi::{c_int, CStr},
     ptr::{null, null_mut},
 };
 

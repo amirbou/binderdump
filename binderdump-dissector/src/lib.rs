@@ -1,9 +1,7 @@
 mod epan;
 mod header_fields;
-use header_fields::{HeaderField, HeaderFieldArray, ValueString};
-use lazy_static::lazy_static;
-use std::ptr::{addr_of, addr_of_mut};
-use std::sync::Mutex;
+use header_fields::{HeaderField, HeaderFieldArray};
+use std::ptr::addr_of_mut;
 use std::{
     ffi::{c_void, CStr, CString},
     os::raw::c_int,
