@@ -5,6 +5,7 @@ use binrw::binrw;
 use nix::{request_code_readwrite, request_code_write};
 use num_derive;
 use num_derive::FromPrimitive;
+use serde::Serialize;
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 pub mod binder_command;
@@ -13,7 +14,7 @@ pub mod transaction;
 
 #[binrw]
 #[brw(repr(u8))]
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, Serialize)]
 pub enum BinderInterface {
     #[default]
     BINDER = 0,
@@ -87,7 +88,7 @@ macro_rules! request_code_write_wrapper {
     };
 }
 
-#[derive(Debug, FromPrimitive, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, FromPrimitive, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[allow(non_camel_case_types)]
 #[repr(i32)]
 #[binrw]

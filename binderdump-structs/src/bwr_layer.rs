@@ -1,9 +1,9 @@
-use crate::PosRWValue;
 use binrw::binrw;
+use serde::Serialize;
 
 #[binrw]
 #[brw(repr(u8))]
-#[derive(Default, Eq, PartialEq)]
+#[derive(Default, Eq, PartialEq, Serialize)]
 pub enum BinderWriteReadType {
     #[default]
     Write = 0,
@@ -33,29 +33,29 @@ impl BinderWriteReadType {
 }
 
 #[binrw]
-#[derive(Default)]
+#[derive(Default, Serialize)]
 pub struct BinderWriteReadProtocol {
-    bwr_type: PosRWValue<BinderWriteReadType>,
-    write_size: PosRWValue<u64>,
-    write_consumed: PosRWValue<u64>,
-    write_buffer: PosRWValue<u64>,
-    read_size: PosRWValue<u64>,
-    read_consumed: PosRWValue<u64>,
-    read_buffer: PosRWValue<u64>,
+    bwr_type: BinderWriteReadType,
+    write_size: u64,
+    write_consumed: u64,
+    write_buffer: u64,
+    read_size: u64,
+    read_consumed: u64,
+    read_buffer: u64,
     #[brw(if(bwr_type.is_read()))]
-    #[br(count = *read_consumed)]
-    read_data: PosRWValue<Vec<u8>>,
+    #[br(count = read_consumed)]
+    read_data: Vec<u8>,
 
     #[brw(if(bwr_type.is_write()))]
-    #[br(count = *write_size)]
-    write_data: PosRWValue<Vec<u8>>,
+    #[br(count = write_size)]
+    write_data: Vec<u8>,
 
     #[brw(if(bwr_type.is_transaction()))]
-    transaction: PosRWValue<TransactionProtocol>,
+    transaction: TransactionProtocol,
 }
 
 #[binrw]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Transaction {
     debug_id: i32,
     target_node: i32,
@@ -67,12 +67,12 @@ pub struct Transaction {
 }
 
 #[binrw]
-#[derive(Default)]
+#[derive(Default, Serialize)]
 pub struct TransactionProtocol {
-    transaction: PosRWValue<Transaction>,
-    target_comm: PosRWValue<[u8; 16]>,
-    #[bw(calc = (target_cmdline.len() as u16).into())]
-    target_cmdline_length: PosRWValue<u16>,
-    #[br(count = *target_cmdline_length)]
-    target_cmdline: PosRWValue<Vec<u8>>,
+    transaction: Transaction,
+    target_comm: [u8; 16],
+    #[bw(calc = target_cmdline.len() as u16)]
+    target_cmdline_length: u16,
+    #[br(count = target_cmdline_length)]
+    target_cmdline: Vec<u8>,
 }
