@@ -212,11 +212,11 @@ impl<'de, R: Read> Deserializer<'de> for &mut PlainDeserializer<R> {
         visitor.visit_seq(PlainSeqDeserializer::new(self, count as usize))
     }
 
-    fn deserialize_tuple<V>(self, _len: usize, _visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_tuple<V>(self, len: usize, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: serde::de::Visitor<'de>,
     {
-        Self::todo("tuple")
+        visitor.visit_seq(PlainSeqDeserializer::new(self, len))
     }
 
     fn deserialize_tuple_struct<V>(
@@ -359,6 +359,21 @@ mod test {
         let expected = Test {
             option: Some(5),
             option2: None,
+        };
+
+        assert_eq!(super::from_bytes::<Test>(test).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_array() {
+        #[derive(serde::Deserialize, PartialEq, Eq, Debug)]
+        struct Test {
+            array: [u8; 3],
+        }
+
+        let test = b"abc";
+        let expected = Test {
+            array: [b'a', b'b', b'c'],
         };
 
         assert_eq!(super::from_bytes::<Test>(test).unwrap(), expected);

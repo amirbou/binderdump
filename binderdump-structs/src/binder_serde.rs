@@ -24,6 +24,7 @@ mod test {
         en: TestEnum,
         inner: TestInner,
         option: Option<u16>,
+        array: [u8; 2],
     }
 
     #[test]
@@ -35,6 +36,7 @@ mod test {
             en: TestEnum::ZERO,
             inner: TestInner { en: TestEnum::ONE },
             option: Some(9000),
+            array: [1, 2],
         };
 
         let bytes = super::ser::to_bytes(&test).unwrap();
@@ -46,7 +48,7 @@ mod test {
     #[test]
     fn test_des_se() {
         let bytes =
-            b"\xff\x00\x00\x00\x03\x00\x03\x02\x01\x05\x00Hello\x00\x00\x00\x00\x01\x00\x00\x00\x00";
+            b"\xff\x00\x00\x00\x03\x00\x03\x02\x01\x05\x00Hello\x00\x00\x00\x00\x01\x00\x00\x00\x00\x01\x02";
 
         let test = super::de::from_bytes::<Test>(bytes).unwrap();
         let result = super::ser::to_bytes(&test).unwrap();
