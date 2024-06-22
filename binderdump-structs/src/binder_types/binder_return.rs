@@ -36,11 +36,13 @@ pub enum binder_return {
     BR_ONEWAY_SPAM_SUSPECT = binderdump_sys::binder_driver_return_protocol_BR_ONEWAY_SPAM_SUSPECT,
 }
 
+#[allow(unused)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ErrorReturn {
     code: i32,
 }
 
+#[allow(unused)]
 #[derive(Debug, Clone, Copy)]
 pub struct TransactionSecCtx {
     transaction_data: binder_transaction_data,
@@ -57,17 +59,20 @@ impl Default for TransactionSecCtx {
     }
 }
 
+#[allow(unused)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RefReturn {
     ptr: u64,
     cookie: u64,
 }
 
+#[allow(unused)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DeadBinder {
     cookie: u64,
 }
 
+#[allow(unused)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ClearDeathNotificationDone {
     cookie: u64,

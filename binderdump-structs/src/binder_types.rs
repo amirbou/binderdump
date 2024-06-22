@@ -1,20 +1,18 @@
 use anyhow;
 use binderdump_sys;
 pub use binderdump_sys::{binder_write_read, BINDER_CURRENT_PROTOCOL_VERSION};
-use binrw::binrw;
 use nix::{request_code_readwrite, request_code_write};
 use num_derive;
 use num_derive::FromPrimitive;
-use serde::Serialize;
+use serde_repr::{Deserialize_repr, Serialize_repr};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 pub mod binder_command;
 pub mod binder_return;
 pub mod transaction;
 
-#[binrw]
-#[brw(repr(u8))]
-#[derive(Default, Clone, Copy, Serialize)]
+#[derive(Default, Clone, Copy, Deserialize_repr, Serialize_repr)]
+#[repr(u8)]
 pub enum BinderInterface {
     #[default]
     BINDER = 0,
@@ -88,11 +86,11 @@ macro_rules! request_code_write_wrapper {
     };
 }
 
-#[derive(Debug, FromPrimitive, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[derive(
+    Debug, FromPrimitive, Clone, Copy, PartialEq, Eq, Default, Serialize_repr, Deserialize_repr,
+)]
 #[allow(non_camel_case_types)]
 #[repr(i32)]
-#[binrw]
-#[brw(repr(i32))]
 pub enum binder_ioctl {
     BINDER_WRITE_READ = request_code_readwrite_wrapper!(1, binderdump_sys::binder_write_read),
     BINDER_SET_IDLE_TIMEOUT = request_code_write_wrapper!(3, i64),

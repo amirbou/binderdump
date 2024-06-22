@@ -4,11 +4,15 @@ use thiserror;
 #[derive(thiserror::Error, Debug)]
 pub enum PlainSerializerError {
     #[error("Serialize not implemented for type `{0}`")]
-    NotImplmented(&'static str),
+    SerNotImplmented(&'static str),
+    #[error("Deserialize not implemented for type `{0}`")]
+    DeNotImplmented(&'static str),
     #[error("Error: {0}")]
     Custom(String),
     #[error("IO Error: {0}")]
     IoError(std::io::Error),
+    #[error("String parsing error: {0}")]
+    Utf8Error(std::str::Utf8Error),
 }
 
 impl From<std::io::Error> for PlainSerializerError {

@@ -1,12 +1,10 @@
-use crate::binder_types::{binder_ioctl, BinderInterface};
-// use capture::events::BinderEventIoctl};
-use binrw::binrw;
-
 use super::bwr_layer::BinderWriteReadProtocol;
+use crate::binder_types::{binder_ioctl, BinderInterface};
+use serde::{Deserialize, Serialize};
+use serde_repr::{Deserialize_repr, Serialize_repr};
 
-#[binrw]
-#[brw(repr = u8)]
-#[derive(PartialEq, Eq, Default)]
+#[repr(u8)]
+#[derive(PartialEq, Eq, Default, Serialize_repr, Deserialize_repr)]
 pub enum EventType {
     FinishedIoctl = 0,
     SplitIoctl = 1,
@@ -15,8 +13,7 @@ pub enum EventType {
     Invalid = 4,
 }
 
-#[binrw]
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct EventProtocol {
     timestamp: u64,
     pid: i32,
@@ -24,13 +21,8 @@ pub struct EventProtocol {
     comm: [u8; 16],
     event_type: EventType,
     binder_interface: BinderInterface,
-    #[bw(calc = cmdline.len() as u16)]
-    cmdline_length: u16,
-    #[br(count = cmdline_length)]
     cmdline: Vec<u8>,
-    #[br(if(event_type != EventType::DeadProcess))]
-    #[bw(if(*event_type != EventType::DeadProcess))]
-    ioctl_data: IoctlProtocol,
+    ioctl_data: Option<IoctlProtocol>,
 }
 
 impl EventProtocol {
@@ -42,7 +34,7 @@ impl EventProtocol {
         event_type: EventType,
         binder_interface: BinderInterface,
         cmdline: Vec<u8>,
-        ioctl_data: IoctlProtocol,
+        ioctl_data: Option<IoctlProtocol>,
     ) -> Self {
         Self {
             timestamp,
@@ -65,8 +57,7 @@ impl EventProtocol {
     }
 }
 
-#[binrw]
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct IoctlProtocol {
     fd: i32,
     cmd: binder_ioctl,
@@ -75,9 +66,7 @@ pub struct IoctlProtocol {
     uid: u32,
     gid: u32,
     ioctl_id: u64,
-    #[br(if(cmd == binder_ioctl::BINDER_WRITE_READ))]
-    #[bw(if(*cmd == binder_ioctl::BINDER_WRITE_READ))]
-    bwr: BinderWriteReadProtocol,
+    bwr: Option<BinderWriteReadProtocol>,
 }
 
 impl IoctlProtocol {
@@ -89,7 +78,7 @@ impl IoctlProtocol {
         uid: u32,
         gid: u32,
         ioctl_id: u64,
-        bwr: BinderWriteReadProtocol,
+        bwr: Option<BinderWriteReadProtocol>,
     ) -> Self {
         Self {
             fd,
