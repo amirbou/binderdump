@@ -1,28 +1,31 @@
 use super::builders::{EventProtocolBuilder, IoctlProtocolBuilder};
 use super::capture_info::CaptureInfo;
 use super::events_aggregator::EventsAggregator;
-use crate::capture::events::BinderEventWriteRead;
-use crate::capture::events::{BinderEvent, BinderEventData};
-use crate::capture::process_cache::ProcessCache;
-use crate::capture::ringbuf::EventChannel;
+use crate::capture::{
+    events::{BinderEvent, BinderEventData, BinderEventWriteRead},
+    process_cache::ProcessCache,
+    ringbuf::EventChannel,
+};
 use anyhow::{Context, Result};
-use binderdump_structs::binder_types::{
-    binder_command::BinderCommand, binder_return::BinderReturn,
+use binderdump_structs::{
+    binder_serde,
+    binder_types::{binder_command::BinderCommand, binder_return::BinderReturn},
+    event_layer::{EventProtocol, EventType},
+    link_layer,
 };
-use binderdump_structs::event_layer::{EventProtocol, EventType};
-use binderdump_structs::link_layer;
-use binrw::BinWrite;
 use log::error;
-use pcap_file::pcapng::{
-    blocks::{
-        enhanced_packet::EnhancedPacketBlock,
-        interface_description::{InterfaceDescriptionBlock, InterfaceDescriptionOption},
-        section_header::{SectionHeaderBlock, SectionHeaderOption},
-        PcapNgBlock,
+use pcap_file::{
+    pcapng::{
+        blocks::{
+            enhanced_packet::EnhancedPacketBlock,
+            interface_description::{InterfaceDescriptionBlock, InterfaceDescriptionOption},
+            section_header::{SectionHeaderBlock, SectionHeaderOption},
+            PcapNgBlock,
+        },
+        PcapNgWriter,
     },
-    PcapNgWriter,
+    DataLink,
 };
-use pcap_file::DataLink;
 use std::io::{Cursor, Write};
 use std::time::Duration;
 use yansi::Paint;
@@ -74,6 +77,7 @@ impl<W: Write> PacketGenerator<W> {
         })
     }
 
+    #[allow(unused)]
     fn print_events(events: &Vec<BinderEvent>) -> Result<()> {
         for event in events {
             println!("{:?}", event);
@@ -173,7 +177,7 @@ impl<W: Write> PacketGenerator<W> {
     fn write_packet(&mut self, proto: EventProtocol, link: &[u8]) -> Result<()> {
         let mut cursor = Cursor::new(Vec::new());
         cursor.write(link)?;
-        proto.write_le(&mut cursor)?;
+        binder_serde::write(&mut cursor, &proto)?;
         let data = cursor.into_inner();
 
         let packet = EnhancedPacketBlock {

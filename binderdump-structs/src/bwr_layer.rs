@@ -1,9 +1,8 @@
-use binrw::binrw;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_repr::{Deserialize_repr, Serialize_repr};
 
-#[binrw]
-#[brw(repr(u8))]
-#[derive(Default, Eq, PartialEq, Serialize)]
+#[repr(u8)]
+#[derive(Default, Eq, PartialEq, Serialize_repr, Deserialize_repr)]
 pub enum BinderWriteReadType {
     #[default]
     Write = 0,
@@ -32,8 +31,7 @@ impl BinderWriteReadType {
     }
 }
 
-#[binrw]
-#[derive(Default, Serialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct BinderWriteReadProtocol {
     bwr_type: BinderWriteReadType,
     write_size: u64,
@@ -42,20 +40,25 @@ pub struct BinderWriteReadProtocol {
     read_size: u64,
     read_consumed: u64,
     read_buffer: u64,
-    #[brw(if(bwr_type.is_read()))]
-    #[br(count = read_consumed)]
-    read_data: Vec<u8>,
-
-    #[brw(if(bwr_type.is_write()))]
-    #[br(count = write_size)]
-    write_data: Vec<u8>,
-
-    #[brw(if(bwr_type.is_transaction()))]
-    transaction: TransactionProtocol,
+    data: Vec<u8>,
+    transaction: Option<TransactionProtocol>,
 }
 
-#[binrw]
-#[derive(Debug, Clone, Default, Serialize)]
+impl BinderWriteReadProtocol {
+    pub fn is_read(&self) -> bool {
+        self.bwr_type.is_read()
+    }
+
+    pub fn is_write(&self) -> bool {
+        self.bwr_type.is_write()
+    }
+
+    pub fn is_transaction(&self) -> bool {
+        self.bwr_type.is_transaction()
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Transaction {
     debug_id: i32,
     target_node: i32,
@@ -66,13 +69,9 @@ pub struct Transaction {
     flags: u32,
 }
 
-#[binrw]
-#[derive(Default, Serialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct TransactionProtocol {
     transaction: Transaction,
     target_comm: [u8; 16],
-    #[bw(calc = target_cmdline.len() as u16)]
-    target_cmdline_length: u16,
-    #[br(count = target_cmdline_length)]
     target_cmdline: Vec<u8>,
 }

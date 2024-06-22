@@ -12,17 +12,17 @@ pub struct PlainSerializer<W: Write> {
     writer: W,
 }
 
-trait Todo {
-    fn todo(type_name: &'static str) -> Result<(), PlainSerializerError> {
-        Err(PlainSerializerError::NotImplmented(type_name))
+trait Todo<T> {
+    fn todo(type_name: &'static str) -> Result<T, PlainSerializerError> {
+        Err(PlainSerializerError::SerNotImplmented(type_name))
     }
 }
 
-impl<W: Write> Todo for &mut PlainSerializer<W> {}
+impl<T, W: Write> Todo<T> for &mut PlainSerializer<W> {}
 
 impl<W: Write> PlainSerializer<W> {
-    pub fn new(w: W) -> Self {
-        Self { writer: w }
+    pub fn new(writer: W) -> Self {
+        Self { writer }
     }
 }
 
@@ -122,14 +122,15 @@ impl<W: Write> ser::Serializer for &mut PlainSerializer<W> {
     }
 
     fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
-        Self::todo("None")
+        self.serialize_u8(0)
     }
 
-    fn serialize_some<T>(self, _value: &T) -> Result<Self::Ok, Self::Error>
+    fn serialize_some<T>(self, value: &T) -> Result<Self::Ok, Self::Error>
     where
         T: ?Sized + Serialize,
     {
-        Self::todo("Some")
+        self.serialize_u8(1)?;
+        value.serialize(self)
     }
 
     fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
@@ -196,8 +197,7 @@ impl<W: Write> ser::Serializer for &mut PlainSerializer<W> {
     }
 
     fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, Self::Error> {
-        Self::todo("tuple")?;
-        unreachable!()
+        Self::todo("tuple")
     }
 
     fn serialize_tuple_struct(
@@ -205,8 +205,7 @@ impl<W: Write> ser::Serializer for &mut PlainSerializer<W> {
         _name: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeTupleStruct, Self::Error> {
-        Self::todo("tuple_struct")?;
-        unreachable!()
+        Self::todo("tuple_struct")
     }
 
     fn serialize_tuple_variant(
@@ -216,13 +215,11 @@ impl<W: Write> ser::Serializer for &mut PlainSerializer<W> {
         _variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
-        Self::todo("tuple_variant")?;
-        unreachable!()
+        Self::todo("tuple_variant")
     }
 
     fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
-        Self::todo("map")?;
-        unreachable!()
+        Self::todo("map")
     }
 
     fn serialize_struct(
@@ -240,8 +237,7 @@ impl<W: Write> ser::Serializer for &mut PlainSerializer<W> {
         _variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeStructVariant, Self::Error> {
-        Self::todo("struct_variant")?;
-        unreachable!()
+        Self::todo("struct_variant")
     }
 }
 
@@ -293,12 +289,9 @@ pub fn to_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, PlainSerializerError
 }
 
 mod test {
-    use serde::Serialize;
-    use serde_repr;
-
     #[test]
     fn test_struct() {
-        #[derive(Serialize)]
+        #[derive(serde::Serialize)]
         struct Test {
             int: u32,
             seq: Vec<u8>,
@@ -315,6 +308,7 @@ mod test {
 
     #[test]
     fn test_enum() {
+        #[allow(unused)]
         #[derive(serde_repr::Serialize_repr)]
         #[repr(i16)]
         enum Test {
@@ -325,5 +319,22 @@ mod test {
 
         let expected = b"\x01\x00";
         assert_eq!(super::to_bytes(&Test::ONE).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_option() {
+        #[derive(serde::Serialize)]
+        struct Test {
+            option: Option<i32>,
+            option2: Option<Vec<u8>>,
+        }
+
+        let test = Test {
+            option: Some(5),
+            option2: None,
+        };
+
+        let expected = b"\x01\x05\x00\x00\x00\x00";
+        assert_eq!(super::to_bytes(&test).unwrap(), expected);
     }
 }

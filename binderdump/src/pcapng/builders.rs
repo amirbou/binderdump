@@ -46,7 +46,7 @@ impl IoctlProtocolBuilder {
             self.uid,
             self.gid,
             self.ioctl_id,
-            self.bwr.unwrap_or_default(),
+            self.bwr,
         )
     }
 }
@@ -113,7 +113,7 @@ impl EventProtocolBuilder {
             self.event_type,
             self.binder_interface,
             self.cmdline.map(|s| s.into_bytes()).unwrap_or_default(),
-            self.ioctl_data.unwrap_or_default(),
+            self.ioctl_data,
         ))
     }
 }

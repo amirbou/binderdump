@@ -42,6 +42,7 @@ fn run_pcap(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[allow(unused)]
 fn run_print() -> Result<()> {
     let mut binder_skel = attach_tracepoints()?;
 

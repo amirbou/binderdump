@@ -1,14 +1,10 @@
-cargo-features = ["per-package-target"]
-
 [package]
 name = "binderdump-structs"
 version = "0.1.0"
 edition = "2021"
-forced-target = "x86_64-unknown-linux-gnu"
 
 [dependencies]
 anyhow = "1.0.86"
-binrw = "0.14.0"
 binderdump-sys = { path = "../binderdump-sys" }
 num = "0.4"
 num-derive = "0.4"
@@ -18,3 +14,4 @@ plain = "0.2"
 serde = { version = "1.0.203", features = ["derive"] }
 serde_repr = "0.1.19"
 thiserror = "1.0.61"
+byteorder = "1.5.0"
