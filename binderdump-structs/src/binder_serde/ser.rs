@@ -1,6 +1,6 @@
 use super::error::PlainSerializerError;
 use serde::{
-    ser::{self, Impossible, SerializeSeq, SerializeStruct},
+    ser::{self, Impossible, SerializeSeq, SerializeStruct, SerializeTuple},
     Serialize,
 };
 use std::{
@@ -33,7 +33,7 @@ impl<W: Write> ser::Serializer for &mut PlainSerializer<W> {
 
     type SerializeSeq = Self;
 
-    type SerializeTuple = Impossible<Self::Ok, Self::Error>;
+    type SerializeTuple = Self;
 
     type SerializeTupleStruct = Impossible<Self::Ok, Self::Error>;
 
@@ -197,7 +197,7 @@ impl<W: Write> ser::Serializer for &mut PlainSerializer<W> {
     }
 
     fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, Self::Error> {
-        Self::todo("tuple")
+        Ok(self)
     }
 
     fn serialize_tuple_struct(
@@ -275,6 +275,23 @@ impl<W: Write> SerializeStruct for &mut PlainSerializer<W> {
     }
 }
 
+impl<W: Write> SerializeTuple for &mut PlainSerializer<W> {
+    type Ok = ();
+
+    type Error = PlainSerializerError;
+
+    fn serialize_element<T>(&mut self, value: &T) -> Result<(), Self::Error>
+    where
+        T: ?Sized + Serialize,
+    {
+        value.serialize(self.deref_mut())
+    }
+
+    fn end(self) -> Result<Self::Ok, Self::Error> {
+        Ok(())
+    }
+}
+
 pub fn write<W: Write, T: Serialize>(writer: W, value: &T) -> Result<(), PlainSerializerError> {
     let mut serializer = PlainSerializer::new(writer);
     value.serialize(&mut serializer)
@@ -335,6 +352,21 @@ mod test {
         };
 
         let expected = b"\x01\x05\x00\x00\x00\x00";
+        assert_eq!(super::to_bytes(&test).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_array() {
+        #[derive(serde::Serialize)]
+        struct Test {
+            array: [u8; 3],
+        }
+
+        let test = Test {
+            array: [b'a', b'b', b'c'],
+        };
+        let expected = b"abc";
+
         assert_eq!(super::to_bytes(&test).unwrap(), expected);
     }
 }
