@@ -2,9 +2,8 @@ use super::error::PlainSerializerError;
 use byteorder::{ReadBytesExt, LE};
 use serde::de::{Deserialize, Deserializer, SeqAccess};
 use std::{
-    borrow::BorrowMut,
+    borrow::Cow,
     io::{Cursor, Read},
-    ops::DerefMut,
 };
 
 trait Todo<T> {
@@ -13,15 +12,15 @@ trait Todo<T> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct FieldOffset {
-    pub field_name: &'static str,
+    pub field_name: Cow<'static, str>,
     pub offset: usize,
     pub size: usize,
     pub inner_struct: Option<StructOffset>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct StructOffset {
     pub name: &'static str,
     pub offset: usize,
@@ -29,29 +28,150 @@ pub struct StructOffset {
     pub fields: Vec<FieldOffset>,
 }
 
-impl StructOffset {
-    fn last_struct(&mut self) -> &mut StructOffset {
-        let mut current = self;
+struct OffsetDeserializer {
+    structs_stack: Vec<StructOffset>,
+    fields_stack: Vec<&'static [&'static str]>,
+    result: Option<StructOffset>,
+}
 
-        loop {
-            let tmp = current;
-            let last = &mut tmp.fields.last_mut().map(|field| &mut field.inner_struct);
-            if let Some(inner) = last {
-                if let Some(inner) = inner {
-                    current = inner;
-                } else {
-                    current = tmp;
-                }
-            } else {
-                current = tmp;
-                break;
-            }
+impl OffsetDeserializer {
+    pub fn new() -> Self {
+        Self {
+            structs_stack: vec![],
+            fields_stack: vec![],
+            result: None,
         }
-        current
     }
 
-    fn last_field_struct(&mut self) -> Option<&mut StructOffset> {
-        (&mut self.fields.last_mut()?.inner_struct).as_mut()
+    pub fn begin_struct(
+        &mut self,
+        name: &'static str,
+        fields: &'static [&'static str],
+        offset: usize,
+    ) -> Result<(), PlainSerializerError> {
+        if self.result.is_some() {
+            return Err(PlainSerializerError::TooManyStructs);
+        }
+        self.structs_stack.push(StructOffset {
+            name,
+            offset,
+            size: 0,
+            fields: vec![],
+        });
+        self.fields_stack.push(fields);
+
+        Ok(())
+    }
+
+    fn get_last_struct(
+        structs_stack: &mut Vec<StructOffset>,
+    ) -> Result<&mut StructOffset, PlainSerializerError> {
+        structs_stack
+            .last_mut()
+            .ok_or(PlainSerializerError::EmptyStructStack)
+    }
+
+    pub fn add_field(&mut self, offset: usize) -> Result<(), PlainSerializerError> {
+        let last_struct = Self::get_last_struct(&mut self.structs_stack)?;
+        let last_fields = self
+            .fields_stack
+            .pop()
+            .ok_or(PlainSerializerError::EmptyFieldsStack)?;
+        if last_fields.len() == 0 {
+            return Err(PlainSerializerError::TooManyFields);
+        }
+        let field_name = last_fields[0];
+        self.fields_stack.push(&last_fields[1..]);
+
+        if let Some(prev_field) = last_struct.fields.last_mut() {
+            prev_field.size = offset - prev_field.offset;
+        }
+        last_struct.fields.push(FieldOffset {
+            field_name: Cow::Borrowed(field_name),
+            offset,
+            size: 0,
+            inner_struct: None,
+        });
+
+        Ok(())
+    }
+
+    fn add_psuedo(
+        &mut self,
+        offset: usize,
+        size: usize,
+        suffix: &str,
+    ) -> Result<(), PlainSerializerError> {
+        let last_struct = Self::get_last_struct(&mut self.structs_stack)?;
+        let mut prev_field = last_struct
+            .fields
+            .pop()
+            .ok_or(PlainSerializerError::TooManyFields)?;
+
+        let field_name = format!("{}{}", prev_field.field_name, suffix);
+        last_struct.fields.push(FieldOffset {
+            field_name: Cow::Owned(field_name),
+            offset,
+            size: size,
+            inner_struct: None,
+        });
+        prev_field.offset += size;
+        last_struct.fields.push(prev_field);
+        Ok(())
+    }
+
+    pub fn add_option(&mut self, offset: usize, size: usize) -> Result<(), PlainSerializerError> {
+        self.add_psuedo(offset, size, "_is_present")
+    }
+
+    pub fn add_len(&mut self, offset: usize, size: usize) -> Result<(), PlainSerializerError> {
+        self.add_psuedo(offset, size, "_len")
+    }
+
+    pub fn finish_struct(&mut self, offset: usize) -> Result<(), PlainSerializerError> {
+        let mut finished_struct = self
+            .structs_stack
+            .pop()
+            .ok_or(PlainSerializerError::EmptyStructStack)?;
+        let remaining_fields_count = self
+            .fields_stack
+            .pop()
+            .ok_or(PlainSerializerError::EmptyStructStack)?
+            .len();
+        if remaining_fields_count != 0 {
+            return Err(PlainSerializerError::TooLittleFields);
+        }
+        if let Some(last_field) = finished_struct.fields.last_mut() {
+            last_field.size = offset - last_field.offset;
+        }
+        finished_struct.size = offset - finished_struct.offset;
+
+        match self.structs_stack.last_mut() {
+            Some(last_struct) => {
+                let inner_struct = &mut last_struct
+                    .fields
+                    .last_mut()
+                    .ok_or(PlainSerializerError::NoFields)?
+                    .inner_struct;
+                match inner_struct {
+                    Some(_) => return Err(PlainSerializerError::DoubleInnerStruct),
+                    None => *inner_struct = Some(finished_struct),
+                }
+            }
+            None => self.result = Some(finished_struct),
+        }
+        Ok(())
+    }
+
+    pub fn take(self) -> Result<StructOffset, PlainSerializerError> {
+        if !self.fields_stack.is_empty() {
+            return Err(PlainSerializerError::UnexpectedFields);
+        }
+        if !self.structs_stack.is_empty() {
+            return Err(PlainSerializerError::UnexpectedStruct);
+        }
+
+        self.result.ok_or(PlainSerializerError::NoResult)
     }
 }
 
@@ -59,7 +179,7 @@ impl<T, R: Read> Todo<T> for &mut PlainDeserializer<R> {}
 
 pub struct PlainDeserializer<R: Read> {
     reader: R,
-    offsets: Option<StructOffset>,
+    offsets_deserializer: OffsetDeserializer,
     current_offset: usize,
 }
 
@@ -67,14 +187,17 @@ impl<R: Read> PlainDeserializer<R> {
     pub fn new(reader: R) -> Self {
         Self {
             reader,
-            offsets: None,
+            offsets_deserializer: OffsetDeserializer::new(),
             current_offset: 0,
         }
     }
 
     fn read_bytes(&mut self) -> Result<Vec<u8>, PlainSerializerError> {
+        self.offsets_deserializer
+            .add_len(self.current_offset, std::mem::size_of::<u16>())?;
         let len = self.reader.read_u16::<LE>()? as usize;
         self.advance_offset::<u16>();
+
         let mut vec = Vec::with_capacity(len);
         vec.resize(len, 0);
 
@@ -85,38 +208,11 @@ impl<R: Read> PlainDeserializer<R> {
 
     fn advance_offset<T: Sized>(&mut self) {
         let size = std::mem::size_of::<T>();
-        // if let Some(last_struct) = self.offsets.last_mut() {
-        //     if let Some(field) = last_struct.fields.last_mut() {
-        //         field.size = self.current_offset - field.offset;
-        //     }
-        // }
         self.current_offset += size;
     }
 
-    pub fn take_offsets(self) -> Option<StructOffset> {
-        self.offsets
-    }
-
-    fn last_struct(&mut self) -> Option<&mut StructOffset> {
-        let mut last_struct = self.offsets.as_mut()?;
-
-        loop {
-            let tmp = last_struct;
-            match tmp.last_field_struct() {
-                Some(inner) => {
-                    last_struct = inner;
-                }
-                None => return Some(tmp),
-            };
-            // let tmp = last_struct;
-            // if let Some(ref mut inner) = tmp.last_field_struct() {
-            //     last_struct = *inner;
-            // } else {
-            //     last_struct = tmp;
-            //     break;
-            // }
-        }
-        Some(last_struct)
+    pub fn take_offsets(self) -> Result<StructOffset, PlainSerializerError> {
+        self.offsets_deserializer.take()
     }
 }
 
@@ -270,6 +366,10 @@ impl<'de, R: Read> Deserializer<'de> for &mut PlainDeserializer<R> {
         let is_some = self.reader.read_u8()? != 0;
         self.advance_offset::<u8>();
         if is_some {
+            self.offsets_deserializer.add_option(
+                self.current_offset - std::mem::size_of::<u8>(),
+                std::mem::size_of::<u8>(),
+            )?;
             visitor.visit_some(self)
         } else {
             visitor.visit_none()
@@ -303,23 +403,17 @@ impl<'de, R: Read> Deserializer<'de> for &mut PlainDeserializer<R> {
         V: serde::de::Visitor<'de>,
     {
         Self::todo("newtype_struct")
-        // let start_offset = self.current_offset;
-        // self.offsets.push(StructOffset {
-        //     name,
-        //     offset: start_offset,
-        //     size: 0,
-        //     fields: vec![],
-        // });
-        // visitor.visit_newtype_struct(self)
     }
 
     fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: serde::de::Visitor<'de>,
     {
+        self.offsets_deserializer
+            .add_len(self.current_offset, std::mem::size_of::<u16>())?;
         let count = self.reader.read_u16::<LE>()?;
         self.advance_offset::<u16>();
-        visitor.visit_seq(PlainSeqDeserializer::new(self, count as usize))
+        visitor.visit_seq(PlainSeqDeserializer::new_seq(self, count as usize))
     }
 
     fn deserialize_tuple<V>(self, len: usize, visitor: V) -> Result<V::Value, Self::Error>
@@ -357,28 +451,9 @@ impl<'de, R: Read> Deserializer<'de> for &mut PlainDeserializer<R> {
     where
         V: serde::de::Visitor<'de>,
     {
-        println!("deserializing struct {} with fields {:?}", name, fields);
-
-        let new = StructOffset {
-            name,
-            offset: self.current_offset,
-            size: 0,
-            fields: vec![],
-        };
-        if let Some(offsets) = &mut self.offsets {
-            let mut current_field = offsets.fields.last_mut().unwrap();
-            while let Some(inner) = &mut current_field.inner_struct {
-                current_field = inner.fields.last_mut().unwrap();
-                if current_field.inner_struct.is_none() {
-                    current_field.inner_struct = Some(new);
-                    break;
-                }
-            }
-        } else {
-            self.offsets = Some(new)
-        }
-
-        visitor.visit_seq(PlainSeqDeserializer::new_with_fields(self, fields))
+        self.offsets_deserializer
+            .begin_struct(name, fields, self.current_offset)?;
+        visitor.visit_seq(PlainSeqDeserializer::new_struct(self, fields))
     }
 
     fn deserialize_enum<V>(
@@ -408,10 +483,15 @@ impl<'de, R: Read> Deserializer<'de> for &mut PlainDeserializer<R> {
     }
 }
 
+enum SeqMode {
+    SEQ,    // only stops iteration when return value is Ok(None)
+    STRUCT, // requires calls to `offsets_deserializer`
+    OTHER,  // like struct but without `offsets_deserializer`
+}
 struct PlainSeqDeserializer<'a, R: Read> {
     de: &'a mut PlainDeserializer<R>,
     count: usize,
-    fields: Option<&'static [&'static str]>,
+    mode: SeqMode,
 }
 
 impl<'a, R: Read> PlainSeqDeserializer<'a, R> {
@@ -419,15 +499,23 @@ impl<'a, R: Read> PlainSeqDeserializer<'a, R> {
         Self {
             de,
             count,
-            fields: None,
+            mode: SeqMode::OTHER,
         }
     }
 
-    fn new_with_fields(de: &'a mut PlainDeserializer<R>, fields: &'static [&'static str]) -> Self {
+    fn new_seq(de: &'a mut PlainDeserializer<R>, count: usize) -> Self {
+        Self {
+            de,
+            count,
+            mode: SeqMode::SEQ,
+        }
+    }
+
+    fn new_struct(de: &'a mut PlainDeserializer<R>, fields: &'static [&'static str]) -> Self {
         Self {
             de,
             count: fields.len(),
-            fields: Some(fields),
+            mode: SeqMode::STRUCT,
         }
     }
 }
@@ -438,37 +526,23 @@ impl<'a, 'de, R: Read> SeqAccess<'de> for PlainSeqDeserializer<'a, R> {
     where
         T: serde::de::DeserializeSeed<'de>,
     {
-        if self.count == 0 {
+        if matches!(self.mode, SeqMode::STRUCT) {
+            self.de
+                .offsets_deserializer
+                .add_field(self.de.current_offset)?;
+        }
+        if matches!(self.mode, SeqMode::SEQ) && self.count == 0 {
             return Ok(None);
         }
-        self.count -= 1;
-        if let Some(fields) = self.fields {
-            let mut last_struct = self
-                .de
-                .offsets
-                .as_mut()
-                .ok_or(PlainSerializerError::Custom(
-                    "No structs are defined".into(),
-                ))?;
-            // loop {
-            //     if let Some(field) = last_struct.fields.last_mut() {
-            //         if let Some(inner) = &mut field.inner_struct {
-            //             last_struct = inner
-            //         }
-            //     }
-            //     let field_index = last_struct.fields.len();
-            //     break;
-            // }
-
-            let field_name = fields[field_index];
-            last_struct.fields.push(FieldOffset {
-                field_name,
-                offset: self.de.current_offset,
-                size: 0,
-                inner_struct: None,
-            });
+        let result = seed.deserialize(&mut *self.de).map(Some);
+        if matches!(self.mode, SeqMode::STRUCT) && self.count == 1 {
+            self.de
+                .offsets_deserializer
+                .finish_struct(self.de.current_offset)?;
         }
-        seed.deserialize(&mut *self.de).map(Some)
+
+        self.count -= 1;
+        result
     }
 }
 
@@ -482,7 +556,7 @@ pub fn from_bytes<'a, T: Deserialize<'a>>(bytes: &[u8]) -> Result<T, PlainSerial
 
 pub fn read_with_offsets<'a, R: Read, T: Deserialize<'a>>(
     reader: R,
-) -> Result<(T, Vec<StructOffset>), PlainSerializerError> {
+) -> Result<(T, Result<StructOffset, PlainSerializerError>), PlainSerializerError> {
     let mut des = PlainDeserializer::new(reader);
     let value = T::deserialize(&mut des)?;
     let offsets = des.take_offsets();
@@ -491,12 +565,15 @@ pub fn read_with_offsets<'a, R: Read, T: Deserialize<'a>>(
 
 pub fn from_bytes_with_offsets<'a, T: Deserialize<'a>>(
     bytes: &[u8],
-) -> Result<(T, Vec<StructOffset>), PlainSerializerError> {
+) -> Result<(T, Result<StructOffset, PlainSerializerError>), PlainSerializerError> {
     let cursor = Cursor::new(bytes);
     read_with_offsets(cursor)
 }
 
+#[cfg(test)]
 mod test {
+    use crate::binder_serde::de::{FieldOffset, StructOffset};
+    use pretty_assertions::assert_eq;
     #[test]
     fn test_struct() {
         #[derive(serde::Deserialize, Eq, PartialEq, Debug)]
@@ -514,6 +591,42 @@ mod test {
 
         let result = super::from_bytes::<Test>(test).unwrap();
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_empty_seq() {
+        #[derive(serde::Deserialize, Eq, PartialEq, Debug)]
+        struct Test {
+            seq: Vec<u8>,
+        }
+
+        let test = b"\x00\x00";
+
+        let expected = Test { seq: vec![] };
+
+        let (result, offsets) = super::from_bytes_with_offsets::<Test>(test).unwrap();
+        assert_eq!(result, expected);
+
+        let expected_offets = StructOffset {
+            name: "Test",
+            offset: 0,
+            size: 2,
+            fields: vec![
+                FieldOffset {
+                    field_name: "seq_len".into(),
+                    offset: 0,
+                    size: 2,
+                    inner_struct: None,
+                },
+                FieldOffset {
+                    field_name: "seq".into(),
+                    offset: 2,
+                    size: 0,
+                    inner_struct: None,
+                },
+            ],
+        };
+        assert_eq!(offsets.unwrap(), expected_offets);
     }
 
     #[test]
@@ -566,20 +679,140 @@ mod test {
     #[test]
     fn test_offsets() {
         #[derive(serde::Deserialize, PartialEq, Eq, Debug)]
+        struct InnerInnerTest {
+            num: u8,
+        }
+
+        #[derive(serde::Deserialize, PartialEq, Eq, Debug)]
         struct InnerTest {
             num: i16,
+            inner: InnerInnerTest,
         }
         #[derive(serde::Deserialize, PartialEq, Eq, Debug)]
         struct Test {
             array: [u8; 3],
+            bytes: Vec<u8>,
             inner: Option<InnerTest>,
             inner2: InnerTest,
         }
 
-        let test = b"abc\x01\x03\x00\x02\x00";
+        let test = b"abc\x01\x00\x01\x01\x03\x00\x01\x02\x00\x06";
 
-        let result = super::from_bytes_with_offsets::<Test>(test).unwrap();
-        println!("{:?}", result.0);
-        println!("{:?}", result.1);
+        let (result, offsets) = super::from_bytes_with_offsets::<Test>(test).unwrap();
+        let expected = Test {
+            array: [b'a', b'b', b'c'],
+            bytes: vec![1],
+            inner: Some(InnerTest {
+                num: 3,
+                inner: InnerInnerTest { num: 1 },
+            }),
+            inner2: InnerTest {
+                num: 2,
+                inner: InnerInnerTest { num: 6 },
+            },
+        };
+        assert_eq!(result, expected);
+
+        let expected_offsets = StructOffset {
+            name: "Test",
+            offset: 0,
+            size: 13,
+            fields: vec![
+                FieldOffset {
+                    field_name: "array".into(),
+                    offset: 0,
+                    size: 3,
+                    inner_struct: None,
+                },
+                FieldOffset {
+                    field_name: "bytes_len".into(),
+                    offset: 3,
+                    size: 2,
+                    inner_struct: None,
+                },
+                FieldOffset {
+                    field_name: "bytes".into(),
+                    offset: 5,
+                    size: 1,
+                    inner_struct: None,
+                },
+                FieldOffset {
+                    field_name: "inner_is_present".into(),
+                    offset: 6,
+                    size: 1,
+                    inner_struct: None,
+                },
+                FieldOffset {
+                    field_name: "inner".into(),
+                    offset: 7,
+                    size: 3,
+                    inner_struct: Some(StructOffset {
+                        name: "InnerTest",
+                        offset: 7,
+                        size: 3,
+                        fields: vec![
+                            FieldOffset {
+                                field_name: "num".into(),
+                                offset: 7,
+                                size: 2,
+                                inner_struct: None,
+                            },
+                            FieldOffset {
+                                field_name: "inner".into(),
+                                offset: 9,
+                                size: 1,
+                                inner_struct: Some(StructOffset {
+                                    name: "InnerInnerTest",
+                                    offset: 9,
+                                    size: 1,
+                                    fields: vec![FieldOffset {
+                                        field_name: "num".into(),
+                                        offset: 9,
+                                        size: 1,
+                                        inner_struct: None,
+                                    }],
+                                }),
+                            },
+                        ],
+                    }),
+                },
+                FieldOffset {
+                    field_name: "inner2".into(),
+                    offset: 10,
+                    size: 3,
+                    inner_struct: Some(StructOffset {
+                        name: "InnerTest",
+                        offset: 10,
+                        size: 3,
+                        fields: vec![
+                            FieldOffset {
+                                field_name: "num".into(),
+                                offset: 10,
+                                size: 2,
+                                inner_struct: None,
+                            },
+                            FieldOffset {
+                                field_name: "inner".into(),
+                                offset: 12,
+                                size: 1,
+                                inner_struct: Some(StructOffset {
+                                    name: "InnerInnerTest",
+                                    offset: 12,
+                                    size: 1,
+                                    fields: vec![FieldOffset {
+                                        field_name: "num".into(),
+                                        offset: 12,
+                                        size: 1,
+                                        inner_struct: None,
+                                    }],
+                                }),
+                            },
+                        ],
+                    }),
+                },
+            ],
+        };
+
+        assert_eq!(offsets.unwrap(), expected_offsets);
     }
 }
