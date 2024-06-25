@@ -1,3 +1,5 @@
+use std::num::TryFromIntError;
+
 use serde::{de, ser};
 use thiserror;
 
@@ -13,6 +15,30 @@ pub enum PlainSerializerError {
     IoError(std::io::Error),
     #[error("String parsing error: {0}")]
     Utf8Error(std::str::Utf8Error),
+    #[error("New struct encountered after offsets processing was finished!")]
+    TooManyStructs,
+    #[error("No struct in stack!")]
+    EmptyStructStack,
+    #[error("No fields in stack")]
+    EmptyFieldsStack,
+    #[error("Too many fields encountred for struct")]
+    TooManyFields,
+    #[error("Not enough fields")]
+    TooLittleFields,
+    #[error("No fields in previous struct!")]
+    NoFields,
+    #[error("Previous field already has an inner_struct!")]
+    DoubleInnerStruct,
+    #[error("Struct stack non-empty")]
+    UnexpectedStruct,
+    #[error("Fields stack non-empty")]
+    UnexpectedFields,
+    #[error("No result produced")]
+    NoResult,
+    #[error("Sequence field length is too big {0}")]
+    TooBig(TryFromIntError),
+    #[error("Unknown length for sequence")]
+    UnknownLength,
 }
 
 impl From<std::io::Error> for PlainSerializerError {

@@ -4,6 +4,8 @@ pub mod ser;
 
 pub use de::{from_bytes, read};
 pub use ser::{to_bytes, write};
+
+#[cfg(test)]
 mod test {
     #[derive(serde_repr::Serialize_repr, serde_repr::Deserialize_repr, PartialEq, Eq, Debug)]
     #[repr(u32)]
