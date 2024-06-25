@@ -110,9 +110,7 @@ impl<W: Write> ser::Serializer for &mut PlainSerializer<W> {
         match len {
             Ok(len) => self.serialize_u16(len)?,
             Err(e) => {
-                return Err(PlainSerializerError::Custom(
-                    format!("len too long: {}", e,),
-                ))
+                return Err(PlainSerializerError::TooBig(e));
             }
         }
         for byte in v {
@@ -177,19 +175,11 @@ impl<W: Write> ser::Serializer for &mut PlainSerializer<W> {
     fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
         let len = match len {
             Some(l) => l,
-            None => {
-                return Err(PlainSerializerError::Custom(format!(
-                    "len must be known when serializing seq"
-                )))
-            }
+            None => return Err(PlainSerializerError::UnknownLength),
         };
         let len = match len.try_into() {
             Ok(l) => l,
-            Err(e) => {
-                return Err(PlainSerializerError::Custom(
-                    format!("len too long: {}", e,),
-                ))
-            }
+            Err(e) => return Err(PlainSerializerError::TooBig(e)),
         };
         self.serialize_u16(len)?;
 
@@ -305,6 +295,7 @@ pub fn to_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, PlainSerializerError
     Ok(output)
 }
 
+#[cfg(test)]
 mod test {
     #[test]
     fn test_struct() {
@@ -320,6 +311,19 @@ mod test {
         };
 
         let expected = b"\x03\x00\x00\x00\x03\x00\x01\x02\x03";
+        assert_eq!(super::to_bytes(&test).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_empty_seq() {
+        #[derive(serde::Serialize)]
+        struct Test {
+            seq: Vec<u8>,
+        }
+
+        let test = Test { seq: vec![] };
+
+        let expected = b"\x00\x00";
         assert_eq!(super::to_bytes(&test).unwrap(), expected);
     }
 
