@@ -1,4 +1,3 @@
-mod epan;
 mod header_fields;
 use header_fields::{HeaderField, HeaderFieldArray};
 use std::ptr::addr_of_mut;
@@ -7,6 +6,8 @@ use std::{
     os::raw::c_int,
     ptr::null_mut,
 };
+
+use bindump_epan_sys::epan;
 
 use epan::EXP_PDU_TAG_PROTO_NAME;
 
@@ -108,7 +109,7 @@ extern "C" fn proto_register_binderdump() {
         EXPORTED_PDU_TAP = epan::register_export_pdu_tap(PROTOCOL_NAME.as_ptr());
 
         HF_ARRAY.register(PROTO_BINDERDUMP);
-        epan::proto_register_subtree_array(ETT.as_ptr(), 1);
+        epan::proto_register_subtree_array(ETT.as_ptr(), ETT.len().try_into().unwrap());
     };
 }
 
