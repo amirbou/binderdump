@@ -1,0 +1,264 @@
+#![allow(dead_code)]
+
+use binderdump_derive::{EpanProtocol, EpanProtocolEnum};
+use binderdump_trait::{
+    EpanProtocol, EpanProtocolEnum, FieldDisplay, FieldInfo, FtEnum, StringMapping,
+    StringMapping64, StringsMap,
+};
+
+#[derive(EpanProtocolEnum)]
+#[repr(u32)]
+enum TestEnum {
+    ONE = 1,
+    TWO = 2,
+}
+
+#[test]
+fn test_derive() {
+    #[derive(EpanProtocol)]
+    struct InnerTest {
+        field1: u32,
+    }
+
+    #[derive(EpanProtocol)]
+    #[epan(name = "test")]
+    struct Test {
+        #[epan(name = "foo", abbrev = "bar", ftype = Protocol, display = SepSpace)]
+        field1: u32,
+        field2: u8,
+        field3: Vec<u8>,
+        field4: Vec<i32>,
+        field5: Option<i64>,
+        field6: Option<Vec<u8>>,
+        field7: TestEnum,
+        field8: Option<TestEnum>,
+        field9: Vec<TestEnum>,
+        field10: InnerTest,
+    }
+
+    let expected = vec![
+        FieldInfo {
+            name: "foo".into(),
+            abbrev: "test.bar".into(),
+            ftype: FtEnum::Protocol,
+            display: FieldDisplay::SepSpace,
+            strings: None,
+        },
+        FieldInfo {
+            name: "field2".into(),
+            abbrev: "test.field2".into(),
+            ftype: FtEnum::U8,
+            display: FieldDisplay::Hex,
+            strings: None,
+        },
+        FieldInfo {
+            name: "field3 length".into(),
+            abbrev: "test.field3_len".into(),
+            ftype: FtEnum::U16,
+            display: FieldDisplay::HexDec,
+            strings: None,
+        },
+        FieldInfo {
+            name: "field3".into(),
+            abbrev: "test.field3".into(),
+            ftype: FtEnum::Bytes,
+            display: FieldDisplay::SepSpace,
+            strings: None,
+        },
+        FieldInfo {
+            name: "field4 length".into(),
+            abbrev: "test.field4_len".into(),
+            ftype: FtEnum::U16,
+            display: FieldDisplay::HexDec,
+            strings: None,
+        },
+        FieldInfo {
+            name: "field4".into(),
+            abbrev: "test.field4".into(),
+            ftype: FtEnum::I32,
+            display: FieldDisplay::Dec,
+            strings: None,
+        },
+        FieldInfo {
+            name: "field5 is present?".into(),
+            abbrev: "test.field5_is_present".into(),
+            ftype: FtEnum::U8,
+            display: FieldDisplay::None,
+            strings: None,
+        },
+        FieldInfo {
+            name: "field5".into(),
+            abbrev: "test.field5".into(),
+            ftype: FtEnum::I64,
+            display: FieldDisplay::Dec,
+            strings: None,
+        },
+        FieldInfo {
+            name: "field6 is present?".into(),
+            abbrev: "test.field6_is_present".into(),
+            ftype: FtEnum::U8,
+            display: FieldDisplay::None,
+            strings: None,
+        },
+        FieldInfo {
+            name: "field6 length".into(),
+            abbrev: "test.field6_len".into(),
+            ftype: FtEnum::U16,
+            display: FieldDisplay::HexDec,
+            strings: None,
+        },
+        FieldInfo {
+            name: "field6".into(),
+            abbrev: "test.field6".into(),
+            ftype: FtEnum::Bytes,
+            display: FieldDisplay::SepSpace,
+            strings: None,
+        },
+        FieldInfo {
+            name: "field7".into(),
+            abbrev: "test.field7".into(),
+            ftype: FtEnum::U32,
+            display: FieldDisplay::Dec,
+            strings: Some(StringsMap::U32(vec![
+                StringMapping {
+                    value: 1,
+                    string: c"ONE",
+                },
+                StringMapping {
+                    value: 2,
+                    string: c"TWO",
+                },
+            ])),
+        },
+        FieldInfo {
+            name: "field8 is present?".into(),
+            abbrev: "test.field8_is_present".into(),
+            ftype: FtEnum::U8,
+            display: FieldDisplay::None,
+            strings: None,
+        },
+        FieldInfo {
+            name: "field8".into(),
+            abbrev: "test.field8".into(),
+            ftype: FtEnum::U32,
+            display: FieldDisplay::Dec,
+            strings: Some(StringsMap::U32(vec![
+                StringMapping {
+                    value: 1,
+                    string: c"ONE",
+                },
+                StringMapping {
+                    value: 2,
+                    string: c"TWO",
+                },
+            ])),
+        },
+        FieldInfo {
+            name: "field9 length".into(),
+            abbrev: "test.field9_len".into(),
+            ftype: FtEnum::U16,
+            display: FieldDisplay::HexDec,
+            strings: None,
+        },
+        FieldInfo {
+            name: "field9".into(),
+            abbrev: "test.field9".into(),
+            ftype: FtEnum::U32,
+            display: FieldDisplay::Dec,
+            strings: Some(StringsMap::U32(vec![
+                StringMapping {
+                    value: 1,
+                    string: c"ONE",
+                },
+                StringMapping {
+                    value: 2,
+                    string: c"TWO",
+                },
+            ])),
+        },
+        FieldInfo {
+            name: "field1".into(),
+            abbrev: "test.field10.field1".into(),
+            ftype: FtEnum::U32,
+            display: FieldDisplay::Dec,
+            strings: None,
+        },
+    ];
+
+    assert_eq!(
+        Test::get_info("Test".into(), "test".into(), None, None),
+        expected
+    );
+}
+
+#[test]
+fn test_array() {
+    #[derive(EpanProtocol)]
+    struct Test {
+        bytes: [u8; 10],
+        ints: [u32; 2],
+    }
+
+    let expected = vec![
+        FieldInfo {
+            name: "bytes".into(),
+            abbrev: "test.bytes".into(),
+            ftype: FtEnum::Bytes,
+            display: FieldDisplay::SepSpace,
+            strings: None,
+        },
+        FieldInfo {
+            name: "ints".into(),
+            abbrev: "test.ints".into(),
+            ftype: FtEnum::U32,
+            display: FieldDisplay::Dec,
+            strings: None,
+        },
+    ];
+
+    assert_eq!(
+        Test::get_info("Test".into(), "test".into(), None, None),
+        expected
+    )
+}
+
+#[test]
+fn test_enum() {
+    let expected = StringsMap::U32(vec![
+        StringMapping {
+            value: 1,
+            string: c"ONE",
+        },
+        StringMapping {
+            value: 2,
+            string: c"TWO",
+        },
+    ]);
+
+    assert_eq!(TestEnum::get_strings_map(), expected);
+    assert_eq!(TestEnum::get_repr(), FtEnum::U32);
+}
+
+#[test]
+fn test_enum64() {
+    #[derive(EpanProtocolEnum)]
+    #[repr(u64)]
+    enum Test {
+        ONE = 1,
+        TWO = 2,
+    }
+
+    let expected = StringsMap::U64(vec![
+        StringMapping64 {
+            value: 1,
+            string: c"ONE",
+        },
+        StringMapping64 {
+            value: 2,
+            string: c"TWO",
+        },
+    ]);
+
+    assert_eq!(Test::get_strings_map(), expected);
+    assert_eq!(Test::get_repr(), FtEnum::U64);
+}
