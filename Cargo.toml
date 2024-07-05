@@ -6,6 +6,8 @@ members = [
     "binderdump-sys",
     "binderdump-structs",
     "binderdump-dissector",
+    "binderdump-derive",
+    "binderdump-epan-sys", "binderdump-trait",
 ]
 
 resolver = "2"

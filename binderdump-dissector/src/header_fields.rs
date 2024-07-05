@@ -22,33 +22,28 @@ pub struct ValueString {
 //         BaseShowAsciiPrintable = epan::BASE_SHOW_ASCII_PRINTABLE
 //     }
 // }
-
-impl Default for epan::header_field_info {
-    fn default() -> Self {
-        Self {
-            name: null(),
-            abbrev: null(),
-            type_: epan::ftenum::FT_NONE,
-            display: 0,
-            strings: null(),
-            bitmask: 0,
-            blurb: null(),
-            // default values set by the HFILL macro
-            id: -1,
-            parent: 0,
-            ref_type: epan::hf_ref_type_HF_REF_TYPE_NONE,
-            same_name_prev_id: -1,
-            same_name_next: null_mut(),
-        }
+fn default_header_field_info() -> epan::header_field_info {
+    epan::header_field_info {
+        name: null(),
+        abbrev: null(),
+        type_: epan::ftenum::FT_NONE,
+        display: 0,
+        strings: null(),
+        bitmask: 0,
+        blurb: null(),
+        // default values set by the HFILL macro
+        id: -1,
+        parent: 0,
+        ref_type: epan::hf_ref_type_HF_REF_TYPE_NONE,
+        same_name_prev_id: -1,
+        same_name_next: null_mut(),
     }
 }
 
-impl Default for epan::hf_register_info {
-    fn default() -> Self {
-        Self {
-            p_id: null_mut(),
-            hfinfo: epan::header_field_info::default(),
-        }
+fn default_hf_register_info() -> epan::hf_register_info {
+    epan::hf_register_info {
+        p_id: null_mut(),
+        hfinfo: default_header_field_info(),
     }
 }
 
@@ -104,7 +99,7 @@ impl HeaderField {
     }
 
     pub fn populate_hf_register_info(&self, hf: &mut epan::hf_register_info) {
-        *hf = epan::hf_register_info::default();
+        *hf = default_hf_register_info();
         hf.p_id = self.handle;
         hf.hfinfo.name = self.name.as_ptr();
         hf.hfinfo.abbrev = self.abbrev.as_ptr();

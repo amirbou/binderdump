@@ -4,7 +4,6 @@ cargo-features = ["per-package-target"]
 name = "binderdump-dissector"
 version = "0.1.0"
 edition = "2021"
-links = "wireshark"
 forced-target = "x86_64-unknown-linux-gnu"
 
 [lib]
@@ -12,9 +11,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 binderdump-structs = { path = "../binderdump-structs" }
+bindump-epan-sys = { version = "0.1.0", path = "../binderdump-epan-sys" }
 bitmask = "0.5.0"
 lazy_static = "1.4.0"
-
-[build-dependencies]
-bindgen = "0.69.4"
-pkg-config = "0.3.30"
