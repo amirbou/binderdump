@@ -15,6 +15,8 @@ serde = { version = "1.0.203", features = ["derive"] }
 serde_repr = "0.1.19"
 thiserror = "1.0.61"
 byteorder = "1.5.0"
+binderdump-derive = { version = "0.1.0", path = "../binderdump-derive" }
+binderdump-trait = { version = "0.1.0", path = "../binderdump-trait" }
 
 [dev-dependencies]
 pretty_assertions = "1.4.0"
