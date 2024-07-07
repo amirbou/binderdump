@@ -101,6 +101,7 @@ impl OffsetDeserializer {
         offset: usize,
         size: usize,
         suffix: &str,
+        keep_previous_field: bool,
     ) -> Result<(), PlainSerializerError> {
         let last_struct = Self::get_last_struct(&mut self.structs_stack)?;
         let mut prev_field = last_struct
@@ -115,17 +116,26 @@ impl OffsetDeserializer {
             size: size,
             inner_struct: None,
         });
-        prev_field.offset += size;
-        last_struct.fields.push(prev_field);
+        if keep_previous_field {
+            prev_field.offset += size;
+            last_struct.fields.push(prev_field);
+        }
         Ok(())
     }
 
-    pub fn add_option(&mut self, offset: usize, size: usize) -> Result<(), PlainSerializerError> {
-        self.add_psuedo(offset, size, "_is_present")
+    pub fn add_option(
+        &mut self,
+        offset: usize,
+        size: usize,
+        is_some: bool,
+    ) -> Result<(), PlainSerializerError> {
+        // if we got a "None" we want to skip the current field
+        self.add_psuedo(offset, size, "_is_present", is_some)
     }
 
     pub fn add_len(&mut self, offset: usize, size: usize) -> Result<(), PlainSerializerError> {
-        self.add_psuedo(offset, size, "_len")
+        // TODO - if len == 0, keep_previous_field should be false?
+        self.add_psuedo(offset, size, "_len", true)
     }
 
     pub fn finish_struct(&mut self, offset: usize) -> Result<(), PlainSerializerError> {
@@ -365,11 +375,12 @@ impl<'de, R: Read> Deserializer<'de> for &mut PlainDeserializer<R> {
     {
         let is_some = self.reader.read_u8()? != 0;
         self.advance_offset::<u8>();
+        self.offsets_deserializer.add_option(
+            self.current_offset - std::mem::size_of::<u8>(),
+            std::mem::size_of::<u8>(),
+            is_some,
+        )?;
         if is_some {
-            self.offsets_deserializer.add_option(
-                self.current_offset - std::mem::size_of::<u8>(),
-                std::mem::size_of::<u8>(),
-            )?;
             visitor.visit_some(self)
         } else {
             visitor.visit_none()
@@ -572,8 +583,12 @@ pub fn from_bytes_with_offsets<'a, T: Deserialize<'a>>(
 
 #[cfg(test)]
 mod test {
-    use crate::binder_serde::de::{FieldOffset, StructOffset};
+    use crate::binder_serde::{
+        de::{FieldOffset, StructOffset},
+        from_bytes_with_offsets,
+    };
     use pretty_assertions::assert_eq;
+    use serde::Deserialize;
     #[test]
     fn test_struct() {
         #[derive(serde::Deserialize, Eq, PartialEq, Debug)]
@@ -814,5 +829,49 @@ mod test {
         };
 
         assert_eq!(offsets.unwrap(), expected_offsets);
+    }
+
+    #[test]
+    fn test_offsets_option_none() {
+        #[derive(Deserialize, Debug, PartialEq, Eq)]
+        struct TestInner {
+            foo: u32,
+        }
+        #[derive(Deserialize, Debug, PartialEq, Eq)]
+        struct Test {
+            inner: Option<TestInner>,
+            bar: u8,
+        }
+
+        let test = b"\x00\x03";
+
+        let expected = Test {
+            inner: None,
+            bar: 3,
+        };
+
+        let expected_offsets = StructOffset {
+            name: "Test".into(),
+            offset: 0,
+            size: 2,
+            fields: vec![
+                FieldOffset {
+                    field_name: "inner_is_present".into(),
+                    offset: 0,
+                    size: 1,
+                    inner_struct: None,
+                },
+                FieldOffset {
+                    field_name: "bar".into(),
+                    offset: 1,
+                    size: 1,
+                    inner_struct: None,
+                },
+            ],
+        };
+
+        let result = from_bytes_with_offsets::<Test>(test).unwrap();
+        assert_eq!(result.0, expected);
+        assert_eq!(result.1.unwrap(), expected_offsets);
     }
 }
