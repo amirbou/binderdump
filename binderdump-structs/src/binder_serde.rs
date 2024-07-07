@@ -2,7 +2,9 @@ pub mod de;
 pub mod error;
 pub mod ser;
 
-pub use de::{from_bytes, read};
+pub use de::{
+    from_bytes, from_bytes_with_offsets, read, read_with_offsets, FieldOffset, StructOffset,
+};
 pub use ser::{to_bytes, write};
 
 #[cfg(test)]
