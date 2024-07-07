@@ -1,10 +1,11 @@
 use super::bwr_layer::BinderWriteReadProtocol;
 use crate::binder_types::{binder_ioctl, BinderInterface};
+use binderdump_derive::{EpanProtocol, EpanProtocolEnum};
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 #[repr(u8)]
-#[derive(PartialEq, Eq, Default, Serialize_repr, Deserialize_repr)]
+#[derive(PartialEq, Eq, Default, Serialize_repr, Deserialize_repr, EpanProtocolEnum)]
 pub enum EventType {
     FinishedIoctl = 0,
     SplitIoctl = 1,
@@ -13,14 +14,16 @@ pub enum EventType {
     Invalid = 4,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize, EpanProtocol)]
 pub struct EventProtocol {
     timestamp: u64,
     pid: i32,
     tid: i32,
+    #[epan(display = StrAsciis, ftype = String)]
     comm: [u8; 16],
     event_type: EventType,
     binder_interface: BinderInterface,
+    #[epan(display = StrAsciis, ftype = String)]
     cmdline: Vec<u8>,
     ioctl_data: Option<IoctlProtocol>,
 }
@@ -57,7 +60,7 @@ impl EventProtocol {
     }
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize, EpanProtocol)]
 pub struct IoctlProtocol {
     fd: i32,
     cmd: binder_ioctl,

@@ -1,8 +1,9 @@
+use binderdump_derive::{EpanProtocol, EpanProtocolEnum};
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 #[repr(u8)]
-#[derive(Default, Eq, PartialEq, Serialize_repr, Deserialize_repr)]
+#[derive(Default, Eq, PartialEq, Serialize_repr, Deserialize_repr, EpanProtocolEnum)]
 pub enum BinderWriteReadType {
     #[default]
     Write = 0,
@@ -31,7 +32,7 @@ impl BinderWriteReadType {
     }
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize, EpanProtocol)]
 pub struct BinderWriteReadProtocol {
     bwr_type: BinderWriteReadType,
     write_size: u64,
@@ -58,7 +59,7 @@ impl BinderWriteReadProtocol {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, EpanProtocol)]
 pub struct Transaction {
     debug_id: i32,
     target_node: i32,
@@ -69,7 +70,7 @@ pub struct Transaction {
     flags: u32,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize, EpanProtocol)]
 pub struct TransactionProtocol {
     transaction: Transaction,
     target_comm: [u8; 16],

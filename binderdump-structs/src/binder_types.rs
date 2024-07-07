@@ -1,4 +1,5 @@
 use anyhow;
+use binderdump_derive::EpanProtocolEnum;
 use binderdump_sys;
 pub use binderdump_sys::{binder_write_read, BINDER_CURRENT_PROTOCOL_VERSION};
 use nix::{request_code_readwrite, request_code_write};
@@ -11,7 +12,7 @@ pub mod binder_command;
 pub mod binder_return;
 pub mod transaction;
 
-#[derive(Default, Clone, Copy, Deserialize_repr, Serialize_repr)]
+#[derive(Default, Clone, Copy, Deserialize_repr, Serialize_repr, EpanProtocolEnum)]
 #[repr(u8)]
 pub enum BinderInterface {
     #[default]
@@ -87,7 +88,16 @@ macro_rules! request_code_write_wrapper {
 }
 
 #[derive(
-    Debug, FromPrimitive, Clone, Copy, PartialEq, Eq, Default, Serialize_repr, Deserialize_repr,
+    Debug,
+    FromPrimitive,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize_repr,
+    Deserialize_repr,
+    EpanProtocolEnum,
 )]
 #[allow(non_camel_case_types)]
 #[repr(i32)]

@@ -174,10 +174,20 @@ dependencies = [
 name = "binderdump-dissector"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "binderdump-epan-sys",
  "binderdump-structs",
- "bindump-epan-sys",
+ "binderdump-trait",
  "bitmask",
  "lazy_static",
+]
+
+[[package]]
+name = "binderdump-epan-sys"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
+ "pkg-config",
 ]
 
 [[package]]
@@ -185,7 +195,9 @@ name = "binderdump-structs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "binderdump-derive",
  "binderdump-sys",
+ "binderdump-trait",
  "byteorder",
  "nix 0.29.0",
  "num",
@@ -231,14 +243,6 @@ dependencies = [
  "shlex",
  "syn 2.0.68",
  "which",
-]
-
-[[package]]
-name = "bindump-epan-sys"
-version = "0.1.0"
-dependencies = [
- "bindgen",
- "pkg-config",
 ]
 
 [[package]]
