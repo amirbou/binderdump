@@ -143,7 +143,6 @@ pub struct StringMapping64 {
     pub string: &'static CStr,
 }
 
-// TODO - when U64 is used, FieldDisplay should be ORed with BASE_VAL64_STRING
 #[derive(Debug, PartialEq, Eq)]
 pub enum StringsMap {
     U32(Vec<StringMapping>),
@@ -174,7 +173,9 @@ pub trait EpanProtocol {
         display: Option<FieldDisplay>,
     ) -> Vec<FieldInfo>;
 
-    // fn get_info_with_name(name: &CStr, abbrev: &CStr) {}
+    fn get_subtrees(abbrev: String) -> Vec<String> {
+        vec![abbrev]
+    }
 }
 
 macro_rules! impl_epan_primitive {
@@ -194,6 +195,10 @@ macro_rules! impl_epan_primitive {
                     display: display.unwrap_or(FieldDisplay::$fd),
                     strings: None,
                 }]
+            }
+
+            fn get_subtrees(_abbrev: String) -> Vec<String> {
+                vec![]
             }
         }
     };
@@ -244,6 +249,10 @@ impl<T: EpanProtocol> EpanProtocol for Vec<T> {
         info.append(&mut field_info);
         info
     }
+
+    fn get_subtrees(abbrev: String) -> Vec<String> {
+        T::get_subtrees(abbrev)
+    }
 }
 
 impl<T: EpanProtocol, const N: usize> EpanProtocol for [T; N] {
@@ -262,6 +271,10 @@ impl<T: EpanProtocol, const N: usize> EpanProtocol for [T; N] {
 
         field_info
     }
+
+    fn get_subtrees(abbrev: String) -> Vec<String> {
+        T::get_subtrees(abbrev)
+    }
 }
 
 impl<T: EpanProtocol> EpanProtocol for Option<T> {
@@ -279,7 +292,7 @@ impl<T: EpanProtocol> EpanProtocol for Option<T> {
         let mut info = vec![FieldInfo {
             name: is_present_name,
             abbrev: is_present_abbrev,
-            ftype: FtEnum::U8,
+            ftype: FtEnum::Boolean,
             display: FieldDisplay::None,
             strings: None,
         }];
@@ -287,6 +300,10 @@ impl<T: EpanProtocol> EpanProtocol for Option<T> {
         let mut field_info = T::get_info(name, abbrev, ftype, display);
         info.append(&mut field_info);
         info
+    }
+
+    fn get_subtrees(abbrev: String) -> Vec<String> {
+        T::get_subtrees(abbrev)
     }
 }
 
@@ -307,5 +324,9 @@ impl<T: EpanProtocolEnum> EpanProtocol for T {
             display: display.unwrap_or(FieldDisplay::Dec),
             strings,
         }]
+    }
+
+    fn get_subtrees(_abbrev: String) -> Vec<String> {
+        vec![]
     }
 }

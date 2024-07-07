@@ -24,7 +24,8 @@ pub fn derive_epan_protocol(input: CompilerTokenStream) -> CompilerTokenStream {
         return syn::Error::into_compile_error(err).into();
     }
 
-    let mut items = Vec::<TokenStream>::new();
+    let mut items = Vec::<TokenStream>::with_capacity(ctx.fields.len());
+    let mut subtrees_items = Vec::<TokenStream>::new();
 
     for field in ctx.fields {
         if field.attrs.skip {
@@ -52,13 +53,21 @@ pub fn derive_epan_protocol(input: CompilerTokenStream) -> CompilerTokenStream {
                 let mut current_abbrev = abbrev.clone();
                 current_abbrev.push_str(concat!(".", #abbrev));
 
-                let mut current = <#ty as EpanProtocol>::get_info(String::from(#name), current_abbrev, #ftype, #display);
+                let mut current = <#ty as binderdump_trait::EpanProtocol>::get_info(String::from(#name), current_abbrev, #ftype, #display);
                 info.append(&mut current);
             }
-        })
+        });
+        subtrees_items.push(quote::quote! {
+            {
+                let mut current_abbrev = abbrev.clone();
+                current_abbrev.push_str(concat!(".", #abbrev));
+
+                let mut current = <#ty as binderdump_trait::EpanProtocol>::get_subtrees(current_abbrev);
+                subtrees.append(&mut current);
+            }
+        });
     }
 
-    // TODO - generics?
     let struct_name = ctx.input.ident;
 
     quote::quote! {
@@ -72,6 +81,14 @@ pub fn derive_epan_protocol(input: CompilerTokenStream) -> CompilerTokenStream {
                 let mut info = vec![];
                 #(#items)*
                 info
+            }
+
+            fn get_subtrees(
+                abbrev: String
+            ) -> Vec<String> {
+                let mut subtrees = vec![abbrev.clone()];
+                #(#subtrees_items)*
+                subtrees
             }
 
         }
