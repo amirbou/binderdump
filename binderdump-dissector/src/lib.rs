@@ -2,7 +2,7 @@ mod dissect_offsets;
 mod epan_plugin;
 
 use binderdump_epan_sys::epan;
-use std::ffi::{c_int, CStr};
+use std::ffi::c_int;
 
 const VERSION: &[u8] = b"0.0.1\0";
 
