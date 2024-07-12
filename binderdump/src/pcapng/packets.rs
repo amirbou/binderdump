@@ -1,4 +1,7 @@
-use super::builders::{EventProtocolBuilder, IoctlProtocolBuilder};
+use super::builders::{
+    BinderWriteReadProtocolBuilder, EventProtocolBuilder, IoctlProtocolBuilder,
+    TransactionProtocolBuilder,
+};
 use super::capture_info::CaptureInfo;
 use super::events_aggregator::EventsAggregator;
 use crate::capture::{
@@ -6,8 +9,7 @@ use crate::capture::{
     process_cache::ProcessCache,
     ringbuf::EventChannel,
 };
-use anyhow::{anyhow, Context, Result};
-use binderdump_structs::bwr_layer::{BinderWriteReadProtocol, TransactionProtocol};
+use anyhow::{Context, Result};
 use binderdump_structs::{
     binder_serde,
     binder_types::{binder_command::BinderCommand, binder_return::BinderReturn},
@@ -127,6 +129,8 @@ impl<W: Write> PacketGenerator<W> {
 
         let mut builder = EventProtocolBuilder::new(timestamp, pid, tid);
         let mut ioctl_builder = IoctlProtocolBuilder::default();
+        let mut bwr_builder = BinderWriteReadProtocolBuilder::new();
+        let mut txn_builder = TransactionProtocolBuilder::new();
         let mut comm: Option<String> = None;
 
         for event in events {
@@ -152,13 +156,19 @@ impl<W: Write> PacketGenerator<W> {
                             .context("failed to convert comm to String")?,
                     );
                 }
-                BinderEventData::BinderWriteRead(bwr_event) => (),
+                BinderEventData::BinderWriteRead(bwr_event) => {
+                    bwr_builder = bwr_builder
+                        .bwr_event(bwr_event)
+                        .context("failed to parse bwr event")?
+                }
                 BinderEventData::BinderIoctlDone(result) => {
                     ioctl_builder = ioctl_builder.result(result);
                     builder = builder.event_type(EventType::FinishedIoctl);
                 }
-                BinderEventData::BinderTransaction(txn) => (),
-                BinderEventData::BinderTransactionReceived(txn) => (),
+                BinderEventData::BinderTransaction(txn) => {
+                    txn_builder = txn_builder.transaction(txn, &mut self.process_cache)?
+                }
+                BinderEventData::BinderTransactionReceived(_) => (),
                 BinderEventData::BinderInvalidateProcess => unreachable!(),
             }
         }
@@ -169,7 +179,9 @@ impl<W: Write> PacketGenerator<W> {
             builder = builder.comm(comm);
         };
 
-        let ioctl = ioctl_builder.build();
+        let bwr = bwr_builder.transaction(txn_builder.build())?.build();
+
+        let ioctl = ioctl_builder.bwr(bwr).build();
         if let Some(ioctl_data) = &ioctl {
             if let Some(binder_interface) = info.get_binder_interface(ioctl_data.fd()) {
                 builder = builder.binder_interface(binder_interface);

@@ -1,8 +1,9 @@
-use super::transaction::{binder_transaction_data, Transaction};
-use crate::errors::ToAnyhow;
-use anyhow::{Context, Error};
+use super::{
+    bwr_trait::Bwr,
+    transaction::{binder_transaction_data, Transaction},
+};
+use anyhow::Error;
 use binderdump_sys;
-use num::FromPrimitive;
 use num_derive;
 use num_derive::FromPrimitive;
 use plain::{Error as PlainError, Plain};
@@ -104,14 +105,16 @@ pub enum BinderReturn {
     FailedReply,
     FrozenReply,
     OnewaySpamSuspect,
-    // not currently supported
+    // currently not supported
     // AcquireResult(),
     // AttemptCookie(),
     // Finished(),
 }
 
-impl BinderReturn {
-    pub fn size(&self) -> usize {
+impl Bwr for BinderReturn {
+    type HeaderType = binder_return;
+
+    fn size(&self) -> usize {
         let inner_size = match self {
             BinderReturn::Error(_) => size_of::<ErrorReturn>(),
             BinderReturn::TransactionSecCtx(_) => size_of::<TransactionSecCtx>(),
@@ -134,7 +137,7 @@ impl BinderReturn {
         4 + inner_size
     }
 
-    fn parse_return(br: &binder_return, data: &[u8]) -> Result<Self, PlainError> {
+    fn parse_with_header(br: &binder_return, data: &[u8]) -> Result<Self, PlainError> {
         let result = match br {
             binder_return::BR_ERROR => {
                 let mut ret = ErrorReturn::default();
@@ -193,18 +196,21 @@ impl BinderReturn {
         };
         Ok(result)
     }
+
+    fn is_transaction(&self) -> bool {
+        match self {
+            BinderReturn::TransactionSecCtx(_)
+            | BinderReturn::Transaction(_)
+            | BinderReturn::Reply(_) => true,
+            _ => false,
+        }
+    }
 }
 
 impl TryFrom<&[u8]> for BinderReturn {
     type Error = Error;
 
     fn try_from(value: &[u8]) -> Result<Self, <BinderReturn as TryFrom<&[u8]>>::Error> {
-        let br: &u32 =
-            plain::from_bytes(value).map_err(|err| err.to_anyhow("Failed to read BR"))?;
-        let br = binder_return::from_u32(*br).context("Failed to cast BR to enum")?;
-
-        let data = &value[4..];
-        Self::parse_return(&br, data)
-            .map_err(|err| err.to_anyhow(&format!("Failed to read {:?}", br)))
+        Self::from_bytes(value)
     }
 }
