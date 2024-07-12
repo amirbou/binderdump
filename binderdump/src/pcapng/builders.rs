@@ -14,6 +14,7 @@ pub struct IoctlProtocolBuilder {
     gid: u32,
     ioctl_id: u64,
     bwr: Option<BinderWriteReadProtocol>,
+    non_empty: bool,
 }
 
 impl IoctlProtocolBuilder {
@@ -24,30 +25,38 @@ impl IoctlProtocolBuilder {
         self.cmd = event.cmd;
         self.arg = event.arg;
         self.ioctl_id = event.ioctl_id;
+        self.non_empty = true;
         self
     }
 
     pub fn bwr(mut self, bwr: BinderWriteReadProtocol) -> Self {
         self.bwr = Some(bwr);
+        self.non_empty = true;
         self
     }
 
     pub fn result(mut self, result: i32) -> Self {
         self.result = result;
+        // TODO - is this correct? if we only have result, we missed the start of the ioctl
+        // self.non_empty = true;
         self
     }
 
-    pub fn build(self) -> IoctlProtocol {
-        IoctlProtocol::new(
-            self.fd,
-            self.cmd,
-            self.arg,
-            self.result,
-            self.uid,
-            self.gid,
-            self.ioctl_id,
-            self.bwr,
-        )
+    pub fn build(self) -> Option<IoctlProtocol> {
+        if self.non_empty {
+            Some(IoctlProtocol::new(
+                self.fd,
+                self.cmd,
+                self.arg,
+                self.result,
+                self.uid,
+                self.gid,
+                self.ioctl_id,
+                self.bwr,
+            ))
+        } else {
+            None
+        }
     }
 }
 
@@ -93,8 +102,8 @@ impl EventProtocolBuilder {
         self
     }
 
-    pub fn ioctl_data(mut self, ioctl_data: IoctlProtocol) -> Self {
-        self.ioctl_data = Some(ioctl_data);
+    pub fn ioctl_data(mut self, ioctl_data: Option<IoctlProtocol>) -> Self {
+        self.ioctl_data = ioctl_data;
         self
     }
 

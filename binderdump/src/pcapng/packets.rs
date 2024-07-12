@@ -6,7 +6,8 @@ use crate::capture::{
     process_cache::ProcessCache,
     ringbuf::EventChannel,
 };
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
+use binderdump_structs::bwr_layer::{BinderWriteReadProtocol, TransactionProtocol};
 use binderdump_structs::{
     binder_serde,
     binder_types::{binder_command::BinderCommand, binder_return::BinderReturn},
@@ -130,7 +131,11 @@ impl<W: Write> PacketGenerator<W> {
 
         for event in events {
             match event.data {
-                BinderEventData::BinderInvalidate => break,
+                BinderEventData::BinderInvalidate => {
+                    // return Err(anyhow!("Dropping invalid packet"))
+                    break;
+                }
+
                 BinderEventData::BinderIoctl(ioctl) => {
                     ioctl_builder = ioctl_builder.with_ioctl_event(&ioctl);
                     comm = Some(
@@ -147,13 +152,13 @@ impl<W: Write> PacketGenerator<W> {
                             .context("failed to convert comm to String")?,
                     );
                 }
-                BinderEventData::BinderWriteRead(_) => (),
+                BinderEventData::BinderWriteRead(bwr_event) => (),
                 BinderEventData::BinderIoctlDone(result) => {
                     ioctl_builder = ioctl_builder.result(result);
                     builder = builder.event_type(EventType::FinishedIoctl);
                 }
-                BinderEventData::BinderTransaction(_) => (),
-                BinderEventData::BinderTransactionReceived(_) => (),
+                BinderEventData::BinderTransaction(txn) => (),
+                BinderEventData::BinderTransactionReceived(txn) => (),
                 BinderEventData::BinderInvalidateProcess => unreachable!(),
             }
         }
@@ -165,9 +170,12 @@ impl<W: Write> PacketGenerator<W> {
         };
 
         let ioctl = ioctl_builder.build();
-        if let Some(binder_interface) = info.get_binder_interface(ioctl.fd()) {
-            builder = builder.binder_interface(binder_interface);
+        if let Some(ioctl_data) = &ioctl {
+            if let Some(binder_interface) = info.get_binder_interface(ioctl_data.fd()) {
+                builder = builder.binder_interface(binder_interface);
+            }
         }
+
         builder
             .cmdline(info.get_cmdline().into())
             .ioctl_data(ioctl)

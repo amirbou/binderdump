@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 #[repr(u8)]
-#[derive(PartialEq, Eq, Default, Serialize_repr, Deserialize_repr, EpanProtocolEnum)]
+#[derive(PartialEq, Eq, Default, Serialize_repr, Deserialize_repr, EpanProtocolEnum, Debug)]
 pub enum EventType {
     FinishedIoctl = 0,
     SplitIoctl = 1,
@@ -14,7 +14,7 @@ pub enum EventType {
     Invalid = 4,
 }
 
-#[derive(Default, Serialize, Deserialize, EpanProtocol)]
+#[derive(Default, Serialize, Deserialize, EpanProtocol, Debug)]
 pub struct EventProtocol {
     timestamp: u64,
     pid: i32,
@@ -60,7 +60,7 @@ impl EventProtocol {
     }
 }
 
-#[derive(Default, Serialize, Deserialize, EpanProtocol)]
+#[derive(Default, Serialize, Deserialize, EpanProtocol, Debug)]
 pub struct IoctlProtocol {
     fd: i32,
     cmd: binder_ioctl,

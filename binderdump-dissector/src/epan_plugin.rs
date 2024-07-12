@@ -100,6 +100,15 @@ impl HeaderField {
             },
             None => (),
         }
+        match &self.display {
+            field_display_e::SEP_DOT
+            | field_display_e::SEP_DASH
+            | field_display_e::SEP_COLON
+            | field_display_e::SEP_SPACE => {
+                display_flag |= binderdump_epan_sys::BASE_SHOW_ASCII_PRINTABLE as c_int
+            }
+            _ => (),
+        }
         hf_register_info {
             p_id: handle_ptr as *mut c_int,
             hfinfo: header_field_info {
