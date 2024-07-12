@@ -1,5 +1,6 @@
 use crate::capture::events::{BinderEventIoctl, BinderEventWriteRead};
 use crate::capture::process_cache::ProcessCache;
+use anyhow::Context;
 use binderdump_structs::binder_types::{binder_ioctl, BinderInterface};
 use binderdump_structs::bwr_layer::{
     BinderWriteReadProtocol, BinderWriteReadType, Transaction, TransactionProtocol,
@@ -204,7 +205,14 @@ impl TransactionProtocolBuilder {
         txn: Transaction,
         procs: &mut ProcessCache,
     ) -> anyhow::Result<Self> {
-        let proc_info = procs.get_proc(txn.to_proc, txn.to_thread, None)?;
+        let to_thread = if txn.to_thread > 0 {
+            txn.to_thread
+        } else {
+            txn.to_proc
+        };
+        let proc_info = procs
+            .get_proc(txn.to_proc, to_thread, None)
+            .context(format!("failed to get target process for txn: {:?}", txn))?;
 
         let comm = proc_info.get_comm();
         let mut comm_vec = comm.to_string().into_bytes();
