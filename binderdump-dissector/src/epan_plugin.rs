@@ -386,6 +386,35 @@ impl Protocol {
                 tree_item,
             )?;
 
+            let event = binderdump.0;
+            let source = format!(
+                "{}:{}:{}",
+                event.pid,
+                event.tid,
+                String::from_utf8(event.cmdline)?
+            );
+            let csource = CString::new(source)?;
+            epan::col_add_str((*pinfo).cinfo, epan::COL_DEF_SRC as c_int, csource.as_ptr());
+
+            if let Some(ioctl) = event.ioctl_data {
+                if let Some(bwr) = ioctl.bwr {
+                    if let Some(txn) = bwr.transaction {
+                        let target = format!(
+                            "{}:{}:{}",
+                            txn.transaction.to_proc,
+                            txn.transaction.to_thread,
+                            String::from_utf8(txn.target_cmdline)?
+                        );
+                        let ctarget = CString::new(target)?;
+                        epan::col_add_str(
+                            (*pinfo).cinfo,
+                            epan::COL_DEF_DST as c_int,
+                            ctarget.as_ptr(),
+                        );
+                    }
+                }
+            }
+
             Ok(epan::tvb_captured_length(tvb) as c_int)
         }
     }
