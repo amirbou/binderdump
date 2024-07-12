@@ -16,16 +16,16 @@ pub enum EventType {
 
 #[derive(Default, Serialize, Deserialize, EpanProtocol, Debug)]
 pub struct EventProtocol {
-    timestamp: u64,
-    pid: i32,
-    tid: i32,
+    pub timestamp: u64,
+    pub pid: i32,
+    pub tid: i32,
     #[epan(display = StrAsciis, ftype = String)]
-    comm: [u8; 16],
-    event_type: EventType,
-    binder_interface: BinderInterface,
+    pub comm: [u8; 16],
+    pub event_type: EventType,
+    pub binder_interface: BinderInterface,
     #[epan(display = StrAsciis, ftype = String)]
-    cmdline: Vec<u8>,
-    ioctl_data: Option<IoctlProtocol>,
+    pub cmdline: Vec<u8>,
+    pub ioctl_data: Option<IoctlProtocol>,
 }
 
 impl EventProtocol {
@@ -62,14 +62,14 @@ impl EventProtocol {
 
 #[derive(Default, Serialize, Deserialize, EpanProtocol, Debug)]
 pub struct IoctlProtocol {
-    fd: i32,
-    cmd: binder_ioctl,
-    arg: u64,
-    result: i32,
-    uid: u32,
-    gid: u32,
-    ioctl_id: u64,
-    bwr: Option<BinderWriteReadProtocol>,
+    pub fd: i32,
+    pub cmd: binder_ioctl,
+    pub arg: u64,
+    pub result: i32,
+    pub uid: u32,
+    pub gid: u32,
+    pub ioctl_id: u64,
+    pub bwr: Option<BinderWriteReadProtocol>,
 }
 
 impl IoctlProtocol {
