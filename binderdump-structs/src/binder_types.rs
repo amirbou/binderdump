@@ -12,7 +12,7 @@ pub mod binder_command;
 pub mod binder_return;
 pub mod transaction;
 
-#[derive(Default, Clone, Copy, Deserialize_repr, Serialize_repr, EpanProtocolEnum)]
+#[derive(Default, Clone, Copy, Deserialize_repr, Serialize_repr, EpanProtocolEnum, Debug)]
 #[repr(u8)]
 pub enum BinderInterface {
     #[default]

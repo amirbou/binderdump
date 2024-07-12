@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 #[repr(u8)]
-#[derive(Default, Eq, PartialEq, Serialize_repr, Deserialize_repr, EpanProtocolEnum)]
+#[derive(Default, Eq, PartialEq, Serialize_repr, Deserialize_repr, EpanProtocolEnum, Debug)]
 pub enum BinderWriteReadType {
     #[default]
     Write = 0,
@@ -32,17 +32,17 @@ impl BinderWriteReadType {
     }
 }
 
-#[derive(Default, Serialize, Deserialize, EpanProtocol)]
+#[derive(Default, Serialize, Deserialize, EpanProtocol, Debug)]
 pub struct BinderWriteReadProtocol {
-    bwr_type: BinderWriteReadType,
-    write_size: u64,
-    write_consumed: u64,
-    write_buffer: u64,
-    read_size: u64,
-    read_consumed: u64,
-    read_buffer: u64,
-    data: Vec<u8>,
-    transaction: Option<TransactionProtocol>,
+    pub bwr_type: BinderWriteReadType,
+    pub write_size: u64,
+    pub write_consumed: u64,
+    pub write_buffer: u64,
+    pub read_size: u64,
+    pub read_consumed: u64,
+    pub read_buffer: u64,
+    pub data: Vec<u8>,
+    pub transaction: Option<TransactionProtocol>,
 }
 
 impl BinderWriteReadProtocol {
@@ -70,9 +70,11 @@ pub struct Transaction {
     flags: u32,
 }
 
-#[derive(Default, Serialize, Deserialize, EpanProtocol)]
+#[derive(Default, Serialize, Deserialize, EpanProtocol, Debug)]
 pub struct TransactionProtocol {
     transaction: Transaction,
+    #[epan(display = StrAsciis, ftype = String)]
     target_comm: [u8; 16],
+    #[epan(display = StrAsciis, ftype = String)]
     target_cmdline: Vec<u8>,
 }
