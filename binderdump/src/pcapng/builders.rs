@@ -1,6 +1,9 @@
-use crate::capture::events::BinderEventIoctl;
+use crate::capture::events::{BinderEventIoctl, BinderEventWriteRead};
+use crate::capture::process_cache::ProcessCache;
 use binderdump_structs::binder_types::{binder_ioctl, BinderInterface};
-use binderdump_structs::bwr_layer::BinderWriteReadProtocol;
+use binderdump_structs::bwr_layer::{
+    BinderWriteReadProtocol, BinderWriteReadType, Transaction, TransactionProtocol,
+};
 pub use binderdump_structs::event_layer::EventType;
 use binderdump_structs::event_layer::{EventProtocol, IoctlProtocol};
 
@@ -29,8 +32,8 @@ impl IoctlProtocolBuilder {
         self
     }
 
-    pub fn bwr(mut self, bwr: BinderWriteReadProtocol) -> Self {
-        self.bwr = Some(bwr);
+    pub fn bwr(mut self, bwr: Option<BinderWriteReadProtocol>) -> Self {
+        self.bwr = bwr;
         self.non_empty = true;
         self
     }
@@ -124,5 +127,98 @@ impl EventProtocolBuilder {
             self.cmdline.map(|s| s.into_bytes()).unwrap_or_default(),
             self.ioctl_data,
         ))
+    }
+}
+
+#[derive(Default)]
+pub struct BinderWriteReadProtocolBuilder {
+    bwr: Option<BinderWriteReadProtocol>,
+}
+
+impl BinderWriteReadProtocolBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn build(self) -> Option<BinderWriteReadProtocol> {
+        self.bwr
+    }
+
+    pub fn bwr_event(mut self, event: BinderEventWriteRead) -> anyhow::Result<Self> {
+        let mut bwr = BinderWriteReadProtocol::default();
+
+        let data = match event {
+            BinderEventWriteRead::BinderEventRead(br) => {
+                bwr.bwr_type = BinderWriteReadType::Read;
+                br
+            }
+            BinderEventWriteRead::BinderEventWrite(bw) => {
+                bwr.bwr_type = BinderWriteReadType::Write;
+                bw
+            }
+        };
+        let bwr_info = data.get_bwr();
+
+        bwr.write_size = bwr_info.write_size;
+        bwr.write_consumed = bwr_info.write_consumed;
+        bwr.write_buffer = bwr_info.write_buffer;
+
+        bwr.read_size = bwr_info.read_size;
+        bwr.read_consumed = bwr_info.read_consumed;
+        bwr.read_buffer = bwr_info.read_buffer;
+
+        bwr.data = data.take_data();
+
+        self.bwr = Some(bwr);
+        Ok(self)
+    }
+
+    pub fn transaction(mut self, txn: Option<TransactionProtocol>) -> anyhow::Result<Self> {
+        if txn.is_none() {
+            return Ok(self);
+        }
+        let bwr = self.bwr.as_mut().ok_or(anyhow::anyhow!(
+            "Tried to add transaction to an empty BinderWriteReadProtocol"
+        ))?;
+        bwr.transaction = txn;
+        Ok(self)
+    }
+}
+
+#[derive(Default)]
+pub struct TransactionProtocolBuilder {
+    txn: Option<TransactionProtocol>,
+}
+
+impl TransactionProtocolBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn build(self) -> Option<TransactionProtocol> {
+        self.txn
+    }
+
+    pub fn transaction(
+        mut self,
+        txn: Transaction,
+        procs: &mut ProcessCache,
+    ) -> anyhow::Result<Self> {
+        let proc_info = procs.get_proc(txn.to_proc, txn.to_thread, None)?;
+
+        let comm = proc_info.get_comm();
+        let mut comm_vec = comm.to_string().into_bytes();
+        comm_vec.resize(16, 0);
+        let comm: [u8; 16] = comm_vec.try_into().or(Err(anyhow::anyhow!(
+            "failed to convert comm String to [u8; 16]"
+        )))?;
+
+        self.txn = Some(TransactionProtocol {
+            transaction: txn,
+            target_comm: comm,
+            target_cmdline: proc_info.get_cmdline().to_string().into_bytes(),
+        });
+
+        Ok(self)
     }
 }

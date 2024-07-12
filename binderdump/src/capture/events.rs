@@ -4,8 +4,9 @@ use super::common_types::{
 };
 use anyhow::{anyhow, Context};
 use binderdump_structs::binder_types::{
-    binder_command, binder_ioctl, binder_return, binder_write_read,
+    binder_command, binder_ioctl, binder_return, binder_write_read, bwr_trait::Bwr,
 };
+use binderdump_structs::bwr_layer::Transaction;
 use binderdump_structs::errors::ToAnyhow;
 use num::FromPrimitive;
 use num_derive::FromPrimitive;
@@ -41,20 +42,19 @@ pub enum BinderProcessState {
     BINDER_READ = common_types::binder_process_state_t_BINDER_READ,
 }
 
-// TODO
-// impl From<&binder_event_transaction> for Transaction {
-//     fn from(value: &binder_event_transaction) -> Self {
-//         Self {
-//             debug_id: value.debug_id,
-//             target_node: value.target_node,
-//             to_proc: value.to_proc,
-//             to_thread: value.to_thread,
-//             reply: value.reply,
-//             code: value.code,
-//             flags: value.flags,
-//         }
-//     }
-// }
+impl From<&binder_event_transaction> for Transaction {
+    fn from(value: &binder_event_transaction) -> Self {
+        Self {
+            debug_id: value.debug_id,
+            target_node: value.target_node,
+            to_proc: value.to_proc,
+            to_thread: value.to_thread,
+            reply: value.reply,
+            code: value.code,
+            flags: value.flags,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum BinderEventData {
@@ -62,8 +62,8 @@ pub enum BinderEventData {
     BinderIoctl(BinderEventIoctl),
     BinderWriteRead(BinderEventWriteRead),
     BinderIoctlDone(i32),
-    BinderTransaction(binder_event_transaction),
-    BinderTransactionReceived(binder_event_transaction_received),
+    BinderTransaction(Transaction),
+    BinderTransactionReceived(std::ffi::c_int),
     BinderInvalidateProcess,
 }
 
@@ -115,7 +115,7 @@ impl TryFrom<&[u8]> for BinderEvent {
                 let data = &value[HEADER_SIZE..];
                 let raw_event: &binder_event_transaction = plain::from_bytes(data)
                     .map_err(|err| err.to_anyhow("Failed to parse binder_event_transaction"))?;
-                BinderEventData::BinderTransaction(*raw_event)
+                BinderEventData::BinderTransaction(raw_event.into())
             }
             BinderProcessState::BINDER_WRITE_DONE => todo!(),
             BinderProcessState::BINDER_WAIT_FOR_WORK => todo!(),
@@ -127,7 +127,7 @@ impl TryFrom<&[u8]> for BinderEvent {
                     .map_err(|err| {
                         err.to_anyhow("Failed to parse binder_event_transaction_received")
                     })?;
-                BinderEventData::BinderTransactionReceived(*raw_event)
+                BinderEventData::BinderTransactionReceived(raw_event.debug_id)
             }
             BinderProcessState::BINDER_IOCTL_DONE => {
                 let data = &value[HEADER_SIZE..];
@@ -210,6 +210,10 @@ impl BinderEventWriteReadData {
     pub fn data(&self) -> &[u8] {
         &self.buffer
     }
+
+    pub fn take_data(self) -> Vec<u8> {
+        self.buffer
+    }
 }
 
 // TODO - change to iterator
@@ -280,12 +284,17 @@ pub enum BinderEventWriteRead {
 }
 
 impl BinderEventWriteRead {
-    // should only be used on BinderEventWrite variant
-    fn find_transaction_command(bw: &BinderEventWriteReadData) -> anyhow::Result<bool> {
-        let data = bw.data();
+    pub fn is_read(&self) -> bool {
+        match self {
+            BinderEventWriteRead::BinderEventRead(_) => true,
+            BinderEventWriteRead::BinderEventWrite(_) => false,
+        }
+    }
+
+    fn any_transaction_impl<T: Bwr>(data: &[u8]) -> anyhow::Result<bool> {
         let mut pos = 0;
         while pos < data.len() {
-            let bc = binder_command::BinderCommand::try_from(&data[pos..])?;
+            let bc = T::from_bytes(&data[pos..])?;
             pos += bc.size();
             if bc.is_transaction() {
                 return Ok(true);
@@ -293,19 +302,30 @@ impl BinderEventWriteRead {
         }
         if pos != data.len() {
             return Err(anyhow!(
-                "Only {} out of {} bytes comsumed from bwr write command",
+                "Only {} out of {} bytes comsumed from bwr command",
                 pos,
                 data.len()
             ));
         }
         Ok(false)
     }
+
+    pub fn any_transaction(&self) -> anyhow::Result<bool> {
+        match self {
+            BinderEventWriteRead::BinderEventRead(br) => {
+                Self::any_transaction_impl::<binder_return::BinderReturn>(br.data())
+            }
+            BinderEventWriteRead::BinderEventWrite(bw) => {
+                Self::any_transaction_impl::<binder_command::BinderCommand>(bw.data())
+            }
+        }
+    }
     // returns true if we expect the bwr ioctl to block until a response is received,
     // this is true if we are writing, and we have a BR_TRANSACTION (or any of its variations) to send
     pub fn is_blocking(&self) -> anyhow::Result<bool> {
         match self {
             BinderEventWriteRead::BinderEventRead(_) => Ok(false),
-            BinderEventWriteRead::BinderEventWrite(bw) => Self::find_transaction_command(bw),
+            BinderEventWriteRead::BinderEventWrite(_) => self.any_transaction(),
         }
     }
 

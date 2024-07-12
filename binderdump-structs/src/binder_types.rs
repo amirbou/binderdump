@@ -10,6 +10,7 @@ use std::mem::size_of;
 use std::path::{Path, PathBuf};
 pub mod binder_command;
 pub mod binder_return;
+pub mod bwr_trait;
 pub mod transaction;
 
 #[derive(Default, Clone, Copy, Deserialize_repr, Serialize_repr, EpanProtocolEnum, Debug)]

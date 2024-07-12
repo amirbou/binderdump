@@ -1,8 +1,8 @@
-use super::transaction::{Transaction, TransactionSg};
-use crate::errors::ToAnyhow;
-use anyhow::Context;
+use super::{
+    bwr_trait::Bwr,
+    transaction::{Transaction, TransactionSg},
+};
 use binderdump_sys;
-use num::FromPrimitive;
 use num_derive;
 use num_derive::FromPrimitive;
 use plain::{Error as PlainError, Plain};
@@ -95,8 +95,12 @@ unsafe impl Plain for FreeBufferCommand {}
 unsafe impl Plain for DeathCommand {}
 unsafe impl Plain for DeathDoneCommand {}
 
-impl BinderCommand {
-    pub fn size(&self) -> usize {
+impl BinderCommand {}
+
+impl Bwr for BinderCommand {
+    type HeaderType = binder_command;
+
+    fn size(&self) -> usize {
         let inner_size = match self {
             BinderCommand::IncRefs(_)
             | BinderCommand::Acquire(_)
@@ -120,19 +124,7 @@ impl BinderCommand {
         4 + inner_size
     }
 
-    pub fn is_transaction(&self) -> bool {
-        match self {
-            BinderCommand::TransactionSg(_)
-            | BinderCommand::ReplySg(_)
-            | BinderCommand::Transaction(_)
-            | BinderCommand::Reply(_) => true,
-            _ => false,
-        }
-    }
-}
-
-impl BinderCommand {
-    fn parse_command(bc: &binder_command, data: &[u8]) -> Result<Self, PlainError> {
+    fn parse_with_header(bc: &binder_command, data: &[u8]) -> Result<Self, PlainError> {
         let result = match bc {
             binder_command::BC_TRANSACTION | binder_command::BC_REPLY => {
                 let mut command = Transaction::default();
@@ -207,18 +199,22 @@ impl BinderCommand {
         };
         Ok(result)
     }
+
+    fn is_transaction(&self) -> bool {
+        match self {
+            BinderCommand::TransactionSg(_)
+            | BinderCommand::ReplySg(_)
+            | BinderCommand::Transaction(_)
+            | BinderCommand::Reply(_) => true,
+            _ => false,
+        }
+    }
 }
 
 impl TryFrom<&[u8]> for BinderCommand {
     type Error = anyhow::Error;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        let bc: &u32 =
-            plain::from_bytes(value).map_err(|err| err.to_anyhow("Failed to read BC"))?;
-        let bc = binder_command::from_u32(*bc).context("Failed to cast BC to enum")?;
-
-        let data = &value[4..];
-        Self::parse_command(&bc, data)
-            .map_err(|err| err.to_anyhow(&format!("Failed to read {:?}", bc)))
+        Self::from_bytes(value)
     }
 }
