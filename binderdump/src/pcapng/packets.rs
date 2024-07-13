@@ -10,6 +10,7 @@ use crate::capture::{
     ringbuf::EventChannel,
 };
 use anyhow::{Context, Result};
+use binderdump_structs::bwr_layer::Transaction;
 use binderdump_structs::{
     binder_serde,
     binder_types::{binder_command::BinderCommand, binder_return::BinderReturn},
@@ -29,6 +30,7 @@ use pcap_file::{
     },
     DataLink,
 };
+use std::collections::HashMap;
 use std::io::{Cursor, Write};
 use std::time::Duration;
 use yansi::Paint;
@@ -37,6 +39,7 @@ pub struct PacketGenerator<W: Write> {
     pcap_writer: PcapNgWriter<W>,
     process_cache: ProcessCache,
     events_aggregator: Option<EventsAggregator>,
+    ongoing_txn: HashMap<i32, Transaction>,
     timeshift: Duration,
 }
 
@@ -76,6 +79,7 @@ impl<W: Write> PacketGenerator<W> {
             pcap_writer,
             process_cache: ProcessCache::new(),
             events_aggregator: Some(EventsAggregator::new(channel)),
+            ongoing_txn: HashMap::new(),
             timeshift: capture_info.get_timeshift().clone(),
         })
     }
@@ -166,9 +170,36 @@ impl<W: Write> PacketGenerator<W> {
                     builder = builder.event_type(EventType::FinishedIoctl);
                 }
                 BinderEventData::BinderTransaction(txn) => {
+                    let recv_txn = Transaction {
+                        debug_id: txn.debug_id,
+                        target_node: txn.target_node,
+                        to_proc: pid,
+                        to_thread: tid,
+                        reply: (!(txn.reply != 0)) as i32,
+                        code: txn.code,
+                        flags: txn.flags,
+                    };
+                    if let Some(txn) = self.ongoing_txn.insert(txn.debug_id, recv_txn) {
+                        return Err(anyhow::anyhow!(format!(
+                            "Transaction {} is already ongoing",
+                            txn.debug_id
+                        )));
+                    }
                     txn_builder = txn_builder.transaction(txn, &mut self.process_cache)?
                 }
-                BinderEventData::BinderTransactionReceived(_) => (),
+                BinderEventData::BinderTransactionReceived(txn_id) => {
+                    match self.ongoing_txn.remove(&txn_id) {
+                        Some(txn) => {
+                            txn_builder = txn_builder.transaction(txn, &mut self.process_cache)?
+                        }
+                        None => {
+                            return Err(anyhow::anyhow!(format!(
+                                "Transaction {} is not ongoing",
+                                txn_id
+                            )))
+                        }
+                    }
+                }
                 BinderEventData::BinderInvalidateProcess => unreachable!(),
             }
         }
