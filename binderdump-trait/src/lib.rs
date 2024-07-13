@@ -161,6 +161,8 @@ pub struct FieldInfo {
 pub trait EpanProtocolEnum {
     fn get_strings_map() -> StringsMap;
     fn get_repr() -> FtEnum;
+    fn to_cstr(&self) -> &'static CStr;
+    fn to_str(&self) -> &'static str;
 }
 
 pub trait EpanProtocol {

@@ -105,23 +105,37 @@ pub fn derive_epan_protocol_enum(input: CompilerTokenStream) -> CompilerTokenStr
         variants,
     } = syn::parse_macro_input!(input as EnumInput);
 
-    let items = variants.iter().map(|variant| {
-        let string = syn::LitCStr::new(&CString::new(variant.to_string()).unwrap(), variant.span());
-        match repr_type {
+    let mut items = Vec::with_capacity(variants.len());
+    let mut to_cstr_items = Vec::with_capacity(variants.len());
+    let mut to_str_items = Vec::with_capacity(variants.len());
+    for variant in &variants {
+        let cstring =
+            syn::LitCStr::new(&CString::new(variant.to_string()).unwrap(), variant.span());
+        let string = syn::LitStr::new(&variant.to_string(), variant.span());
+
+        items.push(match repr_type {
             parse::ReprType::U32 => quote::quote! {
                 binderdump_trait::StringMapping {
                     value: #ident::#variant as u32,
-                    string: #string
+                    string: #cstring
                 },
             },
             parse::ReprType::U64 => quote::quote! {
                 binderdump_trait::StringMapping64 {
                     value: #ident::#variant as u64,
-                    string: #string
+                    string: #cstring
                 },
             },
-        }
-    });
+        });
+
+        to_cstr_items.push(quote::quote! {
+            #ident::#variant => #cstring,
+        });
+
+        to_str_items.push(quote::quote! {
+            #ident::#variant => #string,
+        })
+    }
 
     let ftype_str = format!("binderdump_trait::FtEnum::{}", Into::<&str>::into(ftype));
     let ftype_token: proc_macro2::TokenStream = ftype_str.parse().unwrap();
@@ -147,6 +161,18 @@ pub fn derive_epan_protocol_enum(input: CompilerTokenStream) -> CompilerTokenStr
 
             fn get_repr() -> binderdump_trait::FtEnum {
                 #ftype_token
+            }
+
+            fn to_cstr(&self) -> &'static std::ffi::CStr {
+                match self {
+                    #(#to_cstr_items)*
+                }
+            }
+
+            fn to_str(&self) -> &'static str {
+                match self {
+                    #(#to_str_items)*
+                }
             }
         }
     }
