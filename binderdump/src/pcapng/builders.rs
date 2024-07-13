@@ -205,6 +205,10 @@ impl TransactionProtocolBuilder {
         txn: Transaction,
         procs: &mut ProcessCache,
     ) -> anyhow::Result<Self> {
+        if self.txn.is_some() {
+            return Err(anyhow::anyhow!("Transaction already set!"));
+        }
+
         let to_thread = if txn.to_thread > 0 {
             txn.to_thread
         } else {
