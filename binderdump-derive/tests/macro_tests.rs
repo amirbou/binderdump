@@ -244,6 +244,10 @@ fn test_enum() {
     assert_eq!(TestEnum::get_strings_map(), expected);
     assert_eq!(TestEnum::get_repr(), FtEnum::U32);
     assert_eq!(TestEnum::get_subtrees("test".into()), Vec::<String>::new());
+    assert_eq!(TestEnum::ONE.to_cstr(), c"ONE");
+    assert_eq!(TestEnum::TWO.to_cstr(), c"TWO");
+    assert_eq!(TestEnum::ONE.to_str(), "ONE");
+    assert_eq!(TestEnum::TWO.to_str(), "TWO");
 }
 
 #[test]
