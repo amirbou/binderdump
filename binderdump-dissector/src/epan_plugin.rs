@@ -1,264 +1,21 @@
-use anyhow::{Context, Error};
-use binderdump_epan_sys::{epan, field_display_e, ftenum, header_field_info, hf_register_info};
+use binderdump_epan_sys::epan;
 use binderdump_structs;
-use binderdump_trait::{EpanProtocol, FieldDisplay, FieldInfo, FtEnum, StringsMap};
+use binderdump_structs::binder_serde::FieldOffset;
+use binderdump_structs::binder_types::binder_command;
+use binderdump_structs::binder_types::binder_return;
+use binderdump_structs::binder_types::bwr_trait::Bwr;
+use binderdump_structs::event_layer::EventProtocol;
+use binderdump_trait::EpanProtocol;
 use core::slice;
 use std::collections::HashMap;
 use std::ffi::{c_int, c_void, CStr, CString};
-use std::ptr::{null, null_mut};
+use std::ptr::null_mut;
 use std::sync::OnceLock;
 
 use crate::dissect_offsets;
-
-pub struct HeaderFieldsManager {
-    fields_to_handles: HashMap<String, c_int>,
-    header_fields: Vec<HeaderField>,
-    subtrees: Vec<String>,
-}
-
-struct HeaderField {
-    name: CString,
-    abbrev: CString,
-    ftype: ftenum,
-    display: field_display_e,
-    strings: Option<StringsMap>,
-}
-
-macro_rules! _create_raw_strings {
-    ($strings:expr, $dst:ident) => {
-        if $strings.len() == 0 {
-            null() as *const binderdump_epan_sys::$dst
-        } else {
-            let mut raw_vec = Vec::with_capacity($strings.len() + 1);
-            for string in $strings {
-                let value_string = binderdump_epan_sys::$dst {
-                    value: string.value,
-                    strptr: string.string.as_ptr(),
-                };
-                raw_vec.push(value_string);
-            }
-            // add sentinal NULL struct at the end
-            raw_vec.push(binderdump_epan_sys::$dst {
-                value: 0,
-                strptr: null_mut(),
-            });
-
-            let boxed_array = raw_vec.into_boxed_slice();
-            let fat_ptr: *mut [binderdump_epan_sys::$dst] = Box::into_raw(boxed_array);
-            fat_ptr as _
-        }
-    };
-}
-
-impl HeaderField {
-    fn create_raw_strings(&self) -> *const std::ffi::c_void {
-        if self.strings.is_none() {
-            return null();
-        }
-        let strings = self.strings.as_ref().unwrap();
-        match strings {
-            StringsMap::U32(strings) => {
-                _create_raw_strings!(strings, value_string) as *const std::ffi::c_void
-            }
-            StringsMap::U64(strings) => {
-                _create_raw_strings!(strings, val64_string) as *const std::ffi::c_void
-            }
-        }
-    }
-
-    #[allow(dead_code)]
-    fn destroy_raw_strings(&self, raw_strings: *mut std::ffi::c_void) {
-        if raw_strings.is_null() || self.strings.is_none() {
-            return;
-        }
-        let strings = self.strings.as_ref().unwrap();
-        match strings {
-            StringsMap::U32(strings) => unsafe {
-                let slice: &mut [binderdump_epan_sys::value_string] =
-                    slice::from_raw_parts_mut(raw_strings as *mut _, strings.len() + 1);
-                let _ = Box::from_raw(slice);
-            },
-            StringsMap::U64(strings) => unsafe {
-                let slice: &mut [binderdump_epan_sys::val64_string] =
-                    slice::from_raw_parts_mut(raw_strings as *mut _, strings.len() + 1);
-                let _ = Box::from_raw(slice);
-            },
-        }
-    }
-
-    fn to_ffi(&self, handle_ptr: &mut c_int) -> hf_register_info {
-        let mut display_flag = 0;
-        match &self.strings {
-            Some(strings) => match strings {
-                StringsMap::U32(_) => {
-                    display_flag = binderdump_epan_sys::BASE_SPECIAL_VALS as c_int
-                }
-                StringsMap::U64(_) => {
-                    display_flag = binderdump_epan_sys::BASE_SPECIAL_VALS as c_int
-                        | binderdump_epan_sys::BASE_VAL64_STRING as c_int
-                }
-            },
-            None => (),
-        }
-        match &self.display {
-            field_display_e::SEP_DOT
-            | field_display_e::SEP_DASH
-            | field_display_e::SEP_COLON
-            | field_display_e::SEP_SPACE => {
-                display_flag |= binderdump_epan_sys::BASE_SHOW_ASCII_PRINTABLE as c_int
-            }
-            _ => (),
-        }
-        hf_register_info {
-            p_id: handle_ptr as *mut c_int,
-            hfinfo: header_field_info {
-                name: self.name.as_ptr(),
-                abbrev: self.abbrev.as_ptr(),
-                type_: self.ftype.clone(),
-                display: self.display as c_int | display_flag,
-                strings: self.create_raw_strings(),
-                bitmask: 0,
-                blurb: null(),
-                // default values set by the HFILL macro
-                id: -1,
-                parent: 0,
-                ref_type: binderdump_epan_sys::hf_ref_type_HF_REF_TYPE_NONE,
-                same_name_prev_id: -1,
-                same_name_next: null_mut(),
-            },
-        }
-    }
-}
-
-fn translate_ftenum(ftype: FtEnum) -> ftenum {
-    match ftype {
-        FtEnum::None => ftenum::FT_NONE,
-        FtEnum::Protocol => ftenum::FT_PROTOCOL,
-        FtEnum::Boolean => ftenum::FT_BOOLEAN,
-        FtEnum::Char => ftenum::FT_CHAR,
-        FtEnum::U8 => ftenum::FT_UINT8,
-        FtEnum::U16 => ftenum::FT_UINT16,
-        FtEnum::U32 => ftenum::FT_UINT32,
-        FtEnum::U64 => ftenum::FT_UINT64,
-        FtEnum::I8 => ftenum::FT_INT8,
-        FtEnum::I16 => ftenum::FT_INT16,
-        FtEnum::I32 => ftenum::FT_INT32,
-        FtEnum::I64 => ftenum::FT_INT64,
-        FtEnum::AbsoulteTime => ftenum::FT_ABSOLUTE_TIME,
-        FtEnum::RelativeTime => ftenum::FT_RELATIVE_TIME,
-        FtEnum::String => ftenum::FT_STRING,
-        FtEnum::StringZ => ftenum::FT_STRINGZ,
-        FtEnum::Ether => ftenum::FT_ETHER,
-        FtEnum::Bytes => ftenum::FT_BYTES,
-        FtEnum::IPv4 => ftenum::FT_IPv4,
-        FtEnum::IPv6 => ftenum::FT_IPv6,
-        FtEnum::FrameNum => ftenum::FT_FRAMENUM,
-        FtEnum::Guid => ftenum::FT_GUID,
-    }
-}
-
-fn translate_field_display(display: FieldDisplay) -> field_display_e {
-    match display {
-        FieldDisplay::None => field_display_e::BASE_NONE,
-        FieldDisplay::Dec => field_display_e::BASE_DEC,
-        FieldDisplay::Hex => field_display_e::BASE_HEX,
-        FieldDisplay::Oct => field_display_e::BASE_OCT,
-        FieldDisplay::DecHex => field_display_e::BASE_DEC_HEX,
-        FieldDisplay::HexDec => field_display_e::BASE_HEX_DEC,
-        FieldDisplay::Custom => field_display_e::BASE_CUSTOM,
-        FieldDisplay::StrAsciis => field_display_e::STR_ASCII,
-        FieldDisplay::StrUnicode => field_display_e::STR_UNICODE,
-        FieldDisplay::SepDot => field_display_e::SEP_DOT,
-        FieldDisplay::SepDash => field_display_e::SEP_DASH,
-        FieldDisplay::SepColon => field_display_e::SEP_COLON,
-        FieldDisplay::SepSpace => field_display_e::SEP_SPACE,
-    }
-}
-
-impl TryFrom<FieldInfo> for HeaderField {
-    type Error = Error;
-
-    fn try_from(value: FieldInfo) -> Result<Self, Self::Error> {
-        Ok(Self {
-            name: CString::new(value.name).context("Invalid field name")?,
-            abbrev: CString::new(value.abbrev).context("Invalid field abbrev")?,
-            ftype: translate_ftenum(value.ftype),
-            display: translate_field_display(value.display),
-            strings: value.strings,
-        })
-    }
-}
-
-impl HeaderFieldsManager {
-    pub fn new<T: EpanProtocol>(name: String, abbrev: String) -> anyhow::Result<Self> {
-        let fields = T::get_info(name, abbrev.clone(), None, None);
-
-        let mut header_fields = Vec::with_capacity(fields.len());
-
-        for field in fields {
-            header_fields.push(HeaderField::try_from(field)?);
-        }
-        Ok(Self {
-            fields_to_handles: HashMap::new(),
-            header_fields,
-            subtrees: T::get_subtrees(abbrev),
-        })
-    }
-
-    pub fn register(&mut self, proto_handle: c_int) {
-        let mut handles = vec![-1 as c_int; self.header_fields.len()];
-
-        let mut hf_array = Vec::with_capacity(self.header_fields.len());
-
-        for (index, field) in self.header_fields.iter().enumerate() {
-            hf_array.push(field.to_ffi(handles.get_mut(index).unwrap()));
-        }
-
-        // XXX leaks the hf_array, it will never be freed
-        let boxed_array = hf_array.into_boxed_slice();
-        let fat_ptr: *mut [hf_register_info] = Box::into_raw(boxed_array);
-        let hf_ptr = fat_ptr as *mut hf_register_info;
-
-        unsafe {
-            binderdump_epan_sys::proto_register_field_array(
-                proto_handle,
-                hf_ptr,
-                self.header_fields.len().try_into().unwrap(),
-            );
-        }
-
-        // map fields to handles
-        for (index, field) in self.header_fields.iter().enumerate() {
-            self.fields_to_handles
-                .insert(field.abbrev.to_string_lossy().into_owned(), handles[index]);
-        }
-    }
-
-    pub fn register_subtrees(&mut self) {
-        let mut handles = vec![-1 as c_int; self.subtrees.len()];
-        let mut ett_array = Vec::with_capacity(handles.len());
-
-        for handle in &mut handles {
-            ett_array.push(handle as *mut c_int);
-        }
-
-        // looking at epan/proto.c, the ett_array is not saved anywhere so it's safe to just temporarly allocate it here.
-        unsafe {
-            epan::proto_register_subtree_array(
-                ett_array.as_ptr(),
-                handles.len().try_into().unwrap(),
-            )
-        };
-
-        for (string, handle) in self.subtrees.iter().zip(handles) {
-            self.fields_to_handles.insert(string.clone(), handle);
-        }
-    }
-
-    pub fn get_handle(&self, field_name: &str) -> Option<c_int> {
-        self.fields_to_handles.get(field_name).copied()
-    }
-}
+use crate::header_fields_manager::{
+    FieldHandler, FieldHandlerFunc, HeaderField, HeaderFieldsManager,
+};
 
 struct Protocol {
     name: &'static CStr,
@@ -271,7 +28,13 @@ struct Protocol {
 }
 
 impl Protocol {
-    pub fn register(name: &'static CStr, short_name: &'static CStr, filter: &'static CStr) -> Self {
+    pub fn register(
+        name: &'static CStr,
+        short_name: &'static CStr,
+        filter: &'static CStr,
+        custom: HashMap<&'static str, FieldHandler<EventProtocol>>,
+        extra_fields: Vec<HeaderField>,
+    ) -> Self {
         let mut proto = Self {
             name,
             short_name,
@@ -280,11 +43,11 @@ impl Protocol {
             exported_pdu_tap: -1,
             dissector: Dissector {
                 handle: DissectorHandle(null_mut()),
-                field_manager: HeaderFieldsManager::new::<
-                    binderdump_structs::event_layer::EventProtocol,
-                >(
+                field_manager: HeaderFieldsManager::new(
                     short_name.to_string_lossy().into_owned(),
                     filter.to_string_lossy().into_owned(),
+                    custom,
+                    extra_fields,
                 )
                 .unwrap(),
             },
@@ -373,12 +136,14 @@ impl Protocol {
             let data = epan::tvb_get_ptr(tvb, 0, len.try_into()?);
             let data = slice::from_raw_parts(data, len.try_into()?);
 
-            let binderdump = binderdump_structs::binder_serde::from_bytes_with_offsets::<
+            let (event, offsets) = binderdump_structs::binder_serde::from_bytes_with_offsets::<
                 binderdump_structs::event_layer::EventProtocol,
             >(data)?;
 
-            let offsets = binderdump.1?;
+            let offsets = offsets?;
+
             dissect_offsets::dissect_offsets(
+                &event,
                 offsets,
                 &self.dissector.field_manager,
                 self.filter.to_string_lossy().into_owned(),
@@ -386,7 +151,6 @@ impl Protocol {
                 tree_item,
             )?;
 
-            let event = binderdump.0;
             let source = format!(
                 "{}:{}:{}",
                 event.pid,
@@ -420,9 +184,63 @@ impl Protocol {
     }
 }
 
+struct ProtocolBuilder {
+    name: &'static CStr,
+    short_name: &'static CStr,
+    filter: &'static CStr,
+    custom: HashMap<&'static str, FieldHandler<EventProtocol>>,
+    extra_fields: Vec<HeaderField>,
+}
+
+impl ProtocolBuilder {
+    pub fn new(name: &'static CStr, short_name: &'static CStr, filter: &'static CStr) -> Self {
+        Self {
+            name,
+            short_name,
+            filter,
+            custom: HashMap::new(),
+            extra_fields: Vec::new(),
+        }
+    }
+
+    pub fn build(self) -> Protocol {
+        Protocol::register(
+            self.name,
+            self.short_name,
+            self.filter,
+            self.custom,
+            self.extra_fields,
+        )
+    }
+
+    pub fn add_custom_handler(
+        mut self,
+        field: &'static str,
+        handler: FieldHandlerFunc<EventProtocol>,
+    ) -> Self {
+        self.custom.insert(field, FieldHandler::new(handler));
+        self
+    }
+
+    pub fn add_extra_type<T: EpanProtocol>(
+        mut self,
+        name: &'static str,
+        abbrev: &'static str,
+    ) -> Self {
+        let info = T::get_info(name.to_string(), abbrev.to_string(), None, None);
+
+        for field in info {
+            let field = HeaderField::try_from(field).unwrap();
+            self.extra_fields.push(field);
+        }
+
+        self
+    }
+}
+
 struct Dissector {
     handle: DissectorHandle,
-    field_manager: HeaderFieldsManager,
+    field_manager: HeaderFieldsManager<EventProtocol>,
 }
 
 extern "C" fn dissect(
@@ -451,9 +269,128 @@ const PROTOCOL_NAME: &'static CStr = c"Android Binderdump";
 const PROTOCOL_SHORT_NAME: &'static CStr = c"Binderdump";
 const PROTOCOL_FILTER: &'static CStr = c"binderdump";
 
+// fn dissect_bwr_impl<T: Bwr>(
+//     handle: c_int,
+//     data: &[u8],
+//     offset: FieldOffset,
+//     tvb: *mut epan::tvbuff,
+//     tree: *mut epan::proto_node,
+// ) -> anyhow::Result<()> {
+//     let mut pos = 0;
+//     while pos < data.len() {
+//         let result = T::from_bytes(&data[pos..])?;
+
+//         unsafe {
+//             epan::proto_tree_add_subtree(
+//                 tree,
+//                 handle,
+//                 tvb,
+//                 field.offset.try_into()?,
+//                 field.size.try_into()?,
+//                 epan::ENC_LITTLE_ENDIAN,
+//             );
+//         }
+
+//         pos += result.size();
+//     }
+//     if pos != data.len() {
+//         return Err(anyhow::anyhow!(
+//             "Only {} out of {} bytes comsumed from bwr write command",
+//             pos,
+//             data.len()
+//         ));
+//     }
+//     Ok(())
+// }
+
+fn dissect_bwr_data(
+    handle: c_int,
+    event: &EventProtocol,
+    offset: FieldOffset,
+    tvb: *mut epan::tvbuff,
+    tree: *mut epan::proto_node,
+) -> anyhow::Result<()> {
+    let bwr = event.ioctl_data.as_ref().unwrap().bwr.as_ref().unwrap();
+
+    // if bwr.is_read() {
+    //     dissect_bwr_impl::<BinderReturn>(handle, &bwr.data, offset, tvb, tree)
+    // } else {
+    //     dissect_bwr_impl::<BinderCommand>(handle, &bwr.data, offset, tvb, tree)
+    // }
+    todo!()
+}
+
+macro_rules! bc_prefix {
+    ($s:literal) => {
+        concat!("binderdump.ioctl_data.bwr.commands.", $s)
+    };
+}
+
+macro_rules! br_prefix {
+    ($s:literal) => {
+        concat!("binderdump.ioctl_data.bwr.returns.", $s)
+    };
+}
+
+trait AddBinderTypes {
+    fn add_bc_types(self) -> Self;
+    fn add_br_types(self) -> Self;
+}
+
+impl AddBinderTypes for ProtocolBuilder {
+    fn add_bc_types(self) -> Self {
+        self.add_extra_type::<binder_command::DeathCommand>(
+            "Death Notification Request",
+            bc_prefix!("death"),
+        )
+        .add_extra_type::<binder_command::RefCommand>("Ref", bc_prefix!("ref"))
+        .add_extra_type::<binder_command::DeathDoneCommand>(
+            "Dead Binder Done",
+            bc_prefix!("dead_done"),
+        )
+        .add_extra_type::<binder_command::RefDoneCommand>("Ref Done", bc_prefix!("ref_done"))
+        .add_extra_type::<binder_command::FreeBufferCommand>("Free Buffer", bc_prefix!("free"))
+        .add_extra_type::<binderdump_structs::binder_types::transaction::Transaction>(
+            "Transaction",
+            bc_prefix!("transaction"),
+        )
+        .add_extra_type::<binderdump_structs::binder_types::transaction::TransactionSg>(
+            "TransactionSg",
+            bc_prefix!("transaction_sg"),
+        )
+    }
+
+    fn add_br_types(self) -> Self {
+        self.add_extra_type::<binder_return::RefReturn>("Ref", br_prefix!("ref"))
+            .add_extra_type::<binder_return::ErrorReturn>("Error", br_prefix!("error"))
+            .add_extra_type::<binder_return::DeadBinder>("Dead Binder", br_prefix!("dead_binder"))
+            .add_extra_type::<binder_return::ClearDeathNotificationDone>(
+                "Clear Death Notification Done",
+                br_prefix!("clear_death_done"),
+            )
+            .add_extra_type::<binder_return::TransactionSecCtx>(
+                "TransactionSecCtx",
+                br_prefix!("transaction_secctx"),
+            )
+            .add_extra_type::<binderdump_structs::binder_types::transaction::Transaction>(
+                "Transaction",
+                br_prefix!("transaction"),
+            )
+            .add_extra_type::<binderdump_structs::binder_types::transaction::TransactionSg>(
+                "TransactionSg",
+                br_prefix!("transaction_sg"),
+            )
+    }
+}
+
 pub extern "C" fn register_protoinfo() {
-    G_PROTOCOL
-        .get_or_init(|| Protocol::register(PROTOCOL_NAME, PROTOCOL_SHORT_NAME, PROTOCOL_FILTER));
+    G_PROTOCOL.get_or_init(|| {
+        ProtocolBuilder::new(PROTOCOL_NAME, PROTOCOL_SHORT_NAME, PROTOCOL_FILTER)
+            .add_custom_handler("binderdump.ioctl_data.bwr.data", dissect_bwr_data)
+            .add_bc_types()
+            .add_br_types()
+            .build()
+    });
 }
 
 pub extern "C" fn register_handoff() {
