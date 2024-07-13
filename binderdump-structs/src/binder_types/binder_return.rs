@@ -3,6 +3,7 @@ use super::{
     transaction::{binder_transaction_data, Transaction},
 };
 use anyhow::Error;
+use binderdump_derive::EpanProtocol;
 use binderdump_sys;
 use num_derive;
 use num_derive::FromPrimitive;
@@ -38,43 +39,33 @@ pub enum binder_return {
 }
 
 #[allow(unused)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, EpanProtocol)]
 pub struct ErrorReturn {
     code: i32,
 }
 
 #[allow(unused)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default, EpanProtocol)]
 pub struct TransactionSecCtx {
-    transaction_data: binder_transaction_data,
+    transaction_data: Transaction,
     secctx: u64,
 }
 
-impl Default for TransactionSecCtx {
-    fn default() -> Self {
-        let transaction_data = unsafe { std::mem::zeroed::<binder_transaction_data>() };
-        Self {
-            transaction_data,
-            secctx: 0,
-        }
-    }
-}
-
 #[allow(unused)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, EpanProtocol)]
 pub struct RefReturn {
     ptr: u64,
     cookie: u64,
 }
 
 #[allow(unused)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, EpanProtocol)]
 pub struct DeadBinder {
     cookie: u64,
 }
 
 #[allow(unused)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, EpanProtocol)]
 pub struct ClearDeathNotificationDone {
     cookie: u64,
 }
