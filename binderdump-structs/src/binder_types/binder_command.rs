@@ -2,6 +2,7 @@ use super::{
     bwr_trait::Bwr,
     transaction::{Transaction, TransactionSg},
 };
+use binderdump_derive::EpanProtocol;
 use binderdump_sys;
 use num_derive;
 use num_derive::FromPrimitive;
@@ -35,34 +36,34 @@ pub enum binder_command {
     BC_REPLY_SG = binderdump_sys::binder_driver_command_protocol_BC_REPLY_SG,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, EpanProtocol)]
 #[repr(C)]
 pub struct RefCommand {
     // target == 0 && (IncRefs || Acquire) -> get handle to context manager (servicemanager)
     target: u32,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, EpanProtocol)]
 #[repr(C)]
 pub struct RefDoneCommand {
     node_ptr: u64,
     cookie: u64,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, EpanProtocol)]
 #[repr(C)]
 pub struct FreeBufferCommand {
     data_ptr: u64,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, EpanProtocol)]
 #[repr(C)]
 pub struct DeathCommand {
     target: u32,
     cookie: u64,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, EpanProtocol)]
 #[repr(C)]
 pub struct DeathDoneCommand {
     cookie: u64,

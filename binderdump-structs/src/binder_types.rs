@@ -121,4 +121,13 @@ pub enum binder_ioctl {
     BINDER_GET_FROZEN_INFO =
         request_code_readwrite_wrapper!(15, binderdump_sys::binder_frozen_status_info),
     BINDER_ENABLE_ONEWAY_SPAM_DETECTION = request_code_write_wrapper!(16, u32),
+    // fairly new, doesn't exist in the binder headers of my laptop
+    BINDER_GET_EXTENDED_ERROR = request_code_readwrite_wrapper!(17, binder_extended_error),
+}
+
+#[allow(unused, non_camel_case_types)]
+struct binder_extended_error {
+    id: u32,
+    command: u32,
+    param: i32,
 }
