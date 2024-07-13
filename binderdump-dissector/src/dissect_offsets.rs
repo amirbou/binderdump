@@ -1,12 +1,14 @@
-use crate::epan_plugin::HeaderFieldsManager;
+use crate::header_fields_manager::HeaderFieldsManager;
 use anyhow::{Context, Result};
 use binderdump_epan_sys::epan;
 use binderdump_structs::binder_serde::StructOffset;
+use binderdump_trait::EpanProtocol;
 // fn dissect_offsets_prefix(offsets: StructOffset, manager: &HeaderFieldsManager, prefix: String) {}
 
-pub fn dissect_offsets_inner(
+pub fn dissect_offsets_inner<T: EpanProtocol>(
+    base: &T,
     offsets: StructOffset,
-    manager: &HeaderFieldsManager,
+    manager: &HeaderFieldsManager<T>,
     prefix: String,
     tvb: *mut epan::tvbuff_t,
     tree: *mut epan::proto_node,
@@ -32,21 +34,25 @@ pub fn dissect_offsets_inner(
     for field in offsets.fields {
         let field_path = format!("{}.{}", prefix, field.field_name);
         if let Some(struct_offset) = field.inner_struct {
-            dissect_offsets_inner(struct_offset, manager, field_path, tvb, tree)?;
+            dissect_offsets_inner(base, struct_offset, manager, field_path, tvb, tree)?;
         } else {
             let handle = manager
                 .get_handle(&field_path)
                 .context(format!("Failed to find handle for field: {}", field_path))?;
 
-            unsafe {
-                epan::proto_tree_add_item(
-                    tree,
-                    handle,
-                    tvb,
-                    field.offset.try_into()?,
-                    field.size.try_into()?,
-                    epan::ENC_LITTLE_ENDIAN,
-                );
+            if let Some(handler) = manager.get_custom_handle(&field_path) {
+                handler.call(handle, base, field, tvb, tree)?;
+            } else {
+                unsafe {
+                    epan::proto_tree_add_item(
+                        tree,
+                        handle,
+                        tvb,
+                        field.offset.try_into()?,
+                        field.size.try_into()?,
+                        epan::ENC_LITTLE_ENDIAN,
+                    );
+                }
             }
         }
     }
@@ -54,9 +60,10 @@ pub fn dissect_offsets_inner(
     Ok(())
 }
 
-pub fn dissect_offsets(
+pub fn dissect_offsets<T: EpanProtocol>(
+    base: &T,
     offsets: StructOffset,
-    manager: &HeaderFieldsManager,
+    manager: &HeaderFieldsManager<T>,
     prefix: String,
     tvb: *mut epan::tvbuff_t,
     tree_item: *mut epan::proto_item,
@@ -67,5 +74,5 @@ pub fn dissect_offsets(
 
     let tree = unsafe { epan::proto_item_add_subtree(tree_item, ett) };
 
-    dissect_offsets_inner(offsets, manager, prefix, tvb, tree)
+    dissect_offsets_inner(base, offsets, manager, prefix, tvb, tree)
 }
