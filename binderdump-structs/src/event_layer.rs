@@ -64,6 +64,7 @@ impl EventProtocol {
 pub struct IoctlProtocol {
     pub fd: i32,
     pub cmd: binder_ioctl,
+    #[epan(display = Hex)]
     pub arg: u64,
     pub result: i32,
     pub uid: u32,

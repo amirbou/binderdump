@@ -4,9 +4,11 @@ use proc_macro::TokenStream as CompilerTokenStream;
 use proc_macro2::TokenStream;
 use quote;
 use syn;
-mod parse;
+mod helpers;
+mod parse_const_offsets;
+mod parse_epan;
 
-use parse::{EnumInput, StructCtx};
+use parse_epan::{EnumInput, StructCtx};
 
 #[proc_macro_derive(EpanProtocol, attributes(epan))]
 pub fn derive_epan_protocol(input: CompilerTokenStream) -> CompilerTokenStream {
@@ -114,13 +116,13 @@ pub fn derive_epan_protocol_enum(input: CompilerTokenStream) -> CompilerTokenStr
         let string = syn::LitStr::new(&variant.to_string(), variant.span());
 
         items.push(match repr_type {
-            parse::ReprType::U32 => quote::quote! {
+            parse_epan::ReprType::U32 => quote::quote! {
                 binderdump_trait::StringMapping {
                     value: #ident::#variant as u32,
                     string: #cstring
                 },
             },
-            parse::ReprType::U64 => quote::quote! {
+            parse_epan::ReprType::U64 => quote::quote! {
                 binderdump_trait::StringMapping64 {
                     value: #ident::#variant as u64,
                     string: #cstring
@@ -141,10 +143,10 @@ pub fn derive_epan_protocol_enum(input: CompilerTokenStream) -> CompilerTokenStr
     let ftype_token: proc_macro2::TokenStream = ftype_str.parse().unwrap();
 
     let map_variant = match &repr_type {
-        parse::ReprType::U32 => quote::quote! {
+        parse_epan::ReprType::U32 => quote::quote! {
             binderdump_trait::StringsMap::U32
         },
-        parse::ReprType::U64 => quote::quote! {
+        parse_epan::ReprType::U64 => quote::quote! {
             binderdump_trait::StringsMap::U64
         },
     };
@@ -173,6 +175,55 @@ pub fn derive_epan_protocol_enum(input: CompilerTokenStream) -> CompilerTokenStr
                 match self {
                     #(#to_str_items)*
                 }
+            }
+        }
+    }
+    .into()
+}
+
+#[proc_macro_derive(ConstOffsets)]
+pub fn derive_const_offsets(input: CompilerTokenStream) -> CompilerTokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    let mut ctx = match parse_const_offsets::StructCtx::new(input) {
+        Ok(ctx) => ctx,
+        Err(err) => return syn::Error::into_compile_error(err).into(),
+    };
+
+    if let Err(err) = ctx.parse_container() {
+        return syn::Error::into_compile_error(err).into();
+    }
+
+    if let Err(err) = ctx.parse_fields() {
+        return syn::Error::into_compile_error(err).into();
+    }
+
+    let mut items = Vec::<TokenStream>::with_capacity(ctx.fields.len());
+    let struct_name = ctx.input.ident;
+
+    for field in ctx.fields {
+        let ty = field.ty;
+        let name = field.name;
+        items.push(quote::quote! {
+            binderdump_trait::FieldOffset {
+                field_name: std::borrow::Cow::Borrowed(stringify!(#name)),
+                offset: base + core::mem::offset_of!(#struct_name, #name),
+                size: std::mem::size_of::<#ty>(),
+                inner_struct: <#ty as binderdump_trait::ConstOffsets>::get_offsets(base + core::mem::offset_of!(#struct_name, #name)),
+            },
+        });
+    }
+
+    quote::quote! {
+        impl binderdump_trait::ConstOffsets for #struct_name {
+            fn get_offsets(base: usize) -> Option<binderdump_trait::StructOffset> {
+                Some(binderdump_trait::StructOffset {
+                    name: stringify!(#struct_name),
+                    offset: base,
+                    size: std::mem::size_of::<#struct_name>(),
+                    fields: vec![
+                        #(#items)*
+                    ]
+                })
             }
         }
     }

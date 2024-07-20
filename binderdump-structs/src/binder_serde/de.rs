@@ -1,4 +1,5 @@
 use super::error::PlainSerializerError;
+pub use binderdump_trait::{FieldOffset, StructOffset};
 use byteorder::{ReadBytesExt, LE};
 use serde::de::{Deserialize, Deserializer, SeqAccess};
 use std::{
@@ -10,22 +11,6 @@ trait Todo<T> {
     fn todo(type_name: &'static str) -> Result<T, PlainSerializerError> {
         Err(PlainSerializerError::DeNotImplmented(type_name))
     }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct FieldOffset {
-    pub field_name: Cow<'static, str>,
-    pub offset: usize,
-    pub size: usize,
-    pub inner_struct: Option<StructOffset>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct StructOffset {
-    pub name: &'static str,
-    pub offset: usize,
-    pub size: usize,
-    pub fields: Vec<FieldOffset>,
 }
 
 struct OffsetDeserializer {

@@ -2,14 +2,14 @@ use super::{
     bwr_trait::Bwr,
     transaction::{Transaction, TransactionSg},
 };
-use binderdump_derive::EpanProtocol;
+use binderdump_derive::{ConstOffsets, EpanProtocol, EpanProtocolEnum};
 use binderdump_sys;
 use num_derive;
 use num_derive::FromPrimitive;
 use plain::{Error as PlainError, Plain};
 use std::mem::size_of;
 
-#[derive(Debug, FromPrimitive)]
+#[derive(Debug, FromPrimitive, EpanProtocolEnum)]
 #[allow(non_camel_case_types)]
 #[repr(u32)]
 pub enum binder_command {
@@ -36,36 +36,41 @@ pub enum binder_command {
     BC_REPLY_SG = binderdump_sys::binder_driver_command_protocol_BC_REPLY_SG,
 }
 
-#[derive(Debug, Clone, Copy, Default, EpanProtocol)]
+#[derive(Debug, Clone, Copy, Default, EpanProtocol, ConstOffsets)]
 #[repr(C)]
 pub struct RefCommand {
     // target == 0 && (IncRefs || Acquire) -> get handle to context manager (servicemanager)
     target: u32,
 }
 
-#[derive(Debug, Clone, Copy, Default, EpanProtocol)]
+#[derive(Debug, Clone, Copy, Default, EpanProtocol, ConstOffsets)]
 #[repr(C)]
 pub struct RefDoneCommand {
+    #[epan(display = Hex)]
     node_ptr: u64,
+    #[epan(display = Hex)]
     cookie: u64,
 }
 
-#[derive(Debug, Clone, Copy, Default, EpanProtocol)]
+#[derive(Debug, Clone, Copy, Default, EpanProtocol, ConstOffsets)]
 #[repr(C)]
 pub struct FreeBufferCommand {
+    #[epan(display = Hex)]
     data_ptr: u64,
 }
 
-#[derive(Debug, Clone, Copy, Default, EpanProtocol)]
+#[derive(Debug, Clone, Copy, Default, EpanProtocol, ConstOffsets)]
 #[repr(C)]
 pub struct DeathCommand {
     target: u32,
+    #[epan(display = Hex)]
     cookie: u64,
 }
 
-#[derive(Debug, Clone, Copy, Default, EpanProtocol)]
+#[derive(Debug, Clone, Copy, Default, EpanProtocol, ConstOffsets)]
 #[repr(C)]
 pub struct DeathDoneCommand {
+    #[epan(display = Hex)]
     cookie: u64,
 }
 
@@ -208,6 +213,30 @@ impl Bwr for BinderCommand {
             | BinderCommand::Transaction(_)
             | BinderCommand::Reply(_) => true,
             _ => false,
+        }
+    }
+
+    fn get_header(&self) -> Self::HeaderType {
+        match self {
+            BinderCommand::IncRefs(_) => binder_command::BC_INCREFS,
+            BinderCommand::Acquire(_) => binder_command::BC_ACQUIRE,
+            BinderCommand::Release(_) => binder_command::BC_RELEASE,
+            BinderCommand::DecRefs(_) => binder_command::BC_DECREFS,
+            BinderCommand::IncRefsDone(_) => binder_command::BC_INCREFS_DONE,
+            BinderCommand::AcquireDone(_) => binder_command::BC_ACQUIRE_DONE,
+            BinderCommand::FreeBuffer(_) => binder_command::BC_FREE_BUFFER,
+            BinderCommand::TransactionSg(_) => binder_command::BC_TRANSACTION_SG,
+            BinderCommand::ReplySg(_) => binder_command::BC_REPLY_SG,
+            BinderCommand::Transaction(_) => binder_command::BC_TRANSACTION,
+            BinderCommand::Reply(_) => binder_command::BC_REPLY,
+            BinderCommand::RegisterLooper => binder_command::BC_REGISTER_LOOPER,
+            BinderCommand::EnterLooper => binder_command::BC_ENTER_LOOPER,
+            BinderCommand::ExitLooper => binder_command::BC_EXIT_LOOPER,
+            BinderCommand::RequestDeathNotification(_) => {
+                binder_command::BC_REQUEST_DEATH_NOTIFICATION
+            }
+            BinderCommand::ClearDeathNotification(_) => binder_command::BC_CLEAR_DEATH_NOTIFICATION,
+            BinderCommand::DeadBinderDone(_) => binder_command::BC_DEAD_BINDER_DONE,
         }
     }
 }

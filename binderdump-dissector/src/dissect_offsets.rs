@@ -11,6 +11,7 @@ pub fn dissect_offsets_inner<T: EpanProtocol>(
     manager: &HeaderFieldsManager<T>,
     prefix: String,
     tvb: *mut epan::tvbuff_t,
+    pinfo: *mut epan::packet_info,
     tree: *mut epan::proto_node,
 ) -> Result<()> {
     let ett = manager
@@ -34,14 +35,14 @@ pub fn dissect_offsets_inner<T: EpanProtocol>(
     for field in offsets.fields {
         let field_path = format!("{}.{}", prefix, field.field_name);
         if let Some(struct_offset) = field.inner_struct {
-            dissect_offsets_inner(base, struct_offset, manager, field_path, tvb, tree)?;
+            dissect_offsets_inner(base, struct_offset, manager, field_path, tvb, pinfo, tree)?;
         } else {
             let handle = manager
                 .get_handle(&field_path)
                 .context(format!("Failed to find handle for field: {}", field_path))?;
 
             if let Some(handler) = manager.get_custom_handle(&field_path) {
-                handler.call(handle, base, field, tvb, tree)?;
+                handler.call(handle, manager, base, field, tvb, pinfo, tree)?;
             } else {
                 unsafe {
                     epan::proto_tree_add_item(
@@ -66,6 +67,7 @@ pub fn dissect_offsets<T: EpanProtocol>(
     manager: &HeaderFieldsManager<T>,
     prefix: String,
     tvb: *mut epan::tvbuff_t,
+    pinfo: *mut epan::packet_info,
     tree_item: *mut epan::proto_item,
 ) -> Result<()> {
     let ett = manager
@@ -74,5 +76,5 @@ pub fn dissect_offsets<T: EpanProtocol>(
 
     let tree = unsafe { epan::proto_item_add_subtree(tree_item, ett) };
 
-    dissect_offsets_inner(base, offsets, manager, prefix, tvb, tree)
+    dissect_offsets_inner(base, offsets, manager, prefix, tvb, pinfo, tree)
 }
