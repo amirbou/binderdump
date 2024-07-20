@@ -1,10 +1,11 @@
 #![allow(dead_code)]
 
-use binderdump_derive::{EpanProtocol, EpanProtocolEnum};
+use binderdump_derive::{ConstOffsets, EpanProtocol, EpanProtocolEnum};
 use binderdump_trait::{
-    EpanProtocol, EpanProtocolEnum, FieldDisplay, FieldInfo, FtEnum, StringMapping,
-    StringMapping64, StringsMap,
+    ConstOffsets, EpanProtocol, EpanProtocolEnum, FieldDisplay, FieldInfo, FieldOffset, FtEnum,
+    StringMapping, StringMapping64, StringsMap, StructOffset,
 };
+use pretty_assertions::assert_eq;
 
 #[derive(EpanProtocolEnum)]
 #[repr(u32)]
@@ -391,4 +392,78 @@ fn test_inner_structs() {
         expected
     );
     assert_eq!(Test::get_subtrees("test".into()), expected_subtrees);
+}
+
+#[test]
+fn test_const_offsets() {
+    #[derive(ConstOffsets)]
+    #[repr(C, packed)]
+    struct InnerInnerTest {
+        num: u8,
+    }
+
+    #[derive(ConstOffsets)]
+    #[repr(C, packed)]
+    struct InnerTest {
+        num: i16,
+        inner: InnerInnerTest,
+    }
+    #[derive(ConstOffsets)]
+    #[repr(C, packed)]
+    struct Test {
+        array: [u8; 3],
+        inner: InnerTest,
+    }
+
+    let expected_offsets = StructOffset {
+        name: "Test",
+        offset: 0,
+        size: 6,
+        fields: vec![
+            FieldOffset {
+                field_name: "array".into(),
+                offset: 0,
+                size: 3,
+                inner_struct: None,
+            },
+            FieldOffset {
+                field_name: "inner".into(),
+                offset: 3,
+                size: 3,
+                inner_struct: Some(StructOffset {
+                    name: "InnerTest",
+                    offset: 3,
+                    size: 3,
+                    fields: vec![
+                        FieldOffset {
+                            field_name: "num".into(),
+                            offset: 3,
+                            size: 2,
+                            inner_struct: None,
+                        },
+                        FieldOffset {
+                            field_name: "inner".into(),
+                            offset: 5,
+                            size: 1,
+                            inner_struct: Some(StructOffset {
+                                name: "InnerInnerTest",
+                                offset: 5,
+                                size: 1,
+                                fields: vec![FieldOffset {
+                                    field_name: "num".into(),
+                                    offset: 5,
+                                    size: 1,
+                                    inner_struct: None,
+                                }],
+                            }),
+                        },
+                    ],
+                }),
+            },
+        ],
+    };
+
+    let offsets = Test::get_offsets(0);
+
+    assert_eq!(offsets.unwrap(), expected_offsets)
 }

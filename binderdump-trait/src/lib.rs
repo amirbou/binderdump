@@ -1,4 +1,4 @@
-use std::ffi::CStr;
+use std::{borrow::Cow, ffi::CStr};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum FtEnum {
@@ -332,3 +332,61 @@ impl<T: EpanProtocolEnum> EpanProtocol for T {
         vec![]
     }
 }
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct FieldOffset {
+    pub field_name: Cow<'static, str>,
+    pub offset: usize,
+    pub size: usize,
+    pub inner_struct: Option<StructOffset>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct StructOffset {
+    pub name: &'static str,
+    pub offset: usize,
+    pub size: usize,
+    pub fields: Vec<FieldOffset>,
+}
+
+pub trait ConstOffsets {
+    fn get_offsets(base: usize) -> Option<StructOffset>;
+}
+
+macro_rules! impl_const_offsets {
+    ($ty:ty) => {
+        impl ConstOffsets for $ty {
+            fn get_offsets(_base: usize) -> Option<StructOffset> {
+                None
+            }
+        }
+
+        impl<const N: usize> ConstOffsets for [$ty; N] {
+            fn get_offsets(_base: usize) -> Option<StructOffset> {
+                None
+            }
+        }
+    };
+}
+
+impl_const_offsets!(i8);
+impl_const_offsets!(i16);
+impl_const_offsets!(i32);
+impl_const_offsets!(i64);
+impl_const_offsets!(isize);
+impl_const_offsets!(u8);
+impl_const_offsets!(u16);
+impl_const_offsets!(u32);
+impl_const_offsets!(u64);
+impl_const_offsets!(usize);
+impl_const_offsets!(bool);
+
+// impl<T: ConstOffsets, const N: usize> ConstOffsets for [T; N] {
+//     fn get_offsets(base: usize) -> Option<StructOffset> {
+//         let mut inner = T::get_offsets(base)?;
+
+//         inner.size *= N;
+
+//         Some(inner)
+//     }
+// }

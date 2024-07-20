@@ -1,16 +1,13 @@
-use super::{
-    bwr_trait::Bwr,
-    transaction::{binder_transaction_data, Transaction},
-};
+use super::{bwr_trait::Bwr, transaction::Transaction};
 use anyhow::Error;
-use binderdump_derive::EpanProtocol;
+use binderdump_derive::{ConstOffsets, EpanProtocol, EpanProtocolEnum};
 use binderdump_sys;
 use num_derive;
 use num_derive::FromPrimitive;
 use plain::{Error as PlainError, Plain};
 use std::mem::size_of;
 
-#[derive(Debug, FromPrimitive)]
+#[derive(Debug, FromPrimitive, EpanProtocolEnum)]
 #[allow(non_camel_case_types)]
 #[repr(u32)]
 pub enum binder_return {
@@ -39,34 +36,44 @@ pub enum binder_return {
 }
 
 #[allow(unused)]
-#[derive(Debug, Clone, Copy, Default, EpanProtocol)]
+#[derive(Debug, Clone, Copy, Default, EpanProtocol, ConstOffsets)]
+#[repr(C)]
 pub struct ErrorReturn {
     code: i32,
 }
 
 #[allow(unused)]
-#[derive(Debug, Clone, Copy, Default, EpanProtocol)]
+#[derive(Debug, Clone, Copy, Default, EpanProtocol, ConstOffsets)]
+#[repr(C)]
 pub struct TransactionSecCtx {
     transaction_data: Transaction,
+    #[epan(display = Hex)]
     secctx: u64,
 }
 
 #[allow(unused)]
-#[derive(Debug, Clone, Copy, Default, EpanProtocol)]
+#[derive(Debug, Clone, Copy, Default, EpanProtocol, ConstOffsets)]
+#[repr(C)]
 pub struct RefReturn {
+    #[epan(display = Hex)]
     ptr: u64,
+    #[epan(display = Hex)]
     cookie: u64,
 }
 
 #[allow(unused)]
-#[derive(Debug, Clone, Copy, Default, EpanProtocol)]
+#[derive(Debug, Clone, Copy, Default, EpanProtocol, ConstOffsets)]
+#[repr(C)]
 pub struct DeadBinder {
+    #[epan(display = Hex)]
     cookie: u64,
 }
 
 #[allow(unused)]
-#[derive(Debug, Clone, Copy, Default, EpanProtocol)]
+#[derive(Debug, Clone, Copy, Default, EpanProtocol, ConstOffsets)]
+#[repr(C)]
 pub struct ClearDeathNotificationDone {
+    #[epan(display = Hex)]
     cookie: u64,
 }
 
@@ -194,6 +201,31 @@ impl Bwr for BinderReturn {
             | BinderReturn::Transaction(_)
             | BinderReturn::Reply(_) => true,
             _ => false,
+        }
+    }
+
+    fn get_header(&self) -> Self::HeaderType {
+        match self {
+            BinderReturn::Error(_) => binder_return::BR_ERROR,
+            BinderReturn::Ok => binder_return::BR_OK,
+            BinderReturn::TransactionSecCtx(_) => binder_return::BR_TRANSACTION_SEC_CTX,
+            BinderReturn::Transaction(_) => binder_return::BR_TRANSACTION,
+            BinderReturn::Reply(_) => binder_return::BR_REPLY,
+            BinderReturn::DeadReply => binder_return::BR_DEAD_REPLY,
+            BinderReturn::TransactionComplete => binder_return::BR_TRANSACTION_COMPLETE,
+            BinderReturn::IncRefs(_) => binder_return::BR_INCREFS,
+            BinderReturn::Acquire(_) => binder_return::BR_ACQUIRE,
+            BinderReturn::Release(_) => binder_return::BR_RELEASE,
+            BinderReturn::DecRefs(_) => binder_return::BR_DECREFS,
+            BinderReturn::Noop => binder_return::BR_NOOP,
+            BinderReturn::SpawnLooper => binder_return::BR_SPAWN_LOOPER,
+            BinderReturn::DeadBinder(_) => binder_return::BR_DEAD_BINDER,
+            BinderReturn::ClearDeathNotificationDone(_) => {
+                binder_return::BR_CLEAR_DEATH_NOTIFICATION_DONE
+            }
+            BinderReturn::FailedReply => binder_return::BR_FAILED_REPLY,
+            BinderReturn::FrozenReply => binder_return::BR_FROZEN_REPLY,
+            BinderReturn::OnewaySpamSuspect => binder_return::BR_ONEWAY_SPAM_SUSPECT,
         }
     }
 }

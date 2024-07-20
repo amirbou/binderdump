@@ -22,4 +22,6 @@ pub trait Bwr: Sized {
         Self::parse_with_header(&header, data)
             .map_err(|err| err.to_anyhow(&format!("Failed to read {:?}", header)))
     }
+
+    fn get_header(&self) -> Self::HeaderType;
 }

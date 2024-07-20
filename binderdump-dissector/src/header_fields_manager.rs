@@ -7,9 +7,17 @@ use std::collections::HashMap;
 use std::ffi::{c_int, CString};
 use std::ptr::{null, null_mut};
 
-pub type FieldHandlerFunc<T> =
-    fn(c_int, &T, FieldOffset, *mut epan::tvbuff, *mut epan::proto_node) -> anyhow::Result<()>;
+pub type FieldHandlerFunc<T> = fn(
+    c_int,
+    &HeaderFieldsManager<T>,
+    &T,
+    FieldOffset,
+    *mut epan::tvbuff,
+    *mut epan::packet_info,
+    *mut epan::proto_node,
+) -> anyhow::Result<()>;
 
+#[derive(Debug)]
 pub struct FieldHandler<T: EpanProtocol> {
     func: FieldHandlerFunc<T>,
 }
@@ -22,22 +30,26 @@ impl<T: EpanProtocol> FieldHandler<T> {
     pub fn call(
         &self,
         handle: c_int,
+        manager: &HeaderFieldsManager<T>,
         base: &T,
         offset: FieldOffset,
         tvb: *mut epan::tvbuff,
+        pinfo: *mut epan::packet_info,
         tree: *mut epan::proto_node,
     ) -> anyhow::Result<()> {
-        (self.func)(handle, base, offset, tvb, tree)
+        (self.func)(handle, manager, base, offset, tvb, pinfo, tree)
     }
 }
 
+#[derive(Debug)]
 pub struct HeaderFieldsManager<T: EpanProtocol> {
-    fields_to_handles: HashMap<String, c_int>,
+    pub fields_to_handles: HashMap<String, c_int>,
     header_fields: Vec<HeaderField>,
     subtrees: Vec<String>,
     custom: HashMap<&'static str, FieldHandler<T>>,
 }
 
+#[derive(Debug)]
 pub struct HeaderField {
     name: CString,
     abbrev: CString,
@@ -221,6 +233,7 @@ impl<T: EpanProtocol> HeaderFieldsManager<T> {
         abbrev: String,
         custom: HashMap<&'static str, FieldHandler<T>>,
         extra_fields: Vec<HeaderField>,
+        extra_subtrees: Vec<String>,
     ) -> anyhow::Result<Self> {
         let fields = T::get_info(name, abbrev.clone(), None, None);
 
@@ -230,11 +243,22 @@ impl<T: EpanProtocol> HeaderFieldsManager<T> {
             .collect::<Result<Vec<_>, _>>()?;
 
         header_fields.extend(extra_fields);
+        let header_fields = header_fields
+            .into_iter()
+            .filter(|field| !custom.contains_key(field.abbrev.to_str().unwrap()))
+            .collect();
+
+        let mut subtrees = T::get_subtrees(abbrev);
+        for key in custom.keys() {
+            subtrees.push(key.to_string());
+        }
+
+        subtrees.extend(extra_subtrees);
 
         Ok(Self {
             fields_to_handles: HashMap::new(),
             header_fields,
-            subtrees: T::get_subtrees(abbrev),
+            subtrees: subtrees,
             custom,
         })
     }

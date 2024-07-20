@@ -1,12 +1,10 @@
-use std::fmt::{Debug, Display};
+use std::fmt::Debug;
 
+use crate::helpers::{error_spanned_by, get_path_ident, get_string_literal};
 use binderdump_trait::FtEnum;
 use proc_macro2::{Span, TokenStream};
-use quote::ToTokens;
-use syn::meta::ParseNestedMeta;
 use syn::parse::{Error, Parse, ParseStream, Result};
 use syn::{parenthesized, token, Data, DeriveInput, Fields, Ident, Meta};
-
 pub enum ContainerAttr {
     Name(syn::LitStr),
 }
@@ -45,36 +43,6 @@ pub struct ParsedField {
     pub name: Ident,
     pub attrs: FieldAttrs,
     pub ty: syn::Type,
-}
-
-impl ParsedField {
-    // fn new(name: Ident, attrs: FieldAttrs, ty: syn::Type) -> Result<Self> {
-    //     match &attrs.ftype {
-    //         Some(ftype) => todo!(),
-    //         None => todo!(),
-    //     }
-    //     todo!()
-    // }
-
-    // fn guess_ftype(name: &Ident, ty: &syn::Type) -> Result<FtEnum> {
-    //     match ty {
-    //         syn::Type::Array(arr) => {
-    //             let inner_ftype = Self::guess_ftype(name, &*arr.elem)?;
-    //             match inner_ftype {
-    //                 FtEnum::U8 | FtEnum::I8 => Ok(FtEnum::Bytes),
-    //                 _ => Ok(inner_ftype),
-    //             }
-    //         }
-    //         syn::Type::Paren(paren) => Self::guess_ftype(name, &*paren.elem),
-    //         syn::Type::Path(path) => Self::path_to_ftype(name, path),
-    //         syn::Type::Reference(_) => Err(error_spanned_by(
-    //             name,
-    //             "references are not supported by EpanProtocol",
-    //         )),
-    //         // syn::Type::Slice(_) => todo!(),
-    //         _ => Err(error_spanned_by(name, "unsupported type for EpanProtocol")),
-    //     }
-    // }
 }
 
 impl TryFrom<&syn::Field> for ParsedField {
@@ -356,91 +324,4 @@ impl Parse for EnumInput {
             variants,
         })
     }
-}
-
-fn error_spanned_by<A: ToTokens, T: Display>(obj: A, msg: T) -> Error {
-    Error::new_spanned(obj.into_token_stream(), msg)
-}
-
-fn get_string_literal(attr_name: &str, meta: &ParseNestedMeta) -> Result<syn::LitStr> {
-    let expr: syn::Expr = meta.value()?.parse()?;
-    let mut value = &expr;
-    while let syn::Expr::Group(e) = value {
-        value = &e.expr;
-    }
-    if let syn::Expr::Lit(syn::ExprLit {
-        lit: syn::Lit::Str(lit),
-        ..
-    }) = value
-    {
-        let suffix = lit.suffix();
-        if !suffix.is_empty() {
-            return Err(error_spanned_by(
-                lit,
-                format!("unexpected suffix `{}` on string literal", suffix),
-            ));
-        }
-        return Ok(lit.clone());
-    }
-    return Err(error_spanned_by(
-        expr,
-        format!(
-            "expected epan {} attribute to be a string `{}` = \"...\"",
-            attr_name, attr_name
-        ),
-    ));
-}
-
-fn get_path_ident(attr_name: &str, meta: &ParseNestedMeta) -> Result<Ident> {
-    let expr: syn::Expr = meta.value()?.parse()?;
-    let mut value = &expr;
-    while let syn::Expr::Group(e) = value {
-        value = &e.expr;
-    }
-    if let syn::Expr::Path(path) = value {
-        if !path.attrs.is_empty() || path.qself.is_some() {
-            return Err(error_spanned_by(
-                value,
-                format!(
-                    "expected epan {} attribute to be a plain identifier `{}` = ...",
-                    attr_name, attr_name
-                ),
-            ));
-        }
-        let path = &path.path;
-        if path.leading_colon.is_some() {
-            return Err(error_spanned_by(
-                path,
-                format!(
-                    "expected epan {} attribute to contain no leading colon (::)",
-                    attr_name
-                ),
-            ));
-        }
-        if path.segments.len() != 1 {
-            return Err(error_spanned_by(
-                path,
-                format!(
-                    "expected epan {} attribute to contain only exactly segment (no colons ::)",
-                    attr_name
-                ),
-            ));
-        }
-        let segment = path.segments.first().unwrap();
-        if !segment.arguments.is_none() {
-            return Err(error_spanned_by(
-                path,
-                format!("expected epan {} attribute to have no arguemtns", attr_name),
-            ));
-        }
-        return Ok(segment.ident.clone());
-    }
-
-    Err(error_spanned_by(
-        expr,
-        format!(
-            "expected epan {} attribute to be an identifier `{}` = ...",
-            attr_name, attr_name
-        ),
-    ))
 }
