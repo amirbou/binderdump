@@ -95,8 +95,10 @@ impl Iterator for EventsAggregator {
                 }
                 BinderEventData::BinderWriteRead(bwr) => {
                     match bwr {
-                        crate::capture::events::BinderEventWriteRead::BinderEventRead(_) => {
-                            events.push(event);
+                        crate::capture::events::BinderEventWriteRead::BinderEventRead(br) => {
+                            if br.get_bwr().read_size > 0 {
+                                events.push(event);
+                            }
                             continue;
                         }
                         crate::capture::events::BinderEventWriteRead::BinderEventWrite(bw) => {
