@@ -69,6 +69,9 @@ fn dissect_br_data(
     pinfo: *mut epan::packet_info,
     tree: *mut epan::proto_node,
 ) -> anyhow::Result<()> {
+    if data.is_empty() {
+        return Ok(());
+    }
     let returns_tree = unsafe {
         epan::proto_tree_add_subtree(
             tree,
@@ -197,6 +200,10 @@ fn dissect_bc_data(
     pinfo: *mut epan::packet_info,
     tree: *mut epan::proto_node,
 ) -> anyhow::Result<()> {
+    if data.is_empty() {
+        return Ok(());
+    }
+
     let commands_tree = unsafe {
         epan::proto_tree_add_subtree(
             tree,

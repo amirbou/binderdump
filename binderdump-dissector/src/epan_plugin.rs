@@ -150,10 +150,13 @@ impl Protocol {
                 String::from_utf8(event.cmdline)?
             );
             let csource = CString::new(source)?;
-            epan::col_add_str((*pinfo).cinfo, epan::COL_DEF_SRC as c_int, csource.as_ptr());
+            let mut ctarget = None;
+            let mut switch_src_dst = false;
 
             if let Some(ioctl) = event.ioctl_data {
                 if let Some(bwr) = ioctl.bwr {
+                    // on READ transactions, we want the src to be we sending process instead
+                    switch_src_dst = bwr.is_read();
                     if let Some(txn) = bwr.transaction {
                         let target = format!(
                             "{}:{}:{}",
@@ -161,15 +164,25 @@ impl Protocol {
                             txn.transaction.to_thread,
                             String::from_utf8(txn.target_cmdline)?
                         );
-                        let ctarget = CString::new(target)?;
-                        epan::col_add_str(
-                            (*pinfo).cinfo,
-                            epan::COL_DEF_DST as c_int,
-                            ctarget.as_ptr(),
-                        );
+
+                        ctarget = Some(CString::new(target)?);
                     }
                 }
             }
+
+            let mut src_col = epan::COL_DEF_SRC;
+            let mut dst_col = epan::COL_DEF_DST;
+            if switch_src_dst {
+                src_col = epan::COL_DEF_DST;
+                dst_col = epan::COL_DEF_SRC;
+            }
+
+            epan::col_add_str((*pinfo).cinfo, src_col as c_int, csource.as_ptr());
+            let ctarget = match ctarget {
+                Some(ctarget) => ctarget,
+                None => c"KERNEL".into(),
+            };
+            epan::col_add_str((*pinfo).cinfo, dst_col as c_int, ctarget.as_ptr());
 
             Ok(epan::tvb_captured_length(tvb) as c_int)
         }
