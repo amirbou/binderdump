@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use binderdump_structs::binder_types::BinderInterface;
 use log::trace;
 use procfs;
@@ -66,8 +66,20 @@ impl ProcessCache {
         }
     }
 
-    fn create_process_info(tid: u32) -> Result<ProcessInfo> {
-        let proc = procfs::process::Process::new(tid as i32)?;
+    fn create_process_info(pid: i32, tid: i32) -> Result<ProcessInfo> {
+        let proc = match procfs::process::Process::new(tid)
+            .context(format!("failed to create process info of tid: {}", tid))
+        {
+            Ok(proc) => proc,
+            Err(err) => {
+                trace!(
+                    "Failed to create process info by tid, trying by pid: {}",
+                    err
+                );
+                procfs::process::Process::new(pid)
+                    .context(format!("failed to create process info of pid {}", pid))?
+            }
+        };
         let cmdline = proc.cmdline()?;
         let cmdline = cmdline.into_iter().nth(0).unwrap_or_default();
 
@@ -79,7 +91,10 @@ impl ProcessCache {
             vndbinder_fd: None,
         };
 
-        for fd in proc.fd()? {
+        for fd in proc
+            .fd()
+            .context(format!("failed to read fds of process {}", tid))?
+        {
             if fd.is_err() {
                 continue;
             }
@@ -122,7 +137,7 @@ impl ProcessCache {
                 if let Some(comm) = comm {
                     if comm.ne(&proc_info.get().comm) {
                         trace!("cache invalid");
-                        proc_info.insert(Self::create_process_info(tid as u32)?);
+                        proc_info.insert(Self::create_process_info(pid, tid)?);
                     } else {
                         trace!("cache hit");
                     }
@@ -131,7 +146,7 @@ impl ProcessCache {
             }
             Entry::Vacant(v) => {
                 trace!("cache miss");
-                v.insert(Self::create_process_info(tid as u32)?)
+                v.insert(Self::create_process_info(pid, tid)?)
             }
         };
 
