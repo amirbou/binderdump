@@ -314,9 +314,11 @@ impl BinderEventWriteRead {
         match self {
             BinderEventWriteRead::BinderEventRead(br) => {
                 Self::any_transaction_impl::<binder_return::BinderReturn>(br.data())
+                    .context("Failed parsing BinderReturn")
             }
             BinderEventWriteRead::BinderEventWrite(bw) => {
                 Self::any_transaction_impl::<binder_command::BinderCommand>(bw.data())
+                    .context("Failed parsing BinderCommand")
             }
         }
     }

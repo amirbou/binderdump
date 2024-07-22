@@ -107,14 +107,15 @@ fn run_print() -> Result<()> {
 }
 
 pub fn main() -> Result<()> {
-    #[cfg(target_os = "android")]
-    android_logger::init_once(
-        android_logger::Config::default()
-            .with_tag("binderdump")
-            .with_max_level(log::LevelFilter::Debug),
-    );
-    #[cfg(not(target_os = "android"))]
-    env_logger::init();
+    // #[cfg(target_os = "android")]
+    // android_logger::init_once(
+    //     android_logger::Config::default()
+    //         .with_tag("binderdump")
+    //         .with_max_level(log::LevelFilter::Debug),
+    // );
+    // #[cfg(not(target_os = "android"))]
+    // env_logger::init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
 
     debug!("Hello");
     println!("mypid: {}", std::process::id());
