@@ -16,7 +16,7 @@ pub trait Bwr: Sized {
         let header: &u32 =
             plain::from_bytes(value).map_err(|err| err.to_anyhow("Failed to read BR"))?;
         let header: Self::HeaderType = <Self::HeaderType as num::FromPrimitive>::from_u32(*header)
-            .context("Failed to cast Header to enum")?;
+            .context(format!("Failed to cast Header to enum {}", header))?;
 
         let data = &value[4..];
         Self::parse_with_header(&header, data)
