@@ -10,6 +10,7 @@ pub enum EventType {
     FinishedIoctl = 0,
     SplitIoctl = 1,
     DeadProcess = 2,
+    DeadThread = 3,
     #[default]
     Invalid = 4,
 }

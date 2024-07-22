@@ -112,7 +112,11 @@ impl<W: Write> PacketGenerator<W> {
     fn handle_invalidate_process(&mut self, event: &BinderEvent) -> Result<EventProtocol> {
         let info = self.process_cache.invalidate_proc(event.pid, event.tid);
         let mut builder = EventProtocolBuilder::new(event.timestamp, event.pid, event.tid)
-            .event_type(EventType::DeadProcess);
+            .event_type(if event.pid == event.tid {
+                EventType::DeadProcess
+            } else {
+                EventType::DeadThread
+            });
         if let Some(info) = info {
             builder = builder
                 .cmdline(info.get_cmdline().into())
@@ -257,7 +261,8 @@ impl<W: Write> PacketGenerator<W> {
             let proto = match self.handle_events(events) {
                 Ok(proto) => proto,
                 Err(err) => {
-                    error!("Failed to handle events: {}", err);
+                    // error!("Failed to handle events: {}", err);
+                    println!("Failed to handle events: {:#?}", err);
                     continue;
                 }
             };
