@@ -60,7 +60,7 @@ pub struct FreeBufferCommand {
 }
 
 #[derive(Debug, Clone, Copy, Default, EpanProtocol, ConstOffsets)]
-#[repr(C)]
+#[repr(C, packed)]
 pub struct DeathCommand {
     target: u32,
     #[epan(display = Hex)]
