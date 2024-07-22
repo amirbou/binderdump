@@ -107,14 +107,14 @@ fn dissect_br_data(
                 result.get_header().to_cstr().as_ptr(),
             );
 
-            // epan::proto_tree_add_item(
-            //     br_tree,
-            //     manager.get_handle(br_prefix!("br")).unwrap(),
-            //     tvb,
-            //     (offset.offset + pos).try_into()?,
-            //     std::mem::size_of::<binder_return::binder_return>().try_into()?,
-            //     ENC_LITTLE_ENDIAN,
-            // );
+            epan::proto_tree_add_item(
+                br_tree,
+                manager.get_handle(br_prefix!("br")).unwrap(),
+                tvb,
+                (offset.offset + pos).try_into()?,
+                std::mem::size_of::<binder_return::binder_return>().try_into()?,
+                epan::ENC_LITTLE_ENDIAN,
+            );
 
             let offset = offset.offset + pos + std::mem::size_of::<binder_return::binder_return>();
             match result {
@@ -240,14 +240,14 @@ fn dissect_bc_data(
                 result.get_header().to_cstr().as_ptr(),
             );
 
-            // epan::proto_tree_add_item(
-            //     bc_tree,
-            //     manager.get_handle(bc_prefix!("bc")).unwrap(),
-            //     tvb,
-            //     (offset.offset + pos).try_into()?,
-            //     std::mem::size_of::<binder_command::binder_command>().try_into()?,
-            //     ENC_LITTLE_ENDIAN,
-            // );
+            epan::proto_tree_add_item(
+                bc_tree,
+                manager.get_handle(bc_prefix!("bc")).unwrap(),
+                tvb,
+                (offset.offset + pos).try_into()?,
+                std::mem::size_of::<binder_command::binder_command>().try_into()?,
+                epan::ENC_LITTLE_ENDIAN,
+            );
 
             let offset =
                 offset.offset + pos + std::mem::size_of::<binder_command::binder_command>();
@@ -360,29 +360,31 @@ pub trait AddBinderTypes {
 
 impl AddBinderTypes for ProtocolBuilder {
     fn add_bc_types(self) -> Self {
-        self.add_extra_type::<binder_command::DeathCommand>(
-            "Death Notification Request",
-            bc_prefix!("death"),
-        )
-        .add_extra_type::<binder_command::RefCommand>("Ref", bc_prefix!("ref"))
-        .add_extra_type::<binder_command::DeathDoneCommand>(
-            "Dead Binder Done",
-            bc_prefix!("dead_done"),
-        )
-        .add_extra_type::<binder_command::RefDoneCommand>("Ref Done", bc_prefix!("ref_done"))
-        .add_extra_type::<binder_command::FreeBufferCommand>("Free Buffer", bc_prefix!("free"))
-        .add_extra_type::<binderdump_structs::binder_types::transaction::Transaction>(
-            "Transaction",
-            bc_prefix!("transaction"),
-        )
-        .add_extra_type::<binderdump_structs::binder_types::transaction::TransactionSg>(
-            "TransactionSg",
-            bc_prefix!("transaction_sg"),
-        )
+        self.add_extra_enum::<binder_command::binder_command>("BC", bc_prefix!("bc"))
+            .add_extra_type::<binder_command::DeathCommand>(
+                "Death Notification Request",
+                bc_prefix!("death"),
+            )
+            .add_extra_type::<binder_command::RefCommand>("Ref", bc_prefix!("ref"))
+            .add_extra_type::<binder_command::DeathDoneCommand>(
+                "Dead Binder Done",
+                bc_prefix!("dead_done"),
+            )
+            .add_extra_type::<binder_command::RefDoneCommand>("Ref Done", bc_prefix!("ref_done"))
+            .add_extra_type::<binder_command::FreeBufferCommand>("Free Buffer", bc_prefix!("free"))
+            .add_extra_type::<binderdump_structs::binder_types::transaction::Transaction>(
+                "Transaction",
+                bc_prefix!("transaction"),
+            )
+            .add_extra_type::<binderdump_structs::binder_types::transaction::TransactionSg>(
+                "TransactionSg",
+                bc_prefix!("transaction_sg"),
+            )
     }
 
     fn add_br_types(self) -> Self {
-        self.add_extra_type::<binder_return::RefReturn>("Ref", br_prefix!("ref"))
+        self.add_extra_enum::<binder_return::binder_return>("Return", br_prefix!("br"))
+            .add_extra_type::<binder_return::RefReturn>("Ref", br_prefix!("ref"))
             .add_extra_type::<binder_return::ErrorReturn>("Error", br_prefix!("error"))
             .add_extra_type::<binder_return::DeadBinder>("Dead Binder", br_prefix!("dead_binder"))
             .add_extra_type::<binder_return::ClearDeathNotificationDone>(
