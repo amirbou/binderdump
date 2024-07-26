@@ -100,6 +100,7 @@ fn run_print() -> Result<()> {
             BinderEventData::BinderIoctlDone(_) => println!("{}", "----------".yellow()),
             BinderEventData::BinderTransaction(_) => (),
             BinderEventData::BinderTransactionReceived(_) => (),
+            BinderEventData::BinderTransactionData(_) => (),
         }
     }
 

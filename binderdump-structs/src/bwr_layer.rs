@@ -71,4 +71,12 @@ pub struct TransactionProtocol {
     pub target_comm: [u8; 16],
     #[epan(display = StrAsciis, ftype = String)]
     pub target_cmdline: Vec<u8>,
+
+    pub data_size: u64,
+    #[epan(display = SepSpace)]
+    pub data: Vec<u8>,
+
+    pub offsets_size: u64,
+    #[epan(display = SepSpace)]
+    pub offsets: Vec<u8>,
 }
