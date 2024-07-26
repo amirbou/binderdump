@@ -1,6 +1,5 @@
 use std::{collections::HashMap, sync::mpsc::RecvTimeoutError, time::Duration};
 
-use anyhow::Context;
 use log::{error, warn};
 
 use crate::capture::{
@@ -10,10 +9,35 @@ use crate::capture::{
 
 pub struct EventsAggregator {
     channel: EventChannel,
-    ongoing_events: HashMap<i32, Vec<BinderEvent>>,
+    ongoing_events: HashMap<i32, OngoingEvent>,
     current_ioctl_id: u64,
     // finish the iteration if `timeout` passed without a new event (useful for testing to ensure we don't block indefinitly)
     timeout: Option<Duration>,
+}
+
+struct OngoingEvent {
+    events: Vec<BinderEvent>,
+    should_split: bool,
+}
+
+impl OngoingEvent {
+    fn new() -> Self {
+        Self {
+            events: vec![],
+            should_split: false,
+        }
+    }
+
+    fn new_split(event: BinderEvent) -> Self {
+        Self {
+            events: vec![event],
+            should_split: false,
+        }
+    }
+
+    fn push(&mut self, event: BinderEvent) {
+        self.events.push(event)
+    }
 }
 
 impl EventsAggregator {
@@ -48,10 +72,10 @@ impl EventsAggregator {
         // place a copy of the original BinderIoctl event
         let events = self.ongoing_events.remove(&tid);
         if let Some(evts) = &events {
-            if !evts.is_empty() {
-                let first_event = (*evts.first().unwrap()).clone();
+            if !evts.events.is_empty() {
+                let first_event = (*evts.events.first().unwrap()).clone();
                 if let BinderEventData::BinderIoctl(_) = first_event.data {
-                    let new_events = vec![first_event];
+                    let new_events = OngoingEvent::new_split(first_event);
                     self.ongoing_events.insert(tid, new_events);
                 } else {
                     warn!("first event is not ioctl: {:?}", first_event);
@@ -62,7 +86,7 @@ impl EventsAggregator {
         } else {
             println!("split_events None");
         }
-        events
+        events.map(|evts| evts.events)
     }
 
     fn handle_new_event(
@@ -70,14 +94,17 @@ impl EventsAggregator {
         mut event: BinderEvent,
     ) -> anyhow::Result<Option<Vec<BinderEvent>>> {
         let tid = event.tid;
-        let events = self.ongoing_events.entry(tid).or_insert_with(|| Vec::new());
+        let events = self
+            .ongoing_events
+            .entry(tid)
+            .or_insert_with(|| OngoingEvent::new());
         match &mut event.data {
             BinderEventData::BinderInvalidate
             | BinderEventData::BinderIoctlDone(_)
             | BinderEventData::BinderInvalidateProcess => {
                 events.push(event);
                 // We got everything we need to parse this ioctl / error occured
-                return Ok(self.ongoing_events.remove(&tid));
+                return Ok(self.ongoing_events.remove(&tid).map(|evts| evts.events));
             }
             BinderEventData::BinderWriteRead(bwr) => {
                 match bwr {
@@ -89,9 +116,11 @@ impl EventsAggregator {
                     }
                     crate::capture::events::BinderEventWriteRead::BinderEventWrite(bw) => {
                         // This BWR is either only write or only read, so wait for IoctlDone OR this BWR contains a transaction, so we should wait for BinderTransaction event
+                        let should_split = bw.get_bwr().read_size > 0;
                         if (bw.get_bwr().write_size == 0 || bw.get_bwr().read_size == 0)
                             || bwr.is_blocking()?
                         {
+                            events.should_split = should_split;
                             events.push(event);
                             return Ok(None);
                         }
@@ -101,21 +130,12 @@ impl EventsAggregator {
                 return Ok(self.split_events(tid));
             }
             BinderEventData::BinderTransaction(_) => {
-                // We got a transaction. if the previous BWR command contains a read_size > 0, we should split the events now,
-                // otherwise we should wait for IoctlDone
-                let bwr_event = events
-                    .last()
-                    .context("no events associated with transaction")?;
-                match &bwr_event.data {
-                    BinderEventData::BinderWriteRead(bwr) => {
-                        if bwr.get_bwr().read_size > 0 {
-                            events.push(event);
-                            return Ok(self.split_events(tid));
-                        }
-                    }
-                    _ => (),
-                }
+                // We got a transaction. if the previous BWR command contains a read_size > 0,
+                // we should split the events now, otherwise we should wait for IoctlDone
                 events.push(event);
+                if events.should_split {
+                    return Ok(self.split_events(tid));
+                }
             }
             BinderEventData::BinderIoctl(ref mut ioctl) => {
                 ioctl.ioctl_id = self.current_ioctl_id;

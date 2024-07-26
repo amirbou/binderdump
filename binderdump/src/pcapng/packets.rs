@@ -17,7 +17,6 @@ use binderdump_structs::{
     event_layer::{EventProtocol, EventType},
     link_layer,
 };
-use log::error;
 use pcap_file::{
     pcapng::{
         blocks::{
@@ -204,6 +203,9 @@ impl<W: Write> PacketGenerator<W> {
                         }
                     }
                 }
+                BinderEventData::BinderTransactionData(txn_data) => {
+                    txn_builder = txn_builder.transcation_contents(txn_data);
+                }
                 BinderEventData::BinderInvalidateProcess => unreachable!(),
             }
         }
@@ -258,11 +260,13 @@ impl<W: Write> PacketGenerator<W> {
             }
         };
         for events in events_aggregator {
+            let str = format!("{:#?}", events);
             let proto = match self.handle_events(events) {
                 Ok(proto) => proto,
                 Err(err) => {
                     // error!("Failed to handle events: {}", err);
-                    println!("Failed to handle events: {:#?}", err);
+                    println!("Failed to handle events: {}", err);
+                    println!("events: {}", str);
                     continue;
                 }
             };

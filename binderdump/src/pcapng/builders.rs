@@ -1,4 +1,6 @@
-use crate::capture::events::{BinderEventIoctl, BinderEventWriteRead};
+use crate::capture::events::{
+    BinderEventIoctl, BinderEventWriteRead, BinderTransactionContents, BinderTransactionData,
+};
 use crate::capture::process_cache::ProcessCache;
 use anyhow::Context;
 use binderdump_structs::binder_types::{binder_ioctl, BinderInterface};
@@ -189,6 +191,8 @@ impl BinderWriteReadProtocolBuilder {
 #[derive(Default)]
 pub struct TransactionProtocolBuilder {
     txn: Option<TransactionProtocol>,
+    data: Option<BinderTransactionData>,
+    offsets: Option<BinderTransactionData>,
 }
 
 impl TransactionProtocolBuilder {
@@ -197,7 +201,25 @@ impl TransactionProtocolBuilder {
     }
 
     pub fn build(self) -> Option<TransactionProtocol> {
-        self.txn
+        let mut txn = self.txn?;
+
+        match self.data {
+            Some(data) => {
+                txn.data_size = data.total_size as u64;
+                txn.data = data.data;
+            }
+            None => (),
+        }
+
+        match self.offsets {
+            Some(offsets) => {
+                txn.offsets_size = offsets.total_size as u64;
+                txn.offsets = offsets.data;
+            }
+            None => (),
+        }
+
+        Some(txn)
     }
 
     pub fn transaction(
@@ -229,8 +251,20 @@ impl TransactionProtocolBuilder {
             transaction: txn,
             target_comm: comm,
             target_cmdline: proc_info.get_cmdline().to_string().into_bytes(),
+            data_size: 0,
+            data: vec![],
+            offsets_size: 0,
+            offsets: vec![],
         });
 
         Ok(self)
+    }
+
+    pub fn transcation_contents(mut self, txn: BinderTransactionContents) -> Self {
+        match txn {
+            BinderTransactionContents::Data(txn) => self.data = Some(txn),
+            BinderTransactionContents::Offsets(txn) => self.offsets = Some(txn),
+        }
+        self
     }
 }

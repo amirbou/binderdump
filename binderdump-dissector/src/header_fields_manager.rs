@@ -144,6 +144,7 @@ impl HeaderField {
             | field_display_e::SEP_COLON
             | field_display_e::SEP_SPACE => {
                 display_flag |= binderdump_epan_sys::BASE_SHOW_ASCII_PRINTABLE as c_int
+                    | binderdump_epan_sys::BASE_ALLOW_ZERO as c_int
             }
             _ => (),
         }

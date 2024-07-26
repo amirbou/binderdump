@@ -8,6 +8,7 @@ use binderdump_structs::binder_types::{
 };
 use binderdump_structs::bwr_layer::Transaction;
 use binderdump_structs::errors::ToAnyhow;
+use log::warn;
 use num::FromPrimitive;
 use num_derive::FromPrimitive;
 use plain::Plain;
@@ -40,6 +41,7 @@ pub enum BinderProcessState {
     BINDER_INVALIDATE_PROCES = common_types::binder_process_state_t_BINDER_INVALIDATE_PROCESS,
     BINDER_WRITE = common_types::binder_process_state_t_BINDER_WRITE,
     BINDER_READ = common_types::binder_process_state_t_BINDER_READ,
+    BINDER_COMMAND_TXN = common_types::binder_process_state_t_BINDER_COMMAND_TXN,
 }
 
 impl From<&binder_event_transaction> for Transaction {
@@ -64,6 +66,7 @@ pub enum BinderEventData {
     BinderIoctlDone(i32),
     BinderTransaction(Transaction),
     BinderTransactionReceived(std::ffi::c_int),
+    BinderTransactionData(BinderTransactionContents),
     BinderInvalidateProcess,
 }
 
@@ -149,6 +152,10 @@ impl TryFrom<&[u8]> for BinderEvent {
                 BinderEventData::BinderWriteRead(BinderEventWriteRead::BinderEventRead(
                     BinderEventWriteReadData::try_from(data)?,
                 ))
+            }
+            BinderProcessState::BINDER_COMMAND_TXN => {
+                let data = &value[HEADER_SIZE..];
+                BinderEventData::BinderTransactionData(BinderTransactionContents::try_from(data)?)
             }
         };
         Ok(Self {
@@ -361,11 +368,11 @@ impl Display for BinderEventWriteRead {
 impl std::fmt::Debug for BinderEventWriteRead {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BinderEventWriteRead::BinderEventRead(_) => {
-                write!(f, "BinderEventWriteRead::BinderEventRead(...)")
+            BinderEventWriteRead::BinderEventRead(br) => {
+                write!(f, "BinderEventWriteRead::BinderEventRead({})", br.size())
             }
-            BinderEventWriteRead::BinderEventWrite(_) => {
-                write!(f, "BinderEventWriteRead::BinderEventWrite(...)")
+            BinderEventWriteRead::BinderEventWrite(bc) => {
+                write!(f, "BinderEventWriteRead::BinderEventWrite({})", bc.size())
             }
         }
     }
@@ -385,5 +392,64 @@ impl TryFrom<&[u8]> for BinderEventWriteReadData {
             bwr: *raw_bwr,
             buffer: buffer.into(),
         })
+    }
+}
+
+#[derive(Clone)]
+pub struct BinderTransactionData {
+    pub total_size: usize,
+    pub data: Vec<u8>,
+}
+
+impl std::fmt::Debug for BinderTransactionData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "BinderTransactionData({}/{})",
+            self.data.len(),
+            self.total_size
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum BinderTransactionContents {
+    Data(BinderTransactionData),
+    Offsets(BinderTransactionData),
+}
+
+impl TryFrom<&[u8]> for BinderTransactionContents {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        let raw_bwr: &binder_write_read = plain::from_bytes(value)
+            .map_err(|err| err.to_anyhow("Failed to parse binder_write_read struct of txn"))?;
+        let buffer = &value[BWR_SIZE..];
+
+        if raw_bwr.write_buffer == 1 {
+            if raw_bwr.write_consumed != raw_bwr.write_size {
+                warn!(
+                    "truncated txn data: {}/{}",
+                    raw_bwr.write_consumed, raw_bwr.write_size
+                );
+            }
+            return Ok(Self::Data(BinderTransactionData {
+                total_size: raw_bwr.write_size as usize,
+                data: buffer.to_vec(),
+            }));
+        } else if raw_bwr.read_buffer == 1 {
+            if raw_bwr.read_consumed != raw_bwr.read_size {
+                warn!(
+                    "trunacted txn offsets: {}/{}",
+                    raw_bwr.read_consumed, raw_bwr.read_size
+                );
+            }
+            return Ok(Self::Offsets(BinderTransactionData {
+                total_size: raw_bwr.read_size as usize,
+                data: buffer.to_vec(),
+            }));
+        }
+
+        Err(anyhow::anyhow!("Invalid BinderTransactionContents"))
     }
 }
