@@ -41,7 +41,7 @@ pub enum BinderProcessState {
     BINDER_INVALIDATE_PROCES = common_types::binder_process_state_t_BINDER_INVALIDATE_PROCESS,
     BINDER_WRITE = common_types::binder_process_state_t_BINDER_WRITE,
     BINDER_READ = common_types::binder_process_state_t_BINDER_READ,
-    BINDER_COMMAND_TXN = common_types::binder_process_state_t_BINDER_COMMAND_TXN,
+    BINDER_TXN_DATA = common_types::binder_process_state_t_BINDER_TXN_DATA,
 }
 
 impl From<&binder_event_transaction> for Transaction {
@@ -153,7 +153,7 @@ impl TryFrom<&[u8]> for BinderEvent {
                     BinderEventWriteReadData::try_from(data)?,
                 ))
             }
-            BinderProcessState::BINDER_COMMAND_TXN => {
+            BinderProcessState::BINDER_TXN_DATA => {
                 let data = &value[HEADER_SIZE..];
                 BinderEventData::BinderTransactionData(BinderTransactionContents::try_from(data)?)
             }

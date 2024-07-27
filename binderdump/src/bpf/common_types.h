@@ -20,10 +20,11 @@ typedef enum {
     BINDER_STATE_MAX,
     // psuedo state sent from sched_process_exit to invalidate the ProcessCache entry
     BINDER_INVALIDATE_PROCESS = BINDER_STATE_MAX,
-    BINDER_WRITE,       // gets sent after BINDER_IOCTL message, iff cmd was BINDER_WRITE_READ
-    BINDER_READ,        // gets sent before BINDER_IOCTL_DONE message, iff cmd was BINDER_WRITE_READ
-    BINDER_COMMAND_TXN, // gets sent when BC_TRANSACTION, BC_TRANSACTION_SG, BC_REPLY or BC_REPLY_SG
-                        // is encountered
+    BINDER_WRITE,    // gets sent after BINDER_IOCTL message, iff cmd was BINDER_WRITE_READ
+    BINDER_READ,     // gets sent before BINDER_IOCTL_DONE message, iff cmd was BINDER_WRITE_READ
+    BINDER_TXN_DATA, // gets sent when BC_TRANSACTION, BC_TRANSACTION_SG, BC_REPLY or BC_REPLY_SG
+                     // is sent, or when BR_TRANSACTION, BR_TRANSACTION_SECCTX or BR_REPLY is
+                     // received
 } binder_process_state_t;
 
 // header before every message
