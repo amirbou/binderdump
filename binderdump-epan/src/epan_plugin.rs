@@ -306,11 +306,9 @@ pub extern "C" fn register_protoinfo() {
 }
 
 pub extern "C" fn register_handoff() {
-    let table = CString::new("wtap_encap").unwrap();
-
     unsafe {
         epan::dissector_add_uint(
-            table.as_ptr(),
+            c"wtap_encap".as_ptr(),
             epan::WTAP_ENCAP_USER0, // TODO - configure during compilation
             G_PROTOCOL.get().unwrap().dissector.handle.0,
         )
