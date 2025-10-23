@@ -62,9 +62,14 @@ pub enum binder_type {
 #[allow(non_camel_case_types)]
 #[repr(u32)]
 pub enum flat_binder_flag {
-    PRIORITY_MASK = binderdump_sys::FLAT_BINDER_FLAG_PRIORITY_MASK,
-    ACCEPT_FDS = binderdump_sys::FLAT_BINDER_FLAG_ACCEPTS_FDS,
-    TXN_SECURITY_CTX = binderdump_sys::FLAT_BINDER_FLAG_TXN_SECURITY_CTX,
+    // PRIORITY_MASK = binderdump_sys::FLAT_BINDER_FLAG_PRIORITY_MASK,
+    // ACCEPT_FDS = binderdump_sys::FLAT_BINDER_FLAG_ACCEPTS_FDS,
+    // TXN_SECURITY_CTX = binderdump_sys::FLAT_BINDER_FLAG_TXN_SECURITY_CTX,
+    // TODO - in the NDK these values are inside the "flat_binder_object_flags" enum,
+    // but in glibc they are in an anonymous enum
+    PRIORITY_MASK = 0xff,
+    ACCEPT_FDS = 0x100,
+    TXN_SECURITY_CTX = 0x1000,
 }
 
 #[derive(Debug, FromPrimitive)]

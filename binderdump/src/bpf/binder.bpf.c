@@ -16,6 +16,8 @@ char LICENSE[] SEC("license") = "GPL";
 
 #define GET_TID() (bpf_get_current_pid_tgid() & 0xffffffff)
 
+#define UNTAG(addr) (const void *)((__u64)(addr) & 0xffffffffffff)
+
 // Default value in Android
 #define PID_MAX 32768
 
@@ -50,14 +52,9 @@ struct {
 } binder_events_buffer SEC(".maps");
 
 struct write_read_buffer {
-    union {
-        struct {
-            struct binder_event event;
-            struct binder_event_write_read bwr;
-            char data[];
-        };
-        char _reserved[SZ_32K];
-    };
+    struct binder_event event;
+    struct binder_event_write_read bwr;
+    char data[SZ_32K - sizeof(struct binder_event) - sizeof(struct binder_event_write_read)];
 };
 
 struct {
@@ -263,8 +260,8 @@ static __always_inline int do_binder_write_read(pid_t tid, pid_t pid,
         return -1;
     }
 
-    if (bpf_probe_read_user(&buffer->bwr, sizeof(buffer->bwr), (const void *)ioctl_ctx->arg)) {
-        LOG("bwr: failed to read BINDER_WRITE_READ arg from user addr: %p (is_done %d)",
+    if (bpf_probe_read_user(&buffer->bwr, sizeof(buffer->bwr), UNTAG(ioctl_ctx->arg))) {
+        LOG("bwr: failed to read BINDER_WRITE_READ arg from user addr: %px (is_done %d)",
             (const void *)ioctl_ctx->arg, is_done);
         __builtin_memset(&buffer->bwr, 0, sizeof(buffer->bwr));
         return -1;
@@ -298,13 +295,14 @@ static __always_inline int do_binder_write_read(pid_t tid, pid_t pid,
         LOG("bwr: size: 0 original_size: %u (is_done %d)", original_size, is_done);
         return -1;
     }
-    if (size + offsetof(struct write_read_buffer, data) > sizeof(*buffer)) {
+    if (size > (__u32)(sizeof(*buffer) - offsetof(struct write_read_buffer, data))) {
         return -1;
     }
 
     // TODO - check addr != NULL?
-    if (bpf_probe_read_user(buffer->data, size, addr)) {
-        LOG("bwr: failed to read addr %p (is_done: %d)", addr, is_done);
+    int _ret = bpf_probe_read_user(buffer->data, size, UNTAG(addr));
+    if (_ret) {
+        LOG("bwr: failed to read addr %px size: %u (is_done: %d): %d", addr, size, is_done, _ret);
         return -1;
     }
 l_send_event:
@@ -312,7 +310,7 @@ l_send_event:
     buffer->event.tid = tid;
     buffer->event.timestamp = bpf_ktime_get_boot_ns();
     if (bpf_ringbuf_output(&binder_events_buffer, buffer,
-                           offsetof(struct write_read_buffer, data) + size, 0)) {
+                           (__u32)offsetof(struct write_read_buffer, data) + size, 0)) {
         LOG("bwr: failed to output write_read data (is_done: %d)", is_done);
         return -1;
     }
@@ -422,17 +420,18 @@ int __always_inline do_bc_br(uint32_t cmd, const bool is_return) {
         if (cmd == BR_TRANSACTION || cmd == BR_REPLY || cmd == BR_TRANSACTION_SEC_CTX) {
 
             if (bpf_probe_read_user(&command, sizeof(command),
-                                    (void *)(bwr->read_buffer + bwr->read_consumed))) {
+                                    UNTAG(bwr->read_buffer + bwr->read_consumed))) {
                 LOG("failed to read BC data");
                 goto l_error;
             }
+        } else {
+            goto cleanup;
         }
-
     } else if (cmd == BC_TRANSACTION || cmd == BC_REPLY || cmd == BC_TRANSACTION_SG ||
                cmd == BC_REPLY_SG) {
         // we don't care about the extra `buffers_size` field in `binder_transaction_data_sg`
         if (bpf_probe_read_user(&command, sizeof(command),
-                                (void *)(bwr->write_buffer + bwr->write_consumed))) {
+                                UNTAG(bwr->write_buffer + bwr->write_consumed))) {
             LOG("failed to read BC data");
             goto l_error;
         }
@@ -471,19 +470,19 @@ int __always_inline do_bc_br(uint32_t cmd, const bool is_return) {
         goto cleanup;
     }
 
-    if (data_size > sizeof(buffer) - offsetof(struct write_read_buffer, data)) {
-        LOG("truncated txn data: %llu/%u",
-            sizeof(buffer) - offsetof(struct write_read_buffer, data), data_size);
-    }
+    // if (data_size > sizeof(buffer) - offsetof(struct write_read_buffer, data)) {
+    //     LOG("truncated txn data: %llu/%u",
+    //         sizeof(buffer) - offsetof(struct write_read_buffer, data), data_size);
+    // }
 
     data_size &= (sizeof(*buffer) - 1);
-    if (data_size + offsetof(struct write_read_buffer, data) > sizeof(*buffer)) {
+    if (data_size > (__u32)(sizeof(*buffer) - offsetof(struct write_read_buffer, data))) {
         LOG("data too big: %u + %llu > %llu", data_size, offsetof(struct write_read_buffer, data),
             sizeof(*buffer));
         goto l_error;
     }
 
-    if (bpf_probe_read_user(buffer->bwr.data, data_size, (void *)command.txn.data.ptr.buffer)) {
+    if (bpf_probe_read_user(buffer->bwr.data, data_size, UNTAG(command.txn.data.ptr.buffer))) {
         LOG("failed to read txn data %u, %lx", data_size, command.txn.data.ptr.buffer);
         goto l_error;
     }
@@ -492,7 +491,7 @@ int __always_inline do_bc_br(uint32_t cmd, const bool is_return) {
     buffer->bwr.bwr.write_buffer = 1;
 
     if (bpf_ringbuf_output(&binder_events_buffer, buffer,
-                           offsetof(struct write_read_buffer, data) + data_size, 0)) {
+                           (__u32)offsetof(struct write_read_buffer, data) + data_size, 0)) {
         LOG("failed to output txn data");
         goto l_error;
     }
@@ -515,7 +514,7 @@ int __always_inline do_bc_br(uint32_t cmd, const bool is_return) {
     }
     offsets_size &= (sizeof(*buffer) - 1);
 
-    if (bpf_probe_read_user(buffer->bwr.data, offsets_size, (void *)command.txn.data.ptr.offsets)) {
+    if (bpf_probe_read_user(buffer->bwr.data, offsets_size, UNTAG(command.txn.data.ptr.offsets))) {
         LOG("failed to read txn offsets %u, %llx", offsets_size, command.txn.data.ptr.offsets);
         goto l_error;
     }
