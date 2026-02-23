@@ -24,11 +24,14 @@ export CC_x86_64_linux_android := $(NDK_BIN_PATH)/$(X86_64_PREFIX)$(ANDROID_API_
 export CXX_x86_64_linux_android := $(NDK_BIN_PATH)/$(X86_64_PREFIX)$(ANDROID_API_LEVEL)-clang++
 export AR_NDK := $(NDK_BIN_PATH)/llvm-ar
 
-export RUSTFLAGS_aarch64_linux_android := -L$(CURRENT_DIR)/$(OUT_DIR)/$(AARCH64_PREFIX)/lib
-export RUSTFLAGS_x86_64_linux_android := -L$(CURRENT_DIR)/$(OUT_DIR)/$(X86_64_PREFIX)/lib
+export RUSTFLAGS_aarch64_linux_android := -L$(CURRENT_DIR)/$(OUT_DIR)/$(AARCH64_PREFIX)/lib -L$(NDK_BIN_PATH)/../sysroot/usr/lib/$(AARCH64_PREFIX)/$(ANDROID_API_LEVEL) -L$(NDK_BIN_PATH)/../sysroot/usr/lib/$(AARCH64_PREFIX)/
+export RUSTFLAGS_x86_64_linux_android := -L$(CURRENT_DIR)/$(OUT_DIR)/$(X86_64_PREFIX)/lib -L$(NDK_BIN_PATH)/../sysroot/usr/lib/$(X86_64_PREFIX)/$(ANDROID_API_LEVEL) -L$(NDK_BIN_PATH)/../sysroot/usr/lib/$(X86_64_PREFIX)/
 
-$(CARGO_CONFIG): .cargo/config_template.toml
-	CURRENT_DIR=$(CURRENT_DIR) envsubst <$^ >$@
+export STATIC_LIBS_LIBRARY_PATH_aarch64_linux_android := $(CURRENT_DIR)/$(OUT_DIR)/$(AARCH64_PREFIX)/lib:$(NDK_BIN_PATH)/../sysroot/usr/lib/$(AARCH64_PREFIX)/$(ANDROID_API_LEVEL):$(NDK_BIN_PATH)/../sysroot/usr/lib/$(AARCH64_PREFIX)/
+export STATIC_LIBS_LIBRARY_PATH_x86_64_linux_android := $(CURRENT_DIR)/$(OUT_DIR)/$(X86_64_PREFIX)/lib:$(NDK_BIN_PATH)/../sysroot/usr/lib/$(X86_64_PREFIX)/$(ANDROID_API_LEVEL):$(NDK_BIN_PATH)/../sysroot/usr/lib/$(X86_64_PREFIX)/
+export STATIC_LIBS_LIBRARY_PATH_host := $(shell pkg-config --variable=libdir libbpf)
+$(CARGO_CONFIG): .cargo/config_template.toml Makefile
+	CURRENT_DIR=$(CURRENT_DIR) envsubst <.cargo/config_template.toml >$@
 
 $(BUILD_DIR):
 	mkdir -p $@

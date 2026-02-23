@@ -18,26 +18,32 @@ backtrace = "0.3.73"
 env_logger = "0.11.3"
 libc = "0.2.155"
 log = "0.4.21"
-nix = { version = "0.29.0", features = ["time"] }
+nix = { version = "0.31.1", features = ["time"] }
 num = "0.4"
 num-derive = "0.4"
 num-traits = "0.2"
 pcap-file = "2.0.0"
 plain = "0.2"
 pretty-hex = "0.4.1"
-procfs = { version = "0.16.0", default-features = false }
+procfs = { version = "0.18.0", default-features = false }
 yansi = "1.0.1"
 ctrlc = { version = "3.4.4", features = ["termination"] }
 binderdump-structs = { path = "../binderdump-structs" }
 binderdump-sys = { path = "../binderdump-sys" }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
-libbpf-rs = { version = "0.23.2" }
+libbpf-rs = { version = "0.26.0" }
 
 [target.'cfg(target_os = "android")'.dependencies]
-libbpf-rs = { version = "0.23.2", features = ["static"] }
-android_logger = "0.13"
+libbpf-rs = { version = "0.26.0", features = [
+    "static",
+], default-features = false }
+android_logger = "0.15.1"
 
 [build-dependencies]
-bindgen = "0.69.4"
-libbpf-cargo = "0.23.1"
+bindgen = "0.72.1"
+libbpf-cargo = "0.26.0"
+
+[features]
+transaction-stack = []
+default = ["transaction-stack"]

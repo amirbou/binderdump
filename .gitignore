@@ -1,4 +1,5 @@
 /target
+.clangd
 src/bpf-skel
 .vscode/
 .cargo/config.toml

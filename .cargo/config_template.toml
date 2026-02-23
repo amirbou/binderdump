@@ -20,6 +20,10 @@ CC_x86_64_linux_android = "${CC_x86_64_linux_android}"
 CXX_x86_64_linux_android = "${CXX_x86_64_linux_android}"
 AR_x86_64_linux_android = "${AR_NDK}"
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "--sysroot=${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+LIBBPF_SYS_LIBRARY_PATH_aarch64_linux_android = "${STATIC_LIBS_LIBRARY_PATH_aarch64_linux_android}"
+LIBBPF_SYS_LIBRARY_PATH_x86_64_linux_android = "${STATIC_LIBS_LIBRARY_PATH_x86_64_linux_android}"
+LIBBPF_SYS_LIBRARY_PATH_x86_64_unknown_linux_gnu = "${STATIC_LIBS_LIBRARY_PATH_host}"
+
 [target.aarch64-linux-android.libbpf]
 rustc-link-lib = [ "static=bpf", "static=elf", "z" ]
 
