@@ -1,192 +1,92 @@
-#include "common_types.h"
-#include "trace_binder.h"
+#include <linux/types.h>
+
 #include <bpf/bpf_helpers.h>
 #include <linux/android/binder.h>
 #include <linux/bpf.h>
+#include <stdint.h>
+#include <sys/cdefs.h>
 #include <sys/syscall.h>
+#include <sys/types.h>
 #include <unistd.h>
 
-char LICENSE[] SEC("license") = "GPL";
 #define DEBUG
-#ifdef DEBUG
-#define LOG(fmt, ...) bpf_printk(fmt, ##__VA_ARGS__)
-#else
-#define LOG(...)
+#include "common_types.h"
+#include "log.h"
+#include "maps.h"
+#include "process_state.h"
+#include "trace_binder.h"
+#include "utils.h"
+
+// We send chunks of size 32KB, this lets us send up to 1MB transactions, which is the maximum size
+// Android mmaps the binder driver and therefore the maximum size of a binder transaction.
+// I never saw a transaction with offsets_size > 32KB (which makes sense, parcels don't tend to have
+// so many nested fields), so we only handle data_size > 32KB.
+#define MAX_TRANSACTION_CHUNKS 32
+
+#ifndef SYS_compat_ioctl
+#define SYS_compat_ioctl 54
 #endif
+#define compat_user_mode(pstate)                                                                   \
+    (((pstate) & (PSR_MODE32_BIT | PSR_MODE_MASK)) == (PSR_MODE32_BIT | PSR_MODE_EL0t))
 
-#define GET_TID() (bpf_get_current_pid_tgid() & 0xffffffff)
+int32_t g_loader_pid = 0;
 
-#define UNTAG(addr) (const void *)((__u64)(addr) & 0xffffffffffff)
+int check_is_compat(struct bpf_raw_tracepoint_args *ctx) {
+    struct my_pt_regs *regs_ptr = (struct my_pt_regs *)ctx->args[0];
+    __u64 pstate;
+    uint32_t map_key = 0;
+    pid_t tid = GET_TID();
+    int *in_compat = bpf_map_lookup_elem(&in_compat_syscall_map, &map_key);
 
-// Default value in Android
-#define PID_MAX 32768
-
-// https://github.com/iovisor/bcc/issues/2519#issuecomment-534359316
-#define SZ_16K 0x00004000
-#define SZ_32K 0x00008000
-#define SZ_64M 0x04000000
-
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, PID_MAX);
-    __type(key, pid_t);
-    __type(value, binder_process_state_t);
-} binder_process_state SEC(".maps");
-
-struct ioctl_context {
-    int fd;
-    unsigned int cmd;
-    unsigned long arg;
-};
-
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, PID_MAX);
-    __type(key, pid_t);
-    __type(value, struct ioctl_context);
-} ioctl_context_map SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, SZ_64M);
-} binder_events_buffer SEC(".maps");
-
-struct write_read_buffer {
-    struct binder_event event;
-    struct binder_event_write_read bwr;
-    char data[SZ_32K - sizeof(struct binder_event) - sizeof(struct binder_event_write_read)];
-};
-
-struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, 1);
-    __type(key, __u32);
-    __type(value, struct write_read_buffer);
-} tmp_buffers SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, PID_MAX);
-    __type(key, pid_t);
-    __type(value, struct binder_write_read);
-} binder_write_read_buffers SEC(".maps");
-
-static const binder_process_state_t g_valid_transitions[BINDER_STATE_MAX][BINDER_STATE_MAX] = {
-    // starting state
-    [BINDER_IOCTL] = {BINDER_INVALID},
-
-    // binder commands are processed in a loop, that starts after IOCTL with
-    // write_size > 0
-    // so its possible for
-    // BINDER_IOCTL -> BINDER_COMMAND // single command that isn't a
-    // transaction
-    // BINDER_IOCTL -> BINDER_COMMAND -> BINDER_COMMAND // two commands that
-    // are not transactions
-    // BINDER_IOCTL -> BINDER_COMMAND -> BINDER_TXN -> BINDER_COMMAND // two
-    // commands, the first is a TXN
-    [BINDER_COMMAND] = {BINDER_IOCTL, BINDER_COMMAND, BINDER_TXN},
-
-    // a transaction is a special kind of command
-    [BINDER_TXN] = {BINDER_COMMAND},
-
-    // after the BINDER_COMMAND loop ends we get the BINDER_WRITE_DONE
-    // event, so we might get
-    // BINDER_COMMAND -> BINDER_WRITE_DONE
-    // BINDER_COMMAND -> BINDER_TXN -> BINDER_WRITE_DONE
-    [BINDER_WRITE_DONE] = {BINDER_TXN, BINDER_COMMAND},
-
-    // binder wait_for_work is called at the start of binder_thread_read, so
-    // we might get:
-    // BINDER_IOCTL -> BINDER_WAIT_FOR_WORK // if write_size == 0 and
-    // read_size > 0
-    // BINDER_IOCTL -> ... -> BINDER_WRITE_DONE -> BINDER_WAIT_FOR_WORK //
-    // if write_size > 0 and read_size > 0
-    [BINDER_WAIT_FOR_WORK] = {BINDER_IOCTL, BINDER_WRITE_DONE},
-
-    // binder_transaction_recieved is traced when the read loop encounters a
-    // BR_TRANSACTION, so we might get:
-    // BINDER_WAIT_FOR_WORK -> BINDER_TXN_RECEIVED
-    // BINDER_WAIT_FOR_WORK -> BINDER_TXN_RECEIVED -> BINDER_RETURN ->
-    // BINDER_TXN_RECEIVED
-    // BINDER_WAIT_FOR_WORK -> BINDER_RETURN -> BINDER_TXN_RECEIVED
-    [BINDER_TXN_RECEIVED] = {BINDER_WAIT_FOR_WORK, BINDER_RETURN},
-
-    // binder_return is traced after the read loop handles a BR command, so
-    // we might get:
-    // BINDER_WAIT_FOR_WORK -> BINDER_RETURN
-    // BINDER_WAIT_FOR_WORK -> BINDER_TXN_RECEIVED -> BINDER_RETURN
-    // BINDER_WAIT_FOR_WORK -> BINDER_RETURN -> BINDER_RETURN
-    [BINDER_RETURN] = {BINDER_WAIT_FOR_WORK, BINDER_TXN_RECEIVED, BINDER_RETURN},
-
-    // binder_read_done is traced after `binder_thread_read` returns, so we
-    // might get:
-    // BINDER_WAIT_FOR_WORK -> BINDER_READ_DONE
-    // BINDER_WAIT_FOR_WORK -> BINDER_RETURN -> BINDER_READ_DONE
-    // BINDER_WAIT_FOR_WORK -> BINDER_TXN_RECEIVED -> BINDER_RETURN ->
-    // BINDER_READ_DONE
-    [BINDER_READ_DONE] = {BINDER_WAIT_FOR_WORK, BINDER_RETURN},
-
-    // ioctl_done is traced at the end of `binder_ioctl`, so we might get:
-    // BINDER_IOCTL -> BINDER_IOCTL_DONE
-    // BINDER_IOCTL -> ... -> BINDER_WRITE_DONE -> BINDER_IOCTL_DONE
-    // BINDER_IOCTL -> ... -> BINDER_READ_DONE -> BINDER_IOCTL_DONE
-    [BINDER_IOCTL_DONE] = {BINDER_IOCTL, BINDER_WRITE_DONE, BINDER_READ_DONE}};
-
-static __always_inline bool is_valid_transition(binder_process_state_t from,
-                                                binder_process_state_t to) {
-    // >= 5.3 supports loops
-    // #pragma unroll
-    for (size_t i = 0; i < BINDER_STATE_MAX; i++) {
-        binder_process_state_t state = g_valid_transitions[to][i];
-        if (state == from) {
-            return true;
-        }
-        // we check the invalid state only once
-        if (state == BINDER_INVALID) {
-            break;
-        }
+    if (!in_compat) {
+        LOG("raw_sys_enter: failed to lookup in_compat");
+        return 0;
     }
-    return false;
+
+    if (tid == g_loader_pid) {
+        return 0;
+    }
+
+    if (bpf_probe_read(&pstate, sizeof(pstate), &regs_ptr->user_regs.pstate)) {
+        LOG("raw_sys_enter: failed to read regs");
+        return 0;
+    }
+
+    if compat_user_mode (pstate) {
+        *in_compat = 1;
+    } else {
+        *in_compat = 0;
+    }
+    return 0;
 }
 
-static __always_inline int do_transition(pid_t tid, binder_process_state_t to) {
-    struct binder_event *event = NULL;
-    binder_process_state_t *from = bpf_map_lookup_elem(&binder_process_state, &tid);
-    if (!from) {
-        LOG("failed transition of thread %d to state %d: no such process", tid, to);
-        // no need to send BINDER_INVALID message to userspace
+SEC("raw_tp/sys_enter")
+int sys_enter_check_compat(struct bpf_raw_tracepoint_args *ctx) { return check_is_compat(ctx); }
+
+// we need this also on sys_exit if we started tracing a process blocked in binder_read
+SEC("raw_tp/sys_exit")
+int sys_exit_check_compat(struct bpf_raw_tracepoint_args *ctx) { return check_is_compat(ctx); }
+
+int get_is_compat() {
+    uint32_t map_key = 0;
+    int *in_compat = bpf_map_lookup_elem(&in_compat_syscall_map, &map_key);
+    if (!in_compat) {
+        LOG("get_is_compat: failed to lookup in_compat");
         return -1;
     }
-    if (!is_valid_transition(*from, to)) {
-        // LOG("transition of thread %d from state %d to %d is invalid", tid, *from, to);
-        goto l_error;
-    }
-    if (bpf_map_update_elem(&binder_process_state, &tid, &to, BPF_ANY)) {
-        LOG("failed to update state of thread %d %d -> %d", tid, *from, to);
-        goto l_error;
-    }
-    // LOG("thread %d %d -> %d", tid, *from, to);
-    return 0;
-
-l_error:
-    event = bpf_ringbuf_reserve(&binder_events_buffer, sizeof(struct binder_event), 0);
-    if (!event) {
-        LOG("do_transition: failed to reserved event");
-        return -1;
-    }
-    event->type = BINDER_INVALID;
-    event->tid = tid;
-    event->timestamp = bpf_ktime_get_boot_ns();
-
-    bpf_ringbuf_submit(event, 0);
-    return -1;
+    return *in_compat;
 }
 
 SEC("tp/raw_syscalls/sys_enter")
 int sys_enter(struct trace_event_raw_sys_enter *ctx) {
     pid_t tid = GET_TID();
-    if (ctx->id == SYS_ioctl) {
-        struct ioctl_context ioctl_ctx = {.fd = ctx->args[0]};
+    int is_compat = get_is_compat();
+    if (is_compat < 0) {
+        return 0;
+    }
+    long ioctl_syscall = (is_compat) ? SYS_compat_ioctl : SYS_ioctl;
+    if (ctx->id == ioctl_syscall && tid != g_loader_pid) {
+        struct ioctl_context ioctl_ctx = {.fd = ctx->args[0], .is_compat = is_compat};
         if (bpf_map_update_elem(&ioctl_context_map, &tid, &ioctl_ctx, BPF_ANY)) {
             LOG("ioctl: invalid state for %d", tid);
         };
@@ -194,13 +94,260 @@ int sys_enter(struct trace_event_raw_sys_enter *ctx) {
     return 0;
 }
 
+#ifdef __aarch64__
+int __noinline do_bc_br_transaction(pid_t pid, pid_t tid, char log_char,
+                                    struct transaction_command *command);
+
+int handle_binder_return_from_ioctl(pid_t tid, pid_t pid, struct binder_write_read *bwr,
+                                    struct binder_reply_offsets *reply_offsets) {
+    int ret = 1;
+    uint32_t map_key = 0;
+
+    if (!bwr || !reply_offsets) {
+        LOG("br: invalid args");
+        goto l_cleanup;
+    }
+    struct transaction_command *command =
+        bpf_map_lookup_elem(&transaction_command_buffers, &map_key);
+    if (!command) {
+        LOG("br: failed to get transaction command buffer");
+        goto l_cleanup;
+    }
+    // LOG("valid read_only ioctl, handling %d replies", reply_offsets->count);
+    for (size_t i = 0; i < reply_offsets->count; i++) {
+        if (i >= MAX_TRANSACTIONS_PER_REPLY) {
+            // we already checked but make the verifier happy
+            goto l_cleanup;
+        }
+        struct binder_reply_offset *reply = &reply_offsets->offsets[i];
+        uint32_t cmd = reply->cmd;
+        if (cmd == BR_TRANSACTION || cmd == BR_TRANSACTION_SEC_CTX || cmd == BR_REPLY) {
+            if (bpf_probe_read_user(command, sizeof(*command),
+                                    UNTAG(bwr->read_buffer + reply->offset))) {
+                LOG("failed to read BC data %px (cmd: %d)", bwr->read_buffer + reply->offset, cmd);
+                goto l_cleanup;
+            }
+
+            // LOG("b%c handling command from read_only ioctl: %x", log_char, command);
+            if (do_bc_br_transaction(pid, tid, 'r', command) != 0) {
+                LOG("br failed to handle transaction command");
+                goto l_cleanup;
+            }
+        }
+    }
+    ret = 0;
+l_cleanup:
+    LOG_BWR_BUFFERS("handle_binder_return_from_ioctl: b%c delete element");
+    bpf_map_delete_elem(&binder_write_read_buffers, &tid);
+    return 0;
+}
+
+SEC("raw_tp/sys_exit")
+int raw_sys_exit(struct bpf_raw_tracepoint_args *ctx) {
+    struct my_pt_regs *regs_ptr = (struct my_pt_regs *)ctx->args[0];
+    struct my_pt_regs regs;
+    __u64 task_id = bpf_get_current_pid_tgid();
+    pid_t pid = task_id >> 32;
+    pid_t tid = task_id & 0xffffffff;
+    if (tid == g_loader_pid) {
+        return 0;
+    }
+    int is_compat = get_is_compat();
+    if (is_compat < 0) {
+        return 0;
+    }
+    __s32 ioctl_syscall = (is_compat) ? SYS_compat_ioctl : SYS_ioctl;
+
+    if (bpf_probe_read(&regs, sizeof(regs), regs_ptr)) {
+        LOG("raw_sys_exit: failed to read regs");
+        return 0;
+    }
+
+    if (regs.syscallno == ioctl_syscall) {
+        struct ioctl_context *ioctl_ctx = bpf_map_lookup_elem(&ioctl_context_map, &tid);
+        if (!ioctl_ctx) {
+            return 0;
+        } else if (ioctl_ctx->fd == -2) {
+            // we set fd to -2 to mark that we started processing this ioctl only from
+            // binder_read we need to send the BINDER_IOCTL event for this ioctl
+
+            ioctl_ctx->fd = regs.orig_x0;
+            ioctl_ctx->cmd = (__u32)regs.user_regs.regs[1];
+            ioctl_ctx->arg = regs.user_regs.regs[2];
+            ioctl_ctx->is_compat = is_compat;
+
+            struct binder_event *event = bpf_ringbuf_reserve(
+                &binder_events_buffer,
+                sizeof(struct binder_event) + sizeof(struct binder_event_ioctl), 0);
+            if (!event) {
+                LOG("binder_ioctl: failed to reserved event");
+                send_invalidate(tid, pid);
+                return 0;
+            }
+            event->type = BINDER_IOCTL;
+            event->pid = pid;
+            event->tid = tid;
+            event->timestamp = bpf_ktime_get_boot_ns();
+
+            struct binder_event_ioctl *ioctl_event = (struct binder_event_ioctl *)(event + 1);
+            __u64 creds = bpf_get_current_uid_gid();
+
+            ioctl_event->fd = ioctl_ctx->fd;
+            bpf_get_current_comm(ioctl_event->comm, sizeof(ioctl_event->comm));
+            ioctl_event->uid = creds & 0xffffffff;
+            ioctl_event->gid = creds >> 32;
+            ioctl_event->cmd = ioctl_ctx->cmd;
+            ioctl_event->arg = ioctl_ctx->arg;
+            ioctl_event->read_only = 1;
+            // wait with sending the event until we do some sanity checks
+
+            // now we need to send the BINDER_WRITE_READ event
+            if (ioctl_ctx->cmd != BINDER_WRITE_READ) {
+                // This shouldn't happen - we will only set fd to -2 for BINDER_WRITE_READ
+                // ioctls inside
+                LOG("read_only ioctl but cmd != BINDER_WRITE_READ");
+                goto l_error;
+            }
+            struct binder_write_read bwr = {};
+            if (bpf_probe_read_user(&bwr, sizeof(bwr), UNTAG(ioctl_ctx->arg))) {
+                LOG("raw_sys_exit: failed to read BINDER_WRITE_READ arg from user addr: %px",
+                    (const void *)ioctl_ctx->arg);
+                goto l_error;
+            }
+            struct binder_reply_offsets *reply_offsets =
+                bpf_map_lookup_elem(&binder_reply_offsets_map, &tid);
+            if (!reply_offsets) {
+                goto l_error;
+            }
+            // The ioctl is already done, so bwr contains the final read_consumed value
+            size_t index = reply_offsets->count - 1;
+            if (index >= MAX_TRANSACTIONS_PER_REPLY) {
+                LOG("too many reply offsets: %d", reply_offsets->count);
+                goto l_error;
+            }
+            struct binder_reply_offset *last_reply = &reply_offsets->offsets[index];
+            size_t last_offset = last_reply->offset + sizeof(uint32_t) + _IOC_SIZE(last_reply->cmd);
+            if (bwr.read_consumed != last_offset) {
+                // we didn't read all the reply data yet
+                LOG("read_consumed %llu != last reply offset %llu", bwr.read_consumed, last_offset);
+                goto l_error;
+            }
+
+            // We checked that we are handling a BINDER_WRITE_READ ioctl, we were able to read
+            // the bwr command from userspace, and we saw that read_consumed matches the last
+            // reply offset, so we can now send the ioctl event.
+            //
+            // we force wakeup here so we can capture the process' cmdline and fds before it can
+            // exit.
+            bpf_ringbuf_submit(event, BPF_RB_FORCE_WAKEUP);
+
+            // now pass on the cmds we got from binder_return and binder_txn_received
+            handle_binder_return_from_ioctl(tid, pid, &bwr, reply_offsets);
+
+            return 0;
+        l_error:
+            bpf_map_delete_elem(&binder_write_read_buffers, &tid);
+            LOG("discarding event");
+            bpf_ringbuf_discard(event, 0);
+        }
+        // sys_exit tracepoint is running after us and will clear the ioctl context (in both
+        // arm64 and x86)
+    }
+    return 0;
+}
+// TODO - x86
+#endif
+
+static __always_inline int do_binder_write_read(pid_t tid, pid_t pid,
+                                                struct ioctl_context *ioctl_ctx, int is_done);
+
+int is_binder_ioctl_cmd(unsigned int cmd) {
+    switch (cmd) {
+    case BINDER_WRITE_READ:
+    case BINDER_SET_IDLE_TIMEOUT:
+    case BINDER_SET_MAX_THREADS:
+    case BINDER_SET_IDLE_PRIORITY:
+    case BINDER_SET_CONTEXT_MGR:
+    case BINDER_THREAD_EXIT:
+    case BINDER_VERSION:
+    case BINDER_GET_NODE_DEBUG_INFO:
+    case BINDER_GET_NODE_INFO_FOR_REF:
+    case BINDER_SET_CONTEXT_MGR_EXT:
+    case BINDER_FREEZE:
+    case BINDER_GET_FROZEN_INFO:
+    case BINDER_ENABLE_ONEWAY_SPAM_DETECTION:
+    case BINDER_GET_EXTENDED_ERROR:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+// NOTE - this must be defined after raw_sys_exit to keep the same ordering when loaded into the
+// kernel
 SEC("tp/raw_syscalls/sys_exit")
 int sys_exit(struct trace_event_raw_sys_exit *ctx) {
-    pid_t tid = GET_TID();
-    if (ctx->id == SYS_ioctl) {
-        struct ioctl_context ioctl_ctx = {.fd = -1};
-        bpf_map_update_elem(&ioctl_context_map, &tid, &ioctl_ctx, BPF_ANY);
+    // pid_t tid = GET_TID();
+    __u64 task_id = bpf_get_current_pid_tgid();
+    pid_t pid = task_id >> 32;
+    pid_t tid = task_id & 0xffffffff;
+    struct ioctl_context *ioctl_ctx = NULL;
+    struct binder_event *event = NULL;
+    binder_process_state_t *current_state = NULL;
+    int is_compat = get_is_compat();
+    if (is_compat < 0) {
+        return 0;
     }
+    long ioctl_syscall = (is_compat) ? SYS_compat_ioctl : SYS_ioctl;
+
+    if (ctx->id != ioctl_syscall || tid == g_loader_pid) {
+        return 0;
+    }
+
+    current_state = bpf_map_lookup_elem(&binder_process_state, &tid);
+    if (!current_state) {
+        return 0;
+    }
+
+    ioctl_ctx = bpf_map_lookup_elem(&ioctl_context_map, &tid);
+    if (!ioctl_ctx || !is_binder_ioctl_cmd(ioctl_ctx->cmd)) {
+        *current_state = BINDER_INVALID;
+        return 0;
+    }
+
+    if (ioctl_ctx->cmd == BINDER_WRITE_READ && ioctl_ctx->fd >= 0) {
+        if (do_binder_write_read(tid, pid, ioctl_ctx, 1)) {
+            send_invalidate(tid, pid);
+            return 0;
+        }
+    }
+
+    event = bpf_ringbuf_reserve(
+        &binder_events_buffer, sizeof(struct binder_event) + sizeof(struct binder_event_ioctl_done),
+        0);
+    if (!event) {
+        LOG("binder_ioctl_done: failed to reserved event");
+        return 0;
+    }
+    event->type = BINDER_IOCTL_DONE;
+    event->pid = pid;
+    event->tid = tid;
+    event->timestamp = bpf_ktime_get_boot_ns();
+    struct binder_event_ioctl_done *ioctl_event = (struct binder_event_ioctl_done *)(event + 1);
+    ioctl_event->ret = ioctl_ctx->ret;
+
+    LOG_RINGBUF("submit %u %x", sizeof(*event) + sizeof(struct binder_event_ioctl_done),
+                *(int *)event);
+    bpf_ringbuf_submit(event, 0);
+
+cleanup:
+    LOG_TRANSITION("thread %d 9 -> 0", tid);
+    *current_state = BINDER_INVALID;
+    ioctl_ctx->fd = -1;
+    ioctl_ctx->arg = 0;
+    ioctl_ctx->cmd = 0;
+    ioctl_ctx->ret = 0;
+
     return 0;
 }
 
@@ -230,30 +377,22 @@ int sched_process_exit(const struct trace_event_raw_sched_process_template *ctx)
     event->pid = pid;
     event->tid = tid;
     event->timestamp = bpf_ktime_get_boot_ns();
+    LOG_RINGBUF("submit %u %x", sizeof(*event), *(int *)event);
     bpf_ringbuf_submit(event, 0);
 
     return 0;
 }
 
-static __always_inline void send_invalidate(pid_t tid, pid_t pid) {
-    struct binder_event invalidate = {};
-    invalidate.type = BINDER_INVALID;
-    invalidate.pid = pid;
-    invalidate.tid = tid;
-
-    if (bpf_ringbuf_output(&binder_events_buffer, &invalidate, sizeof(invalidate), 0)) {
-        LOG("failed to invalidate ioctl");
-    }
-}
-
-static __always_inline int do_binder_write_read(pid_t tid, pid_t pid,
-                                                struct ioctl_context *ioctl_ctx, int is_done) {
+int do_binder_write_read(pid_t tid, pid_t pid, struct ioctl_context *ioctl_ctx, int is_done) {
     struct write_read_buffer *buffer = NULL;
     __u32 key = 0;
     const void *addr = NULL;
     __u32 size = 0;
     __u32 original_size = 0;
 
+    if (!ioctl_ctx) {
+        return -1;
+    }
     buffer = bpf_map_lookup_elem(&tmp_buffers, &key);
     if (!buffer) {
         LOG("bwr: no buffer");
@@ -271,6 +410,7 @@ static __always_inline int do_binder_write_read(pid_t tid, pid_t pid,
         size = (__u32)(*(volatile binder_size_t *)&buffer->bwr.bwr.read_consumed);
         addr = (const void *)buffer->bwr.bwr.read_buffer;
         buffer->event.type = BINDER_READ;
+        LOG_BWR_BUFFERS("do_binder_write_read (is_done == 1) - delete elem");
         bpf_map_delete_elem(&binder_write_read_buffers, &tid);
 
     } else {
@@ -278,8 +418,9 @@ static __always_inline int do_binder_write_read(pid_t tid, pid_t pid,
         addr = (const void *)buffer->bwr.bwr.write_buffer;
         buffer->event.type = BINDER_WRITE;
 
+        LOG_BWR_BUFFERS("do_binder_write_read (is_done == 0) - update elem");
         if (bpf_map_update_elem(&binder_write_read_buffers, &tid, &buffer->bwr, BPF_NOEXIST)) {
-            LOG("bwr: failed to save bwr buffer");
+            LOG("bwr: failed to save bwr buffer (is_done %d)", is_done);
             __builtin_memset(&buffer->bwr, 0, sizeof(buffer->bwr));
             return -1;
         }
@@ -295,12 +436,12 @@ static __always_inline int do_binder_write_read(pid_t tid, pid_t pid,
         LOG("bwr: size: 0 original_size: %u (is_done %d)", original_size, is_done);
         return -1;
     }
-    if (size > (__u32)(sizeof(*buffer) - offsetof(struct write_read_buffer, data))) {
+    if (size > (__u32)(sizeof(*buffer) - offsetof(struct write_read_buffer, bwr.data))) {
         return -1;
     }
 
     // TODO - check addr != NULL?
-    int _ret = bpf_probe_read_user(buffer->data, size, UNTAG(addr));
+    int _ret = bpf_probe_read_user(buffer->bwr.data, size, UNTAG(addr));
     if (_ret) {
         LOG("bwr: failed to read addr %px size: %u (is_done: %d): %d", addr, size, is_done, _ret);
         return -1;
@@ -309,8 +450,11 @@ l_send_event:
     buffer->event.pid = pid;
     buffer->event.tid = tid;
     buffer->event.timestamp = bpf_ktime_get_boot_ns();
+    LOG_RINGBUF("output %u (%u + %u) %x",
+                (__u32)offsetof(struct write_read_buffer, bwr.data) + size,
+                (__u32)offsetof(struct write_read_buffer, bwr.data), size, *(int *)buffer);
     if (bpf_ringbuf_output(&binder_events_buffer, buffer,
-                           (__u32)offsetof(struct write_read_buffer, data) + size, 0)) {
+                           (__u32)offsetof(struct write_read_buffer, bwr.data) + size, 0)) {
         LOG("bwr: failed to output write_read data (is_done: %d)", is_done);
         return -1;
     }
@@ -325,6 +469,7 @@ int binder_ioctl(struct trace_event_raw_binder_ioctl *ctx) {
     binder_process_state_t state = BINDER_IOCTL;
     struct ioctl_context *ioctl_ctx = NULL;
 
+    LOG_TRANSITION("thread %d _ -> BINDER_IOCTL", tid);
     if (bpf_map_update_elem(&binder_process_state, &tid, &state, BPF_ANY)) {
         LOG("binder_ioctl: invalid binder state for task %d", tid);
         // TODO maybe remove from map?
@@ -359,6 +504,8 @@ int binder_ioctl(struct trace_event_raw_binder_ioctl *ctx) {
     ioctl_event->arg = ioctl_ctx->arg = ctx->arg;
     // if this is the first event from that process, force wakeup so we can capture its cmdline
     // and fds before it can exit
+    LOG_RINGBUF("submit %u %x", sizeof(struct binder_event) + sizeof(struct binder_event_ioctl),
+                *(int *)event);
     bpf_ringbuf_submit(event, BPF_RB_FORCE_WAKEUP);
 
     if (ctx->cmd != BINDER_WRITE_READ) {
@@ -372,77 +519,42 @@ int binder_ioctl(struct trace_event_raw_binder_ioctl *ctx) {
     return 0;
 }
 
-int __always_inline do_bc_br(uint32_t cmd, const bool is_return) {
-    __u64 task_id = bpf_get_current_pid_tgid();
-    pid_t pid = task_id >> 32;
-    pid_t tid = task_id & 0xffffffff;
-    struct binder_write_read *bwr = NULL;
+int __noinline handle_transaction_chunk(__u64 chunk_size, __u64 addr,
+                                        struct write_read_buffer *buffer, size_t chunk_index) {
+
+    if (!buffer) {
+        return -1;
+    }
+    if (chunk_size > (__u32)(sizeof(*buffer) - offsetof(struct write_read_buffer, bwr.data))) {
+        return -1;
+    }
+    if (bpf_probe_read_user(buffer->bwr.data, chunk_size, (const void *)addr)) {
+        LOG("failed to read txn data %u", chunk_size);
+        return -1;
+    }
+    buffer->bwr.bwr.write_consumed = chunk_size;
+    buffer->bwr.bwr.write_buffer = chunk_index + 1;
+
+    LOG_RINGBUF("output: %u %x", (__u32)offsetof(struct write_read_buffer, bwr.data) + chunk_size,
+                *(int *)buffer);
+    if (bpf_ringbuf_output(&binder_events_buffer, buffer,
+                           (__u32)offsetof(struct write_read_buffer, bwr.data) + chunk_size, 0)) {
+        LOG("failed to output txn data");
+        return -1;
+    }
+    return 0;
+}
+
+int __noinline do_bc_br_transaction(pid_t pid, pid_t tid, char log_char,
+                                    struct transaction_command *command) {
     struct write_read_buffer *buffer = NULL;
     __u32 key = 0;
-    uint16_t data_size = 0;
-    uint16_t offsets_size = 0;
-    char log_char = is_return ? 'r' : 'c';
-
-    struct {
-        uint32_t cmd;
-        struct binder_transaction_data txn;
-    } __attribute__((packed)) command = {0};
-
-    if (is_return) {
-        if (do_transition(tid, BINDER_RETURN)) {
-            LOG("bad transition");
-            goto l_error;
-        }
-    } else {
-        if (do_transition(tid, BINDER_COMMAND)) {
-            LOG("bad transition");
-            goto l_error;
-        }
+    __u64 data_size = 0;
+    __u32 offsets_size = 0;
+    if (!command) {
+        return -1;
     }
-
-    bwr = bpf_map_lookup_elem(&binder_write_read_buffers, &tid);
-    if (!bwr) {
-        return 0;
-    }
-    if (is_return) {
-        // account for BR_NOOP that is always added but never traced
-        if (bwr->read_consumed == 0) {
-            bwr->read_consumed += sizeof(uint32_t);
-        }
-        // BR_SPAWN_LOOPER actualy overwrites the first BR_NOOP.
-        // If it exists it will be traced as the LAST return (see `binder_thread_read`),
-        // so we can safely ignore it
-        if (cmd == BR_SPAWN_LOOPER) {
-            return 0;
-        }
-
-        // TODO - support secctx?
-        if (cmd == BR_TRANSACTION || cmd == BR_REPLY || cmd == BR_TRANSACTION_SEC_CTX) {
-
-            if (bpf_probe_read_user(&command, sizeof(command),
-                                    UNTAG(bwr->read_buffer + bwr->read_consumed))) {
-                LOG("failed to read BC data");
-                goto l_error;
-            }
-        } else {
-            goto cleanup;
-        }
-    } else if (cmd == BC_TRANSACTION || cmd == BC_REPLY || cmd == BC_TRANSACTION_SG ||
-               cmd == BC_REPLY_SG) {
-        // we don't care about the extra `buffers_size` field in `binder_transaction_data_sg`
-        if (bpf_probe_read_user(&command, sizeof(command),
-                                UNTAG(bwr->write_buffer + bwr->write_consumed))) {
-            LOG("failed to read BC data");
-            goto l_error;
-        }
-    } else {
-        goto cleanup;
-    }
-
-    if (cmd != command.cmd) {
-        LOG("b%c command mismatch: expected %u got %u", log_char, cmd, command.cmd);
-        goto l_error;
-    }
+    const void *addr = UNTAG(command->txn.data.ptr.buffer);
 
     buffer = bpf_map_lookup_elem(&tmp_buffers, &key);
     if (!buffer) {
@@ -456,8 +568,8 @@ int __always_inline do_bc_br(uint32_t cmd, const bool is_return) {
     buffer->event.tid = tid;
     buffer->event.timestamp = bpf_ktime_get_boot_ns();
 
-    data_size = command.txn.data_size;
-    offsets_size = command.txn.offsets_size;
+    data_size = command->txn.data_size;
+    offsets_size = command->txn.offsets_size;
 
     buffer->bwr.bwr = (struct binder_write_read){.write_size = data_size,
                                                  .write_consumed = 0,
@@ -467,55 +579,62 @@ int __always_inline do_bc_br(uint32_t cmd, const bool is_return) {
                                                  .read_buffer = 0};
 
     if (data_size == 0) {
-        goto cleanup;
+        return 0;
     }
 
-    // if (data_size > sizeof(buffer) - offsetof(struct write_read_buffer, data)) {
-    //     LOG("truncated txn data: %llu/%u",
-    //         sizeof(buffer) - offsetof(struct write_read_buffer, data), data_size);
+    for (size_t i = 0; i < MAX_TRANSACTION_CHUNKS && data_size > 0; i++) {
+        __u64 chunk_size = data_size;
+        if (chunk_size > (__u32)(sizeof(*buffer) - offsetof(struct write_read_buffer, bwr.data))) {
+            chunk_size = (__u32)(sizeof(*buffer) - offsetof(struct write_read_buffer, bwr.data));
+        }
+        if (handle_transaction_chunk(chunk_size, (__u64)addr, buffer, i) != 0) {
+            goto l_error;
+        }
+        data_size -= chunk_size;
+        addr += chunk_size;
+    }
+
+    if (data_size > 0) {
+        LOG("b%c: failed to send all txn data, left %llu", log_char, data_size);
+    }
+
+    // if (data_size > (__u32)(sizeof(*buffer) - offsetof(struct write_read_buffer, bwr.data))) {
+    //     LOG("b%c data too big: %u + %llu > %llu", log_char, data_size,
+    //         offsetof(struct write_read_buffer, bwr.data), sizeof(*buffer));
+    //     data_size = (__u32)(sizeof(*buffer) - offsetof(struct write_read_buffer, bwr.data));
+    //     // goto l_error;
     // }
 
-    data_size &= (sizeof(*buffer) - 1);
-    if (data_size > (__u32)(sizeof(*buffer) - offsetof(struct write_read_buffer, data))) {
-        LOG("data too big: %u + %llu > %llu", data_size, offsetof(struct write_read_buffer, data),
-            sizeof(*buffer));
-        goto l_error;
-    }
+    // if (bpf_probe_read_user(buffer->bwr.data, data_size, addr)) {
+    //     LOG("failed to read txn data %u, %lx", data_size, command->txn.data.ptr.buffer);
+    //     goto l_error;
+    // }
 
-    if (bpf_probe_read_user(buffer->bwr.data, data_size, UNTAG(command.txn.data.ptr.buffer))) {
-        LOG("failed to read txn data %u, %lx", data_size, command.txn.data.ptr.buffer);
-        goto l_error;
-    }
+    // buffer->bwr.bwr.write_consumed = data_size;
+    // buffer->bwr.bwr.write_buffer = 1;
 
-    buffer->bwr.bwr.write_consumed = data_size;
-    buffer->bwr.bwr.write_buffer = 1;
-
-    if (bpf_ringbuf_output(&binder_events_buffer, buffer,
-                           (__u32)offsetof(struct write_read_buffer, data) + data_size, 0)) {
-        LOG("failed to output txn data");
-        goto l_error;
-    }
+    // LOG_RINGBUF("output: %u %x", (__u32)offsetof(struct write_read_buffer, bwr.data) + data_size,
+    //             *(int *)buffer);
+    // if (bpf_ringbuf_output(&binder_events_buffer, buffer,
+    //                        (__u32)offsetof(struct write_read_buffer, bwr.data) + data_size, 0)) {
+    //     LOG("failed to output txn data");
+    //     goto l_error;
+    // }
     // LOG("txn data: %llu/%llu", buffer->bwr.bwr.write_consumed, buffer->bwr.bwr.write_size);
 
     if (offsets_size == 0) {
-        goto cleanup;
+        return 0;
     }
 
-    if (offsets_size > sizeof(buffer) - offsetof(struct write_read_buffer, data)) {
-        LOG("truncated txn offsets: %llu/%u",
-            sizeof(buffer) - offsetof(struct write_read_buffer, data), data_size);
-    }
-
-    offsets_size &= (sizeof(*buffer) - 1);
-    if (offsets_size + offsetof(struct write_read_buffer, data) > sizeof(*buffer)) {
+    if (offsets_size >
+        (__u32)sizeof(*buffer) - (__u32)offsetof(struct write_read_buffer, bwr.data)) {
         LOG("offsets too big: %u + %llu > %llu", offsets_size,
-            offsetof(struct write_read_buffer, data), sizeof(*buffer));
+            offsetof(struct write_read_buffer, bwr.data), sizeof(*buffer));
         goto l_error;
     }
-    offsets_size &= (sizeof(*buffer) - 1);
 
-    if (bpf_probe_read_user(buffer->bwr.data, offsets_size, UNTAG(command.txn.data.ptr.offsets))) {
-        LOG("failed to read txn offsets %u, %llx", offsets_size, command.txn.data.ptr.offsets);
+    if (bpf_probe_read_user(buffer->bwr.data, offsets_size, UNTAG(command->txn.data.ptr.offsets))) {
+        LOG("failed to read txn offsets %u, %llx", offsets_size, command->txn.data.ptr.offsets);
         goto l_error;
     }
 
@@ -523,26 +642,151 @@ int __always_inline do_bc_br(uint32_t cmd, const bool is_return) {
     buffer->bwr.bwr.read_buffer = 1;
     buffer->bwr.bwr.read_consumed = offsets_size;
 
+    LOG_RINGBUF("output: %u %x", offsetof(struct write_read_buffer, bwr.data) + offsets_size,
+                *(int *)buffer);
     if (bpf_ringbuf_output(&binder_events_buffer, buffer,
-                           offsetof(struct write_read_buffer, data) + offsets_size, 0)) {
+                           offsetof(struct write_read_buffer, bwr.data) + offsets_size, 0)) {
         LOG("failed to output txn offsets");
+        goto l_error;
+    }
+
+    return 0;
+l_error:
+    return -1;
+}
+
+int __always_inline do_bc_br(uint32_t cmd, const bool is_return) {
+    __u64 task_id = bpf_get_current_pid_tgid();
+    pid_t pid = task_id >> 32;
+    pid_t tid = task_id & 0xffffffff;
+    struct binder_write_read *bwr = NULL;
+    struct binder_write_read empty_bwr;
+    char log_char = is_return ? 'r' : 'c';
+    size_t bytes_processed = sizeof(uint32_t) + _IOC_SIZE(cmd);
+    uint32_t map_key = 0;
+    __builtin_memset(&empty_bwr, 0, sizeof(empty_bwr));
+
+    struct transaction_command *command =
+        bpf_map_lookup_elem(&transaction_command_buffers, &map_key);
+    if (!command) {
+        LOG("b%c: failed to get transaction command buffer", log_char);
+        goto l_error;
+    }
+
+    if (is_return) {
+        if (do_transition(tid, BINDER_RETURN)) {
+            LOG("bad transition");
+            goto l_error;
+        }
+    } else {
+        if (do_transition(tid, BINDER_COMMAND)) {
+            LOG("bad transition");
+            goto l_error;
+        }
+    }
+
+    LOG_BWR_BUFFERS("do_bc_br: b%c lookup element", log_char);
+    bwr = bpf_map_lookup_elem(&binder_write_read_buffers, &tid);
+    if (!bwr) {
+        if (is_return) {
+            // We are starting to parse a BINDER_WRITE_READ call from the read side.
+            // We will initialize an empty bwr and just record the offsets
+            bwr = &empty_bwr;
+            struct ioctl_context ioctl_ctx = {.fd = -2};
+            if (bpf_map_update_elem(&ioctl_context_map, &tid, &ioctl_ctx, BPF_ANY)) {
+                LOG("b%c: failed to mark ioctl read only context", log_char);
+                return 0;
+            }
+        } else {
+            return 0;
+        }
+    }
+    if (is_return) {
+        // account for BR_NOOP that is always added but never traced
+        if (bwr->read_consumed == 0) {
+            bwr->read_consumed += sizeof(uint32_t);
+        }
+        // BR_SPAWN_LOOPER actualy overwrites the first BR_NOOP.
+        // If it exists it will be traced as the LAST return (see `binder_thread_read`),
+        // so we can safely ignore it
+        if (cmd == BR_SPAWN_LOOPER) {
+            return 0;
+        }
+
+        if (!bwr->read_buffer) {
+            struct binder_reply_offsets *reply_offsets =
+                bpf_map_lookup_elem(&binder_reply_offsets_map, &tid);
+            if (!reply_offsets) {
+                reply_offsets = bpf_map_lookup_elem(&tmp_buffers, &map_key);
+                if (!reply_offsets) {
+                    LOG("b%c: failed to get empty reply offsets", log_char);
+                    goto l_error;
+                }
+                reply_offsets->count = 0;
+            }
+            if (reply_offsets->count >= (uint8_t)MAX_TRANSACTIONS_PER_REPLY) {
+                LOG("too many reply offsets: %u", reply_offsets->count);
+                bpf_map_delete_elem(&binder_reply_offsets_map, &tid);
+                goto l_error;
+            }
+            reply_offsets->offsets[reply_offsets->count].offset = bwr->read_consumed;
+            reply_offsets->offsets[reply_offsets->count].cmd = cmd;
+            reply_offsets->count++;
+            bpf_map_update_elem(&binder_reply_offsets_map, &tid, reply_offsets, BPF_ANY);
+            goto cleanup;
+        }
+
+        // TODO - support secctx?
+        if (cmd == BR_TRANSACTION || cmd == BR_REPLY || cmd == BR_TRANSACTION_SEC_CTX) {
+
+            if (bwr->read_buffer) {
+                if (bpf_probe_read_user(command, sizeof(*command),
+                                        UNTAG(bwr->read_buffer + bwr->read_consumed))) {
+                    LOG("failed to read BR data %px (cmd: %d)",
+                        bwr->read_buffer + bwr->read_consumed, cmd);
+                    goto l_error;
+                }
+            }
+        } else {
+            goto cleanup;
+        }
+    } else if (cmd == BC_TRANSACTION || cmd == BC_REPLY || cmd == BC_TRANSACTION_SG ||
+               cmd == BC_REPLY_SG) {
+        // we don't care about the extra `buffers_size` field in `binder_transaction_data_sg`
+        if (bpf_probe_read_user(command, sizeof(*command),
+                                UNTAG(bwr->write_buffer + bwr->write_consumed))) {
+            LOG("failed to read BC data %px", bwr->write_buffer + bwr->write_consumed);
+            goto l_error;
+        }
+    } else {
+        goto cleanup;
+    }
+
+    if (cmd != command->cmd) {
+        LOG("b%c command mismatch: expected %u got %u", log_char, cmd, command->cmd);
+        goto l_error;
+    }
+
+    if (do_bc_br_transaction(pid, tid, log_char, command) != 0) {
+        LOG("b%c failed to handle transaction command", log_char);
         goto l_error;
     }
     // LOG("txn offsets: %llu/%llu", buffer->bwr.bwr.read_consumed, buffer->bwr.bwr.read_size);
 
 cleanup:
-    size_t bytes_processed = sizeof(uint32_t) + _IOC_SIZE(cmd);
+
     if (is_return) {
         bwr->read_consumed += bytes_processed;
     } else {
         bwr->write_consumed += bytes_processed;
     }
-
-    bpf_map_update_elem(&binder_write_read_buffers, &tid, bwr, BPF_EXIST);
+    LOG_BWR_BUFFERS("do_bc_br: b%c update element", log_char);
+    bpf_map_update_elem(&binder_write_read_buffers, &tid, bwr, BPF_ANY);
 
     return 0;
 
 l_error:
+    LOG_BWR_BUFFERS("do_bc_br: b%c delete element", log_char);
     bpf_map_delete_elem(&binder_write_read_buffers, &tid);
     LOG("b%c error", log_char);
     return 0;
@@ -553,6 +797,82 @@ int binder_command(struct trace_event_raw_binder_command *ctx) { return do_bc_br
 
 SEC("tp/binder/binder_return")
 int binder_return(struct trace_event_raw_binder_return *ctx) { return do_bc_br(ctx->cmd, 1); }
+
+// This is only going to work if the offsets are correct, I only tested on Pixel 6 with kernel 6.6
+#ifdef FEATURE_TRANSACTION_STACK
+// offsetof(struct binder_transaction, to_thread)
+#define OFFSETOF_TRANSACTION_TO_THREAD 64
+
+// offsetof(struct binder_thread, transaction_stack)
+#define OFFSETOF_THREAD_TRANSACTION_STACK 64
+
+// offsetof(struct binder_transaction, debug_id)
+#define OFFSETOF_TRANSACTION_DEBUG_ID 0
+
+// KEEP This before binder_transaction tracepoint so this is executed first
+SEC("raw_tp/binder_transaction")
+int raw_binder_transaction(struct bpf_raw_tracepoint_args *ctx) {
+    if (!(int)ctx->args[0]) {
+        // not a reply
+        return 0;
+    }
+    void *transaction = (void *)ctx->args[1];
+
+    void *to_thread = NULL;
+    void *transaction_stack = NULL;
+    int request_debug_id = 0;
+    int reply_debug_id = 0;
+
+    if (bpf_probe_read_kernel(&to_thread, sizeof(to_thread),
+                              transaction + OFFSETOF_TRANSACTION_TO_THREAD)) {
+        LOG("raw_binder_transaction: failed to read to_thread");
+        return 0;
+    }
+
+    if (bpf_probe_read_kernel(&transaction_stack, sizeof(transaction_stack),
+                              to_thread + OFFSETOF_THREAD_TRANSACTION_STACK)) {
+        LOG("raw_binder_transaction: failed to read transaction_stack");
+        return 0;
+    }
+
+    if (bpf_probe_read_kernel(&request_debug_id, sizeof(request_debug_id),
+                              transaction_stack + OFFSETOF_TRANSACTION_DEBUG_ID)) {
+        LOG("raw_binder_transaction: failed to read request_debug_id");
+        return 0;
+    }
+    if (bpf_probe_read_kernel(&reply_debug_id, sizeof(reply_debug_id),
+                              transaction + OFFSETOF_TRANSACTION_DEBUG_ID)) {
+        LOG("raw_binder_transaction: failed to read reply_debug_id");
+        return 0;
+    }
+
+    __u64 task_id = bpf_get_current_pid_tgid();
+    pid_t pid = task_id >> 32;
+    pid_t tid = task_id & 0xffffffff;
+    struct binder_event *event = NULL;
+    struct binder_event_transaction_stack *txn_event = NULL;
+
+    event = bpf_ringbuf_reserve(&binder_events_buffer, sizeof(*event) + sizeof(*txn_event), 0);
+    if (!event) {
+        LOG("Failed to reserved txn stack event");
+        return 0;
+    }
+    event->type = BINDER_TXN_STACK;
+    event->pid = pid;
+    event->tid = tid;
+    event->timestamp = bpf_ktime_get_boot_ns();
+
+    txn_event = (struct binder_event_transaction_stack *)(event + 1);
+    txn_event->reply_debug_id = reply_debug_id;
+    txn_event->request_debug_id = request_debug_id;
+
+    LOG_RINGBUF("submit %u %x", sizeof(*event) + sizeof(*txn_event), *(int *)event);
+    bpf_ringbuf_submit(event, 0);
+
+    // LOG("transaction %d replies to transaction %d", reply_debug_id, request_debug_id);
+    return 0;
+}
+#endif
 
 SEC("tp/binder/binder_transaction")
 int binder_transaction(struct trace_event_raw_binder_transaction *ctx) {
@@ -585,6 +905,8 @@ int binder_transaction(struct trace_event_raw_binder_transaction *ctx) {
     txn_event->code = ctx->code;
     txn_event->flags = ctx->flags;
 
+    LOG_RINGBUF("submit %u %x", sizeof(*event) + sizeof(struct binder_event_transaction),
+                *(int *)event);
     bpf_ringbuf_submit(event, 0);
 
     return 0;
@@ -617,6 +939,8 @@ int binder_transaction_received(struct trace_event_raw_binder_transaction_receiv
     txn_event = (struct binder_event_transaction_received *)(event + 1);
     txn_event->debug_id = ctx->debug_id;
 
+    LOG_RINGBUF("submit %u %x", sizeof(*event) + sizeof(struct binder_event_transaction_received),
+                *(int *)event);
     bpf_ringbuf_submit(event, 0);
 
     return 0;
@@ -645,47 +969,21 @@ int binder_read_done(void *ctx) {
 
 SEC("tp/binder/binder_ioctl_done")
 int binder_ioctl_done(struct trace_event_raw_binder_ioctl_done *ctx) {
-    __u64 task_id = bpf_get_current_pid_tgid();
-    pid_t pid = task_id >> 32;
-    pid_t tid = task_id & 0xffffffff;
+    pid_t tid = GET_TID();
     struct ioctl_context *ioctl_ctx = NULL;
-    struct binder_event *event = NULL;
 
     if (do_transition(tid, BINDER_IOCTL_DONE)) {
         return 0;
     }
-
-    // LOG("removing %d", tid);
-    binder_process_state_t state = BINDER_INVALID;
-    bpf_map_update_elem(&binder_process_state, &tid, &state, BPF_ANY);
 
     ioctl_ctx = bpf_map_lookup_elem(&ioctl_context_map, &tid);
     if (!ioctl_ctx) {
         LOG("binder_ioctl_done: no fd?");
         return 0;
     }
+    ioctl_ctx->ret = ctx->ret;
 
-    if (ioctl_ctx->cmd == BINDER_WRITE_READ) {
-        if (do_binder_write_read(tid, pid, ioctl_ctx, 1)) {
-            send_invalidate(tid, pid);
-            return 0;
-        }
-    }
-
-    event = bpf_ringbuf_reserve(
-        &binder_events_buffer, sizeof(struct binder_event) + sizeof(struct binder_event_ioctl_done),
-        0);
-    if (!event) {
-        LOG("binder_ioctl_done: failed to reserved event");
-        return 0;
-    }
-    event->type = BINDER_IOCTL_DONE;
-    event->pid = pid;
-    event->tid = tid;
-    event->timestamp = bpf_ktime_get_boot_ns();
-    struct binder_event_ioctl_done *ioctl_event = (struct binder_event_ioctl_done *)(event + 1);
-    ioctl_event->ret = ctx->ret;
-
-    bpf_ringbuf_submit(event, 0);
     return 0;
 }
+
+char LICENSE[] SEC("license") = "GPL";

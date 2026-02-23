@@ -55,6 +55,7 @@ impl BinderWriteReadProtocol {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, EpanProtocol)]
 pub struct Transaction {
     pub debug_id: i32,
+    pub in_reply_to_debug_id: i32,
     pub target_node: i32,
     pub to_proc: i32,
     pub to_thread: i32,

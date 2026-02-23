@@ -1,5 +1,5 @@
 // common structures for userspace and ebpf
-
+#pragma once
 #include <sys/types.h>
 // make clang-format not reorder
 #include <linux/android/binder.h>
@@ -20,11 +20,13 @@ typedef enum {
     BINDER_STATE_MAX,
     // psuedo state sent from sched_process_exit to invalidate the ProcessCache entry
     BINDER_INVALIDATE_PROCESS = BINDER_STATE_MAX,
-    BINDER_WRITE,    // gets sent after BINDER_IOCTL message, iff cmd was BINDER_WRITE_READ
-    BINDER_READ,     // gets sent before BINDER_IOCTL_DONE message, iff cmd was BINDER_WRITE_READ
-    BINDER_TXN_DATA, // gets sent when BC_TRANSACTION, BC_TRANSACTION_SG, BC_REPLY or BC_REPLY_SG
-                     // is sent, or when BR_TRANSACTION, BR_TRANSACTION_SECCTX or BR_REPLY is
-                     // received
+    BINDER_WRITE,     // gets sent after BINDER_IOCTL message, iff cmd was BINDER_WRITE_READ
+    BINDER_READ,      // gets sent before BINDER_IOCTL_DONE message, iff cmd was BINDER_WRITE_READ
+    BINDER_TXN_DATA,  // gets sent when BC_TRANSACTION, BC_TRANSACTION_SG, BC_REPLY or BC_REPLY_SG
+                      // is sent, or when BR_TRANSACTION, BR_TRANSACTION_SECCTX or BR_REPLY is
+                      // received
+    BINDER_TXN_STACK, // gets sent when a reply transaction is received for another transaction.
+                      // Only used if FEATURE_TRANSACTION_STACK is enabled.
 } binder_process_state_t;
 
 // header before every message
@@ -47,6 +49,8 @@ struct binder_event_ioctl {
     uid_t gid;
     unsigned int cmd;
     unsigned long arg;
+    unsigned int read_only; // true if we only saw the read part of BINDER_WRITE_READ without seeing
+                            // the ioctl sys_enter
 };
 
 // BINDER_IOCTL_DONE message
@@ -72,4 +76,9 @@ struct binder_event_transaction {
 
 struct binder_event_transaction_received {
     int debug_id;
+};
+
+struct binder_event_transaction_stack {
+    int reply_debug_id;
+    int request_debug_id;
 };

@@ -71,6 +71,7 @@ pub struct IoctlProtocol {
     pub uid: u32,
     pub gid: u32,
     pub ioctl_id: u64,
+    pub read_only: bool,
     pub bwr: Option<BinderWriteReadProtocol>,
 }
 
@@ -83,6 +84,7 @@ impl IoctlProtocol {
         uid: u32,
         gid: u32,
         ioctl_id: u64,
+        read_only: bool,
         bwr: Option<BinderWriteReadProtocol>,
     ) -> Self {
         Self {
@@ -93,6 +95,7 @@ impl IoctlProtocol {
             uid,
             gid,
             ioctl_id,
+            read_only,
             bwr,
         }
     }

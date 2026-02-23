@@ -1,3 +1,4 @@
+#pragma once
 #include <inttypes.h>
 #include <stdbool.h>
 #include <sys/types.h>

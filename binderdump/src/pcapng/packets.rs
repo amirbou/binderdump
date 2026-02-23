@@ -146,7 +146,6 @@ impl<W: Write> PacketGenerator<W> {
                     // return Err(anyhow!("Dropping invalid packet"))
                     break;
                 }
-
                 BinderEventData::BinderIoctl(ioctl) => {
                     ioctl_builder = ioctl_builder.with_ioctl_event(&ioctl);
                     comm = Some(
@@ -175,6 +174,7 @@ impl<W: Write> PacketGenerator<W> {
                 BinderEventData::BinderTransaction(txn) => {
                     let recv_txn = Transaction {
                         debug_id: txn.debug_id,
+                        in_reply_to_debug_id: txn.in_reply_to_debug_id,
                         target_node: txn.target_node,
                         to_proc: pid,
                         to_thread: tid,
@@ -204,8 +204,12 @@ impl<W: Write> PacketGenerator<W> {
                     }
                 }
                 BinderEventData::BinderTransactionData(txn_data) => {
-                    txn_builder = txn_builder.transcation_contents(txn_data);
+                    txn_builder = txn_builder.transcation_contents(txn_data)?;
                 }
+                BinderEventData::BinderTransactionStack(binder_transaction_stack) => {
+                    txn_builder = txn_builder.transaction_stack(binder_transaction_stack)?;
+                }
+
                 BinderEventData::BinderInvalidateProcess => unreachable!(),
             }
         }

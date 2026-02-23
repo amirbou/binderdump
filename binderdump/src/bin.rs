@@ -101,6 +101,7 @@ fn run_print() -> Result<()> {
             BinderEventData::BinderTransaction(_) => (),
             BinderEventData::BinderTransactionReceived(_) => (),
             BinderEventData::BinderTransactionData(_) => (),
+            BinderEventData::BinderTransactionStack(_) => (),
         }
     }
 

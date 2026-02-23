@@ -39,5 +39,8 @@ Handle seeing only one side of the transaction:
     if a transaction was sent to a thread that was blocked on `binder_thread_read` before we started tracing, we will only see the `sys_exit` and `transaction_received` events. We would then try to create a packet for the received transaction, but won't have the `binder_write_read` event for that syscall.
     to solve this we could change `tp/` to `raw_tp/` in the tracepoint section to receive the raw arguments to the tracepoint - in `transaction_received` - the transaction object itself, and in `sys_exit`, the `pt_regs` of captured upon syscall entry. Using both should be enough to generate the data we need, but we would probably have to depend on the layout of `struct transaction`
 
+    We are going to only handle cases where we see the whole transaction, so we can know at which offsets there are TXN/REPLY returns,
+
+
 Make sure we correctly handle hwbinder
     I see no hwbinder requests in my captures...

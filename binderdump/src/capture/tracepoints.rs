@@ -1,3 +1,5 @@
+use std::mem::MaybeUninit;
+
 use anyhow::{bail, Context, Result};
 use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
 use libc;
@@ -39,7 +41,9 @@ pub fn attach_tracepoints<'a>() -> Result<BinderSkel<'a>> {
     let skel_builder = BinderSkelBuilder::default();
     // skel_builder.obj_builder.debug(true);
 
-    let open_skel = skel_builder.open()?;
+    let open_object = Box::leak(Box::new(MaybeUninit::uninit()));
+    let mut open_skel = skel_builder.open(open_object)?;
+    open_skel.maps.bss_data.as_deref_mut().unwrap().g_loader_pid = unsafe { libc::getpid() } as i32;
 
     let mut skel = open_skel.load()?;
     skel.attach()?;

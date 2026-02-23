@@ -1,8 +1,9 @@
 use crate::capture::events::{
     BinderEventIoctl, BinderEventWriteRead, BinderTransactionContents, BinderTransactionData,
+    BinderTransactionStack,
 };
 use crate::capture::process_cache::ProcessCache;
-use anyhow::Context;
+use anyhow::{Context, Ok};
 use binderdump_structs::binder_types::{binder_ioctl, BinderInterface};
 use binderdump_structs::bwr_layer::{
     BinderWriteReadProtocol, BinderWriteReadType, Transaction, TransactionProtocol,
@@ -20,6 +21,7 @@ pub struct IoctlProtocolBuilder {
     gid: u32,
     ioctl_id: u64,
     bwr: Option<BinderWriteReadProtocol>,
+    read_only: bool,
     non_empty: bool,
 }
 
@@ -31,6 +33,7 @@ impl IoctlProtocolBuilder {
         self.cmd = event.cmd;
         self.arg = event.arg;
         self.ioctl_id = event.ioctl_id;
+        self.read_only = event.read_only;
         self.non_empty = true;
         self
     }
@@ -58,6 +61,7 @@ impl IoctlProtocolBuilder {
                 self.uid,
                 self.gid,
                 self.ioctl_id,
+                self.read_only,
                 self.bwr,
             ))
         } else {
@@ -191,6 +195,7 @@ impl BinderWriteReadProtocolBuilder {
 #[derive(Default)]
 pub struct TransactionProtocolBuilder {
     txn: Option<TransactionProtocol>,
+    txn_stack: Option<BinderTransactionStack>,
     data: Option<BinderTransactionData>,
     offsets: Option<BinderTransactionData>,
 }
@@ -215,6 +220,14 @@ impl TransactionProtocolBuilder {
             Some(offsets) => {
                 txn.offsets_size = offsets.total_size as u64;
                 txn.offsets = offsets.data;
+            }
+            None => (),
+        }
+
+        match self.txn_stack {
+            Some(txn_stack) => {
+                // Validate the transaction stack matches the transaction
+                txn.transaction.in_reply_to_debug_id = txn_stack.request_debug_id;
             }
             None => (),
         }
@@ -256,15 +269,71 @@ impl TransactionProtocolBuilder {
             offsets_size: 0,
             offsets: vec![],
         });
+        self.validate_transaction_stack()?;
 
         Ok(self)
     }
 
-    pub fn transcation_contents(mut self, txn: BinderTransactionContents) -> Self {
+    pub fn transcation_contents(mut self, txn: BinderTransactionContents) -> anyhow::Result<Self> {
         match txn {
-            BinderTransactionContents::Data(txn) => self.data = Some(txn),
+            BinderTransactionContents::Data(txn) => match self.data {
+                Some(existing_data) => {
+                    if existing_data.chunk_index + 1 != txn.chunk_index {
+                        return Err(anyhow::anyhow!(
+                            "Out of order transaction data chunks: existing {}, new {}",
+                            existing_data.chunk_index,
+                            txn.chunk_index
+                        ));
+                    }
+                    if existing_data.total_size != txn.total_size {
+                        return Err(anyhow::anyhow!(
+                            "Mismatched transaction data total_size: existing {}, new {}",
+                            existing_data.total_size,
+                            txn.total_size
+                        ));
+                    }
+
+                    let mut combined_data = existing_data.data;
+                    combined_data.extend_from_slice(&txn.data);
+                    self.data = Some(BinderTransactionData {
+                        total_size: existing_data.total_size,
+                        data: combined_data,
+                        chunk_index: txn.chunk_index,
+                    });
+                }
+                None => self.data = Some(txn),
+            },
             BinderTransactionContents::Offsets(txn) => self.offsets = Some(txn),
         }
-        self
+        Ok(self)
+    }
+
+    fn validate_transaction_stack(&self) -> anyhow::Result<()> {
+        if self.txn_stack.is_none() {
+            return Ok(());
+        }
+        if self.txn.is_none() {
+            return Ok(());
+        }
+
+        let txn = self.txn.as_ref().unwrap();
+        let txn_stack = self.txn_stack.as_ref().unwrap();
+
+        if txn.transaction.debug_id != txn_stack.reply_debug_id {
+            return Err(anyhow::anyhow!(
+                "Transaction debug_id {} does not match transaction stack reply_debug_id {}",
+                txn.transaction.debug_id,
+                txn_stack.reply_debug_id
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub fn transaction_stack(mut self, txn_stack: BinderTransactionStack) -> anyhow::Result<Self> {
+        self.txn_stack = Some(txn_stack);
+        self.validate_transaction_stack()?;
+
+        Ok(self)
     }
 }

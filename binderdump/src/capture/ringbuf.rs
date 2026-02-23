@@ -33,6 +33,7 @@ impl Drop for EventChannel {
 }
 
 fn handle_binder_event(sender: &mpsc::Sender<events::BinderEvent>, data: &[u8]) -> i32 {
+    // println!("Received ringbuf data of size {}", data.len());
     match data.try_into() {
         Ok(event) => match sender.send(event) {
             Ok(_) => 0,
@@ -52,9 +53,9 @@ pub fn create_events_channel(skel: &mut BinderSkel) -> Result<EventChannel> {
     let (sender, recv) = mpsc::channel();
 
     let mut events_buffer_builder = RingBufferBuilder::new();
-    let mut maps = skel.maps_mut();
-    let binder_events_buffer = maps.binder_events_buffer();
-    events_buffer_builder.add(&binder_events_buffer, move |data| -> i32 {
+    let maps = &mut skel.maps;
+    let binder_events_buffer = &mut maps.binder_events_buffer;
+    events_buffer_builder.add(binder_events_buffer, move |data| -> i32 {
         handle_binder_event(&sender, data)
     })?;
     let events_buffer = events_buffer_builder.build()?;

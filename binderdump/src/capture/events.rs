@@ -1,3 +1,5 @@
+use crate::capture::common_types::binder_event_transaction_stack;
+
 use super::common_types::{
     self, binder_event, binder_event_ioctl, binder_event_ioctl_done, binder_event_transaction,
     binder_event_transaction_received, binder_event_write_read,
@@ -23,6 +25,7 @@ unsafe impl Plain for binder_event_write_read {}
 unsafe impl Plain for binder_event_ioctl_done {}
 unsafe impl Plain for binder_event_transaction {}
 unsafe impl Plain for binder_event_transaction_received {}
+unsafe impl Plain for binder_event_transaction_stack {}
 
 #[derive(Debug, FromPrimitive)]
 #[allow(non_camel_case_types)]
@@ -30,24 +33,26 @@ unsafe impl Plain for binder_event_transaction_received {}
 pub enum BinderProcessState {
     BINDER_INVALID = common_types::binder_process_state_t_BINDER_INVALID,
     BINDER_IOCTL = common_types::binder_process_state_t_BINDER_IOCTL,
-    BINDER_COMMAND = common_types::binder_process_state_t_BINDER_COMMAND,
+    // BINDER_COMMAND = common_types::binder_process_state_t_BINDER_COMMAND,
     BINDER_TXN = common_types::binder_process_state_t_BINDER_TXN,
-    BINDER_WRITE_DONE = common_types::binder_process_state_t_BINDER_WRITE_DONE,
-    BINDER_WAIT_FOR_WORK = common_types::binder_process_state_t_BINDER_WAIT_FOR_WORK,
-    BINDER_RETURN = common_types::binder_process_state_t_BINDER_RETURN,
-    BINDER_READ_DONE = common_types::binder_process_state_t_BINDER_READ_DONE,
+    // BINDER_WRITE_DONE = common_types::binder_process_state_t_BINDER_WRITE_DONE,
+    // BINDER_WAIT_FOR_WORK = common_types::binder_process_state_t_BINDER_WAIT_FOR_WORK,
+    // BINDER_RETURN = common_types::binder_process_state_t_BINDER_RETURN,
+    // BINDER_READ_DONE = common_types::binder_process_state_t_BINDER_READ_DONE,
     BINDER_TXN_RECEIVED = common_types::binder_process_state_t_BINDER_TXN_RECEIVED,
     BINDER_IOCTL_DONE = common_types::binder_process_state_t_BINDER_IOCTL_DONE,
     BINDER_INVALIDATE_PROCES = common_types::binder_process_state_t_BINDER_INVALIDATE_PROCESS,
     BINDER_WRITE = common_types::binder_process_state_t_BINDER_WRITE,
     BINDER_READ = common_types::binder_process_state_t_BINDER_READ,
     BINDER_TXN_DATA = common_types::binder_process_state_t_BINDER_TXN_DATA,
+    BINDER_TXN_STACK = common_types::binder_process_state_t_BINDER_TXN_STACK,
 }
 
 impl From<&binder_event_transaction> for Transaction {
     fn from(value: &binder_event_transaction) -> Self {
         Self {
             debug_id: value.debug_id,
+            in_reply_to_debug_id: 0,
             target_node: value.target_node,
             to_proc: value.to_proc,
             to_thread: value.to_thread,
@@ -66,6 +71,7 @@ pub enum BinderEventData {
     BinderIoctlDone(i32),
     BinderTransaction(Transaction),
     BinderTransactionReceived(std::ffi::c_int),
+    BinderTransactionStack(BinderTransactionStack),
     BinderTransactionData(BinderTransactionContents),
     BinderInvalidateProcess,
 }
@@ -102,8 +108,10 @@ impl TryFrom<&[u8]> for BinderEvent {
         let header: &binder_event = plain::from_bytes(value)
             .map_err(|err| err.to_anyhow("Failed to parse binder_event"))?;
 
-        let kind = BinderProcessState::from_u32(header.type_)
-            .context("Failed to parse binder_event - invalid type")?;
+        let kind = BinderProcessState::from_u32(header.type_).context(format!(
+            "Failed to parse binder_event - invalid type {}",
+            header.type_
+        ))?;
         let data = match kind {
             BinderProcessState::BINDER_INVALID => BinderEventData::BinderInvalidate,
             BinderProcessState::BINDER_IOCTL => {
@@ -111,19 +119,19 @@ impl TryFrom<&[u8]> for BinderEvent {
                 let raw_ioctl_event: &common_types::binder_event_ioctl =
                     plain::from_bytes(ioctl_data)
                         .map_err(|err| err.to_anyhow("Failed to parse binder_event_ioctl"))?;
-                BinderEventData::BinderIoctl(BinderEventIoctl::try_from(raw_ioctl_event)?)
+                let ioctl_event =
+                    BinderEventData::BinderIoctl(BinderEventIoctl::try_from(raw_ioctl_event)?);
+                // if raw_ioctl_event.read_only != 0 {
+                //     println!("got readonly ioctl event: {:?}", ioctl_event);
+                // }
+                ioctl_event
             }
-            BinderProcessState::BINDER_COMMAND => todo!(),
             BinderProcessState::BINDER_TXN => {
                 let data = &value[HEADER_SIZE..];
                 let raw_event: &binder_event_transaction = plain::from_bytes(data)
                     .map_err(|err| err.to_anyhow("Failed to parse binder_event_transaction"))?;
                 BinderEventData::BinderTransaction(raw_event.into())
             }
-            BinderProcessState::BINDER_WRITE_DONE => todo!(),
-            BinderProcessState::BINDER_WAIT_FOR_WORK => todo!(),
-            BinderProcessState::BINDER_RETURN => todo!(),
-            BinderProcessState::BINDER_READ_DONE => todo!(),
             BinderProcessState::BINDER_TXN_RECEIVED => {
                 let data = &value[HEADER_SIZE..];
                 let raw_event: &binder_event_transaction_received = plain::from_bytes(data)
@@ -157,7 +165,12 @@ impl TryFrom<&[u8]> for BinderEvent {
                 let data = &value[HEADER_SIZE..];
                 BinderEventData::BinderTransactionData(BinderTransactionContents::try_from(data)?)
             }
+            BinderProcessState::BINDER_TXN_STACK => {
+                let data = &value[HEADER_SIZE..];
+                BinderEventData::BinderTransactionStack(BinderTransactionStack::try_from(data)?)
+            }
         };
+        // println!("Parsed binder event header: {:?} data: {:?}", header, data);
         Ok(Self {
             pid: header.pid,
             tid: header.tid,
@@ -176,6 +189,7 @@ pub struct BinderEventIoctl {
     pub cmd: binder_ioctl,
     pub arg: u64,
     pub ioctl_id: u64,
+    pub read_only: bool,
 }
 
 impl TryFrom<&common_types::binder_event_ioctl> for BinderEventIoctl {
@@ -195,6 +209,7 @@ impl TryFrom<&common_types::binder_event_ioctl> for BinderEventIoctl {
             cmd: cmd,
             arg: value.arg,
             ioctl_id: 0,
+            read_only: value.read_only != 0,
         })
     }
 }
@@ -399,6 +414,7 @@ impl TryFrom<&[u8]> for BinderEventWriteReadData {
 pub struct BinderTransactionData {
     pub total_size: usize,
     pub data: Vec<u8>,
+    pub chunk_index: usize,
 }
 
 impl std::fmt::Debug for BinderTransactionData {
@@ -426,16 +442,17 @@ impl TryFrom<&[u8]> for BinderTransactionContents {
             .map_err(|err| err.to_anyhow("Failed to parse binder_write_read struct of txn"))?;
         let buffer = &value[BWR_SIZE..];
 
-        if raw_bwr.write_buffer == 1 {
+        if raw_bwr.write_buffer > 0 {
             if raw_bwr.write_consumed != raw_bwr.write_size {
                 warn!(
-                    "truncated txn data: {}/{}",
-                    raw_bwr.write_consumed, raw_bwr.write_size
+                    "truncated txn data: {}/{} {}",
+                    raw_bwr.write_consumed, raw_bwr.write_size, raw_bwr.write_buffer
                 );
             }
             return Ok(Self::Data(BinderTransactionData {
                 total_size: raw_bwr.write_size as usize,
                 data: buffer.to_vec(),
+                chunk_index: raw_bwr.write_buffer as usize,
             }));
         } else if raw_bwr.read_buffer == 1 {
             if raw_bwr.read_consumed != raw_bwr.read_size {
@@ -447,9 +464,29 @@ impl TryFrom<&[u8]> for BinderTransactionContents {
             return Ok(Self::Offsets(BinderTransactionData {
                 total_size: raw_bwr.read_size as usize,
                 data: buffer.to_vec(),
+                chunk_index: 0, // offsets don't have chunk index
             }));
         }
 
         Err(anyhow::anyhow!("Invalid BinderTransactionContents"))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BinderTransactionStack {
+    pub reply_debug_id: i32,
+    pub request_debug_id: i32,
+}
+
+impl TryFrom<&[u8]> for BinderTransactionStack {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        let raw_event: &common_types::binder_event_transaction_stack = plain::from_bytes(value)
+            .map_err(|err| err.to_anyhow("Failed to parse binder_event_transaction_stack"))?;
+        Ok(Self {
+            reply_debug_id: raw_event.reply_debug_id,
+            request_debug_id: raw_event.request_debug_id,
+        })
     }
 }

@@ -38,6 +38,10 @@ impl OngoingEvent {
     fn push(&mut self, event: BinderEvent) {
         self.events.push(event)
     }
+
+    fn insert(&mut self, event: BinderEvent) {
+        self.events.insert(0, event)
+    }
 }
 
 impl EventsAggregator {
@@ -140,7 +144,11 @@ impl EventsAggregator {
             BinderEventData::BinderIoctl(ref mut ioctl) => {
                 ioctl.ioctl_id = self.current_ioctl_id;
                 self.current_ioctl_id += 1;
-                events.push(event);
+                if ioctl.read_only {
+                    events.insert(event);
+                } else {
+                    events.push(event);
+                }
             }
             _ => events.push(event),
         }
