@@ -163,6 +163,17 @@ impl<W: Write> PacketGenerator<W> {
                     );
                 }
                 BinderEventData::BinderWriteRead(bwr_event) => {
+                    // Surface BC_/BR_ TRANSACTION wire fields (target.handle,
+                    // cookie, sender_pid, sender_euid, ...) into the
+                    // TransactionProtocol layer so the dissector shows them
+                    // alongside the resolved/reassembled fields, not buried
+                    // under the Commands array.
+                    if let Some(cmd_data) = bwr_event
+                        .first_transaction_command_data()
+                        .context("failed to inspect bwr commands")?
+                    {
+                        txn_builder = txn_builder.command_data(cmd_data);
+                    }
                     bwr_builder = bwr_builder
                         .bwr_event(bwr_event)
                         .context("failed to parse bwr event")?

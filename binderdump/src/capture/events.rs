@@ -359,6 +359,59 @@ impl BinderEventWriteRead {
             BinderEventWriteRead::BinderEventWrite(bw) => bw.get_bwr(),
         }
     }
+
+    // Returns the wire `binder_transaction_data` of the first BC_/BR_ TRANSACTION
+    // (or its SG variants) found in the buffer. Used to surface fields that
+    // would otherwise only appear inside the dissector's Commands array
+    // (target.handle, cookie, sender_pid, sender_euid, ...) into the
+    // TransactionProtocol layer.
+    pub fn first_transaction_command_data(
+        &self,
+    ) -> anyhow::Result<
+        Option<binderdump_structs::binder_types::transaction::binder_transaction_data>,
+    > {
+        match self {
+            BinderEventWriteRead::BinderEventWrite(bw) => {
+                let data = bw.data();
+                let mut pos = 0;
+                while pos < data.len() {
+                    let bc = binder_command::BinderCommand::try_from(&data[pos..])?;
+                    pos += bc.size();
+                    match bc {
+                        binder_command::BinderCommand::Transaction(t)
+                        | binder_command::BinderCommand::Reply(t) => {
+                            return Ok(Some(*t.data()));
+                        }
+                        binder_command::BinderCommand::TransactionSg(t)
+                        | binder_command::BinderCommand::ReplySg(t) => {
+                            return Ok(Some(*t.transaction().data()));
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(None)
+            }
+            BinderEventWriteRead::BinderEventRead(br) => {
+                let data = br.data();
+                let mut pos = 0;
+                while pos < data.len() {
+                    let r = binder_return::BinderReturn::try_from(&data[pos..])?;
+                    pos += r.size();
+                    match r {
+                        binder_return::BinderReturn::Transaction(t)
+                        | binder_return::BinderReturn::Reply(t) => {
+                            return Ok(Some(*t.data()));
+                        }
+                        binder_return::BinderReturn::TransactionSecCtx(secctx) => {
+                            return Ok(Some(*secctx.transaction().data()));
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(None)
+            }
+        }
+    }
 }
 
 impl Display for BinderEventWriteRead {

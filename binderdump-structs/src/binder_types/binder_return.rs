@@ -51,6 +51,12 @@ pub struct TransactionSecCtx {
     secctx: u64,
 }
 
+impl TransactionSecCtx {
+    pub fn transaction(&self) -> &Transaction {
+        &self.transaction_data
+    }
+}
+
 #[allow(unused)]
 #[derive(Debug, Clone, Copy, Default, EpanProtocol, ConstOffsets)]
 #[repr(C)]

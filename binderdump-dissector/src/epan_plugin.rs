@@ -160,8 +160,8 @@ impl Protocol {
                     if let Some(txn) = bwr.transaction {
                         let target = format!(
                             "{}:{}:{}",
-                            txn.transaction.to_proc,
-                            txn.transaction.to_thread,
+                            txn.to_proc,
+                            txn.to_thread,
                             String::from_utf8(txn.target_cmdline)?
                         );
 

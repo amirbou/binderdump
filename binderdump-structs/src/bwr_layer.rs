@@ -67,17 +67,35 @@ pub struct Transaction {
 
 #[derive(Default, Serialize, Deserialize, EpanProtocol, Debug)]
 pub struct TransactionProtocol {
-    pub transaction: Transaction,
+    pub debug_id: i32,
+    pub in_reply_to_debug_id: i32,
+    pub target_node: i32,
+    pub to_proc: i32,
+    pub to_thread: i32,
+    pub reply: i32,
+    #[epan(display = SepSpace, ftype = Bytes)]
+    pub code: u32,
+    pub flags: u32,
+
     #[epan(display = StrAsciis, ftype = String)]
     pub target_comm: [u8; 16],
     #[epan(display = StrAsciis, ftype = String)]
     pub target_cmdline: Vec<u8>,
 
-    pub data_size: u64,
+    // Re-exported from the wire BC_TRANSACTION / BR_TRANSACTION command so all
+    // transaction info shows up under TransactionProtocol without forcing the
+    // user to dig into the Commands array.
+    #[epan(display = Hex)]
+    pub target_handle: u32,
+    #[epan(display = Hex)]
+    pub target_ptr: u64,
+    #[epan(display = Hex)]
+    pub cookie: u64,
+    pub sender_pid: i32,
+    pub sender_euid: u32,
+
     #[epan(display = SepSpace)]
     pub data: Vec<u8>,
-
-    pub offsets_size: u64,
     #[epan(display = SepSpace)]
     pub offsets: Vec<u8>,
 }

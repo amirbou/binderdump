@@ -4,6 +4,7 @@ use crate::capture::events::{
 };
 use crate::capture::process_cache::ProcessCache;
 use anyhow::{Context, Ok};
+use binderdump_structs::binder_types::transaction::binder_transaction_data;
 use binderdump_structs::binder_types::{binder_ioctl, BinderInterface};
 use binderdump_structs::bwr_layer::{
     BinderWriteReadProtocol, BinderWriteReadType, Transaction, TransactionProtocol,
@@ -198,6 +199,7 @@ pub struct TransactionProtocolBuilder {
     txn_stack: Option<BinderTransactionStack>,
     data: Option<BinderTransactionData>,
     offsets: Option<BinderTransactionData>,
+    command_data: Option<binder_transaction_data>,
 }
 
 impl TransactionProtocolBuilder {
@@ -208,31 +210,41 @@ impl TransactionProtocolBuilder {
     pub fn build(self) -> Option<TransactionProtocol> {
         let mut txn = self.txn?;
 
-        match self.data {
-            Some(data) => {
-                txn.data_size = data.total_size as u64;
-                txn.data = data.data;
-            }
-            None => (),
+        if let Some(data) = self.data {
+            txn.data = data.data;
         }
 
-        match self.offsets {
-            Some(offsets) => {
-                txn.offsets_size = offsets.total_size as u64;
-                txn.offsets = offsets.data;
-            }
-            None => (),
+        if let Some(offsets) = self.offsets {
+            txn.offsets = offsets.data;
         }
 
         match self.txn_stack {
             Some(txn_stack) => {
                 // Validate the transaction stack matches the transaction
-                txn.transaction.in_reply_to_debug_id = txn_stack.request_debug_id;
+                txn.in_reply_to_debug_id = txn_stack.request_debug_id;
             }
             None => (),
         }
 
+        if let Some(cmd) = self.command_data {
+            // SAFETY: target is a tagged union of (handle: u32, ptr: u64). Reading
+            // both members is sound for any binder_transaction_data — the union is
+            // 8 bytes of plain old data, not a Rust enum.
+            unsafe {
+                txn.target_handle = cmd.target.handle;
+                txn.target_ptr = cmd.target.ptr;
+            }
+            txn.cookie = cmd.cookie;
+            txn.sender_pid = cmd.sender_pid;
+            txn.sender_euid = cmd.sender_euid;
+        }
+
         Some(txn)
+    }
+
+    pub fn command_data(mut self, data: binder_transaction_data) -> Self {
+        self.command_data = Some(data);
+        self
     }
 
     pub fn transaction(
@@ -261,13 +273,17 @@ impl TransactionProtocolBuilder {
         )))?;
 
         self.txn = Some(TransactionProtocol {
-            transaction: txn,
+            debug_id: txn.debug_id,
+            in_reply_to_debug_id: txn.in_reply_to_debug_id,
+            target_node: txn.target_node,
+            to_proc: txn.to_proc,
+            to_thread: txn.to_thread,
+            reply: txn.reply,
+            code: txn.code,
+            flags: txn.flags,
             target_comm: comm,
             target_cmdline: proc_info.get_cmdline().to_string().into_bytes(),
-            data_size: 0,
-            data: vec![],
-            offsets_size: 0,
-            offsets: vec![],
+            ..Default::default()
         });
         self.validate_transaction_stack()?;
 
@@ -319,10 +335,10 @@ impl TransactionProtocolBuilder {
         let txn = self.txn.as_ref().unwrap();
         let txn_stack = self.txn_stack.as_ref().unwrap();
 
-        if txn.transaction.debug_id != txn_stack.reply_debug_id {
+        if txn.debug_id != txn_stack.reply_debug_id {
             return Err(anyhow::anyhow!(
                 "Transaction debug_id {} does not match transaction stack reply_debug_id {}",
-                txn.transaction.debug_id,
+                txn.debug_id,
                 txn_stack.reply_debug_id
             ));
         }
