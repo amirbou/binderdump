@@ -140,6 +140,7 @@ dependencies = [
  "binderdump-structs",
  "binderdump-sys",
  "bindgen",
+ "clap",
  "ctrlc",
  "env_logger",
  "libbpf-cargo",

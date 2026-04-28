@@ -31,7 +31,7 @@ use pcap_file::{
 };
 use std::collections::HashMap;
 use std::io::{Cursor, Write};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use yansi::Paint;
 
 pub struct PacketGenerator<W: Write> {
@@ -237,7 +237,7 @@ impl<W: Write> PacketGenerator<W> {
 
     fn write_packet(&mut self, proto: EventProtocol, link: &[u8]) -> Result<()> {
         let mut cursor = Cursor::new(Vec::new());
-        cursor.write(link)?;
+        cursor.write_all(link)?;
         binder_serde::write(&mut cursor, &proto)?;
         let data = cursor.into_inner();
 
@@ -252,10 +252,10 @@ impl<W: Write> PacketGenerator<W> {
         Ok(())
     }
 
-    pub fn capture(&mut self) -> Result<()> {
+    pub fn capture(&mut self, duration: Option<Duration>) -> Result<()> {
         let link_layer = link_layer::get_pdu_header();
         let events_aggregator = self.events_aggregator.take();
-        let events_aggregator = match events_aggregator {
+        let mut events_aggregator = match events_aggregator {
             Some(events_aggregator) => events_aggregator,
             None => {
                 return Err(anyhow::anyhow!(
@@ -263,6 +263,9 @@ impl<W: Write> PacketGenerator<W> {
                 ));
             }
         };
+        if let Some(d) = duration {
+            events_aggregator.set_deadline(Instant::now() + d);
+        }
         for events in events_aggregator {
             let str = format!("{:#?}", events);
             let proto = match self.handle_events(events) {

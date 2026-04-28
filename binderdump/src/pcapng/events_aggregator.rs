@@ -1,4 +1,8 @@
-use std::{collections::HashMap, sync::mpsc::RecvTimeoutError, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::mpsc::RecvTimeoutError,
+    time::{Duration, Instant},
+};
 
 use log::{error, warn};
 
@@ -13,6 +17,8 @@ pub struct EventsAggregator {
     current_ioctl_id: u64,
     // finish the iteration if `timeout` passed without a new event (useful for testing to ensure we don't block indefinitly)
     timeout: Option<Duration>,
+    // finish the iteration once this absolute instant is reached
+    deadline: Option<Instant>,
 }
 
 struct OngoingEvent {
@@ -51,6 +57,7 @@ impl EventsAggregator {
             ongoing_events: HashMap::new(),
             current_ioctl_id: 0,
             timeout: None,
+            deadline: None,
         }
     }
 
@@ -61,14 +68,29 @@ impl EventsAggregator {
             ongoing_events: HashMap::new(),
             current_ioctl_id: 0,
             timeout: Some(timeout),
+            deadline: None,
         }
+    }
+
+    // Stop iteration once `deadline` is reached (absolute Instant).
+    pub fn set_deadline(&mut self, deadline: Instant) {
+        self.deadline = Some(deadline);
     }
 
     fn get_event(&mut self) -> Result<BinderEvent, RecvTimeoutError> {
         let channel = self.channel.get_channel();
-        match self.timeout {
-            Some(timeout) => channel.recv_timeout(timeout),
-            None => channel.recv().map_err(|err| err.into()),
+        let remaining = match self.deadline {
+            None => None,
+            Some(d) => match d.checked_duration_since(Instant::now()) {
+                Some(r) if !r.is_zero() => Some(r),
+                _ => return Err(RecvTimeoutError::Timeout),
+            },
+        };
+        match (self.timeout, remaining) {
+            (None, None) => channel.recv().map_err(|err| err.into()),
+            (Some(t), None) => channel.recv_timeout(t),
+            (None, Some(r)) => channel.recv_timeout(r),
+            (Some(t), Some(r)) => channel.recv_timeout(t.min(r)),
         }
     }
 
@@ -172,6 +194,7 @@ impl Iterator for EventsAggregator {
             let event = self.get_event();
             let event = match event {
                 Ok(event) => event,
+                Err(RecvTimeoutError::Timeout) if self.deadline.is_some() => return None,
                 Err(err) => {
                     error!("Events channel error: {}", err);
                     return None;

@@ -14,6 +14,7 @@ path = "src/bin.rs"
 [dependencies]
 android_system_properties = "0.1.5"
 anyhow = { version = "1.0.85" }
+clap = { version = "4.5", features = ["derive"] }
 backtrace = "0.3.73"
 env_logger = "0.11.3"
 libc = "0.2.155"

@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::Result;
 use binderdump::capture::events::{BinderEventData, BinderEventWriteRead};
@@ -9,9 +10,18 @@ use binderdump::pcapng::packets;
 use binderdump_structs::binder_types::{
     binder_command::BinderCommand, binder_return::BinderReturn,
 };
+use clap::Parser;
 use libbpf_rs::ErrorExt;
 use log::debug;
 use yansi::Paint;
+
+#[derive(Parser, Debug)]
+#[command(about = "tcpdump for Android binder")]
+struct Args {
+    /// Stop after this many seconds of capture (omit for unbounded).
+    #[arg(short = 't', long = "duration", value_name = "SECONDS")]
+    duration_secs: Option<u64>,
+}
 
 fn do_write(bwr: &BinderEventWriteRead) -> Result<()> {
     let bcs: Vec<BinderCommand> = bwr.try_into()?;
@@ -29,16 +39,19 @@ fn do_read(bwr: &BinderEventWriteRead) -> Result<()> {
     Ok(())
 }
 
-fn run_pcap(path: &Path) -> Result<()> {
+fn run_pcap(path: &Path, duration: Option<Duration>) -> Result<()> {
     let mut binder_skel = attach_tracepoints()?;
 
     let event_channel = create_events_channel(&mut binder_skel)?;
 
     let output = std::fs::File::create(path)
         .context(format!("failed to open output file: {}", path.display()))?;
-    println!("waiting for events");
+    match duration {
+        Some(d) => println!("capturing events for {}s", d.as_secs()),
+        None => println!("waiting for events"),
+    }
     let mut packets = packets::PacketGenerator::new(event_channel, output)?;
-    packets.capture()?;
+    packets.capture(duration)?;
     Ok(())
 }
 
@@ -122,5 +135,7 @@ pub fn main() -> Result<()> {
     debug!("Hello");
     println!("mypid: {}", std::process::id());
 
-    run_pcap(&PathBuf::from("/data/local/tmp/out.pcapng"))
+    let args = Args::parse();
+    let duration = args.duration_secs.map(Duration::from_secs);
+    run_pcap(&PathBuf::from("/data/local/tmp/out.pcapng"), duration)
 }
