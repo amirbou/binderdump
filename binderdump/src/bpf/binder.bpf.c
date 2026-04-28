@@ -23,6 +23,15 @@
 // so many nested fields), so we only handle data_size > 32KB.
 #define MAX_TRANSACTION_CHUNKS 32
 
+// Maximum number of objects in a transaction's offsets array we'll walk to look for
+// BINDER_TYPE_PTR scatter-gather buffers. Most transactions have far fewer than this;
+// the cap keeps the BPF verifier happy and prevents pathological loops.
+#define MAX_PTR_OBJECTS 32
+// Maximum bytes of a single BINDER_TYPE_PTR scatter-gather buffer we copy up per chunk.
+// Anything larger gets truncated; the userspace `total_size` field still records the
+// real length so the user knows.
+#define MAX_PTR_PAYLOAD 16384
+
 #ifndef SYS_compat_ioctl
 #define SYS_compat_ioctl 54
 #endif
@@ -145,7 +154,13 @@ l_cleanup:
 SEC("raw_tp/sys_exit")
 int raw_sys_exit(struct bpf_raw_tracepoint_args *ctx) {
     struct my_pt_regs *regs_ptr = (struct my_pt_regs *)ctx->args[0];
-    struct my_pt_regs regs;
+    __u32 regs_key = 0;
+    // We use map here to take less stack space, as we are on the verge of exceeding our 512 byte
+    // limit.
+    struct my_pt_regs *regs = bpf_map_lookup_elem(&pt_regs_scratch, &regs_key);
+    if (!regs) {
+        return 0;
+    }
     __u64 task_id = bpf_get_current_pid_tgid();
     pid_t pid = task_id >> 32;
     pid_t tid = task_id & 0xffffffff;
@@ -158,12 +173,12 @@ int raw_sys_exit(struct bpf_raw_tracepoint_args *ctx) {
     }
     __s32 ioctl_syscall = (is_compat) ? SYS_compat_ioctl : SYS_ioctl;
 
-    if (bpf_probe_read(&regs, sizeof(regs), regs_ptr)) {
+    if (bpf_probe_read(regs, sizeof(*regs), regs_ptr)) {
         LOG("raw_sys_exit: failed to read regs");
         return 0;
     }
 
-    if (regs.syscallno == ioctl_syscall) {
+    if (regs->syscallno == ioctl_syscall) {
         struct ioctl_context *ioctl_ctx = bpf_map_lookup_elem(&ioctl_context_map, &tid);
         if (!ioctl_ctx) {
             return 0;
@@ -171,9 +186,9 @@ int raw_sys_exit(struct bpf_raw_tracepoint_args *ctx) {
             // we set fd to -2 to mark that we started processing this ioctl only from
             // binder_read we need to send the BINDER_IOCTL event for this ioctl
 
-            ioctl_ctx->fd = regs.orig_x0;
-            ioctl_ctx->cmd = (__u32)regs.user_regs.regs[1];
-            ioctl_ctx->arg = regs.user_regs.regs[2];
+            ioctl_ctx->fd = regs->orig_x0;
+            ioctl_ctx->cmd = (__u32)regs->user_regs.regs[1];
+            ioctl_ctx->arg = regs->user_regs.regs[2];
             ioctl_ctx->is_compat = is_compat;
 
             struct binder_event *event = bpf_ringbuf_reserve(
@@ -199,6 +214,7 @@ int raw_sys_exit(struct bpf_raw_tracepoint_args *ctx) {
             ioctl_event->cmd = ioctl_ctx->cmd;
             ioctl_event->arg = ioctl_ctx->arg;
             ioctl_event->read_only = 1;
+            ioctl_event->is_compat = ioctl_ctx->is_compat;
             // wait with sending the event until we do some sanity checks
 
             // now we need to send the BINDER_WRITE_READ event
@@ -340,7 +356,6 @@ int sys_exit(struct trace_event_raw_sys_exit *ctx) {
                 *(int *)event);
     bpf_ringbuf_submit(event, 0);
 
-cleanup:
     LOG_TRANSITION("thread %d 9 -> 0", tid);
     *current_state = BINDER_INVALID;
     ioctl_ctx->fd = -1;
@@ -502,6 +517,8 @@ int binder_ioctl(struct trace_event_raw_binder_ioctl *ctx) {
     ioctl_event->gid = creds >> 32;
     ioctl_event->cmd = ioctl_ctx->cmd = ctx->cmd;
     ioctl_event->arg = ioctl_ctx->arg = ctx->arg;
+    ioctl_event->read_only = 0;
+    ioctl_event->is_compat = ioctl_ctx->is_compat;
     // if this is the first event from that process, force wakeup so we can capture its cmdline
     // and fds before it can exit
     LOG_RINGBUF("submit %u %x", sizeof(struct binder_event) + sizeof(struct binder_event_ioctl),
@@ -545,6 +562,98 @@ int __noinline handle_transaction_chunk(__u64 chunk_size, __u64 addr,
     return 0;
 }
 
+// Walk the transaction's offsets array (already copied into `offsets_buffer`),
+// and for every BINDER_TYPE_PTR object, read its scatter-gather payload from
+// the sender's address space and emit a BINDER_TXN_PTR_DATA event.
+//
+// `data_user` is the sender's VA of the transaction `data` buffer. `offsets_buffer`
+// is a kernel-side copy of the offsets array (binder_size_t entries — u64 on 64-bit
+// builds, u32 in 32-bit compat). We can't reuse the same scratch buffer the
+// caller used for the offsets ringbuf event, so the caller passes us a separate
+// scratch buffer for our own ringbuf submissions.
+// Walker + emitter share state via a per-cpu map (`ptr_walk_state_map`) so
+// neither subprog needs more than one or two args. Keeps both frames small
+// enough to fit inside the 512-byte combined-stack budget.
+
+static int __always_inline emit_one_ptr_payload(void) {
+    __u32 key = 0;
+    struct ptr_walk_state *st = bpf_map_lookup_elem(&ptr_walk_state_map, &key);
+    struct write_read_buffer *out_buffer = bpf_map_lookup_elem(&ptr_payload_buffers, &key);
+    if (!st || !out_buffer) {
+        return -1;
+    }
+    __u32 to_read =
+        st->cur_ptr_length > MAX_PTR_PAYLOAD ? MAX_PTR_PAYLOAD : (__u32)st->cur_ptr_length;
+    if (to_read == 0) {
+        return 0;
+    }
+    struct binder_event *ev_hdr = (struct binder_event *)out_buffer->_data;
+    ev_hdr->type = BINDER_TXN_PTR_DATA;
+    ev_hdr->pid = (pid_t)(st->task_id >> 32);
+    ev_hdr->tid = (pid_t)(st->task_id & 0xffffffff);
+    ev_hdr->timestamp = bpf_ktime_get_boot_ns();
+    struct binder_event_txn_ptr_data *meta =
+        (struct binder_event_txn_ptr_data *)(out_buffer->_data + sizeof(struct binder_event));
+    meta->offset_index = st->cur_offset_index;
+    meta->chunk_index = 0;
+    meta->buffer_addr = st->cur_ptr_buffer_addr;
+    meta->total_size = st->cur_ptr_length;
+    meta->chunk_size = to_read;
+    if (bpf_probe_read_user(meta->data, to_read, UNTAG(st->cur_ptr_buffer_addr))) {
+        return -1;
+    }
+    bpf_ringbuf_output(
+        &binder_events_buffer, out_buffer,
+        sizeof(struct binder_event) + sizeof(struct binder_event_txn_ptr_data) + to_read, 0);
+    return 0;
+}
+
+static int __always_inline emit_ptr_payloads(struct write_read_buffer *offsets_buf) {
+    __u32 key = 0;
+    struct ptr_walk_state *st = bpf_map_lookup_elem(&ptr_walk_state_map, &key);
+    if (!offsets_buf || !st || st->offsets_size == 0) {
+        return 0;
+    }
+    __u32 ptr_size = st->is_compat ? 4 : 8;
+    __u32 entry_count = st->offsets_size / ptr_size;
+    if (entry_count > MAX_PTR_OBJECTS) {
+        entry_count = MAX_PTR_OBJECTS;
+    }
+
+    for (__u32 i = 0; i < MAX_PTR_OBJECTS; i++) {
+        if (i >= entry_count) {
+            break;
+        }
+        __u64 entry = 0;
+        if (bpf_probe_read_kernel(&entry, ptr_size,
+                                  (const __u8 *)offsets_buf->bwr.data + i * ptr_size)) {
+            continue;
+        }
+        __u32 type_ = 0;
+        if (bpf_probe_read_user(&type_, sizeof(type_),
+                                (const void *)(uintptr_t)(st->data_user_addr + entry))) {
+            continue;
+        }
+        if (type_ != BINDER_TYPE_PTR) {
+            continue;
+        }
+        st->cur_ptr_buffer_addr = 0;
+        st->cur_ptr_length = 0;
+        if (bpf_probe_read_user(&st->cur_ptr_buffer_addr, ptr_size,
+                                (const void *)(uintptr_t)(st->data_user_addr + entry + 8))) {
+            continue;
+        }
+        if (bpf_probe_read_user(
+                &st->cur_ptr_length, ptr_size,
+                (const void *)(uintptr_t)(st->data_user_addr + entry + 8 + ptr_size))) {
+            continue;
+        }
+        st->cur_offset_index = i;
+        emit_one_ptr_payload();
+    }
+    return 0;
+}
+
 int __noinline do_bc_br_transaction(pid_t pid, pid_t tid, char log_char,
                                     struct transaction_command *command) {
     struct write_read_buffer *buffer = NULL;
@@ -577,10 +686,6 @@ int __noinline do_bc_br_transaction(pid_t pid, pid_t tid, char log_char,
                                                  .read_size = offsets_size,
                                                  .read_consumed = 0,
                                                  .read_buffer = 0};
-
-    if (data_size == 0) {
-        return 0;
-    }
 
     for (size_t i = 0; i < MAX_TRANSACTION_CHUNKS && data_size > 0; i++) {
         __u64 chunk_size = data_size;
@@ -648,6 +753,18 @@ int __noinline do_bc_br_transaction(pid_t pid, pid_t tid, char log_char,
                            offsetof(struct write_read_buffer, bwr.data) + offsets_size, 0)) {
         LOG("failed to output txn offsets");
         goto l_error;
+    }
+
+    {
+        struct ptr_walk_state *st = bpf_map_lookup_elem(&ptr_walk_state_map, &key);
+        if (st) {
+            st->task_id = ((__u64)pid << 32) | (__u32)tid;
+            st->data_user_addr = (__u64)command->txn.data.ptr.buffer & 0xffffffffffffULL;
+            st->offsets_size = offsets_size;
+            struct ioctl_context *ic = bpf_map_lookup_elem(&ioctl_context_map, &tid);
+            st->is_compat = ic ? ic->is_compat : 0;
+            emit_ptr_payloads(buffer);
+        }
     }
 
     return 0;

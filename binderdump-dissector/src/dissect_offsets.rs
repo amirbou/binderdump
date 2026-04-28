@@ -3,7 +3,6 @@ use anyhow::{Context, Result};
 use binderdump_epan_sys::epan;
 use binderdump_structs::binder_serde::StructOffset;
 use binderdump_trait::EpanProtocol;
-// fn dissect_offsets_prefix(offsets: StructOffset, manager: &HeaderFieldsManager, prefix: String) {}
 
 pub fn dissect_offsets_inner<T: EpanProtocol>(
     base: &T,
@@ -35,11 +34,17 @@ pub fn dissect_offsets_inner<T: EpanProtocol>(
     for field in offsets.fields {
         let field_path = format!("{}.{}", prefix, field.field_name);
         if let Some(struct_offset) = field.inner_struct {
+            // Fields marked `#[epan(skip)]` are still parsed (so the wire
+            // format is intact) but never registered. Skip them here too.
+            if manager.get_handle(&field_path).is_none() {
+                continue;
+            }
             dissect_offsets_inner(base, struct_offset, manager, field_path, tvb, pinfo, tree)?;
         } else {
-            let handle = manager
-                .get_handle(&field_path)
-                .context(format!("Failed to find handle for field: {}", field_path))?;
+            let handle = match manager.get_handle(&field_path) {
+                Some(h) => h,
+                None => continue,
+            };
 
             if let Some(handler) = manager.get_custom_handle(&field_path) {
                 handler.call(handle, manager, base, field, tvb, pinfo, tree)?;

@@ -2,7 +2,7 @@ use crate::capture::common_types::binder_event_transaction_stack;
 
 use super::common_types::{
     self, binder_event, binder_event_ioctl, binder_event_ioctl_done, binder_event_transaction,
-    binder_event_transaction_received, binder_event_write_read,
+    binder_event_transaction_received, binder_event_txn_ptr_data, binder_event_write_read,
 };
 use anyhow::{anyhow, Context};
 use binderdump_structs::binder_types::{
@@ -26,6 +26,7 @@ unsafe impl Plain for binder_event_ioctl_done {}
 unsafe impl Plain for binder_event_transaction {}
 unsafe impl Plain for binder_event_transaction_received {}
 unsafe impl Plain for binder_event_transaction_stack {}
+unsafe impl Plain for binder_event_txn_ptr_data {}
 
 #[derive(Debug, FromPrimitive)]
 #[allow(non_camel_case_types)]
@@ -46,6 +47,7 @@ pub enum BinderProcessState {
     BINDER_READ = common_types::binder_process_state_t_BINDER_READ,
     BINDER_TXN_DATA = common_types::binder_process_state_t_BINDER_TXN_DATA,
     BINDER_TXN_STACK = common_types::binder_process_state_t_BINDER_TXN_STACK,
+    BINDER_TXN_PTR_DATA = common_types::binder_process_state_t_BINDER_TXN_PTR_DATA,
 }
 
 impl From<&binder_event_transaction> for Transaction {
@@ -73,6 +75,7 @@ pub enum BinderEventData {
     BinderTransactionReceived(std::ffi::c_int),
     BinderTransactionStack(BinderTransactionStack),
     BinderTransactionData(BinderTransactionContents),
+    BinderTransactionPtrData(BinderTransactionPtrChunk),
     BinderInvalidateProcess,
 }
 
@@ -169,6 +172,12 @@ impl TryFrom<&[u8]> for BinderEvent {
                 let data = &value[HEADER_SIZE..];
                 BinderEventData::BinderTransactionStack(BinderTransactionStack::try_from(data)?)
             }
+            BinderProcessState::BINDER_TXN_PTR_DATA => {
+                let data = &value[HEADER_SIZE..];
+                BinderEventData::BinderTransactionPtrData(BinderTransactionPtrChunk::try_from(
+                    data,
+                )?)
+            }
         };
         // println!("Parsed binder event header: {:?} data: {:?}", header, data);
         Ok(Self {
@@ -190,6 +199,7 @@ pub struct BinderEventIoctl {
     pub arg: u64,
     pub ioctl_id: u64,
     pub read_only: bool,
+    pub is_compat: bool,
 }
 
 impl TryFrom<&common_types::binder_event_ioctl> for BinderEventIoctl {
@@ -210,6 +220,7 @@ impl TryFrom<&common_types::binder_event_ioctl> for BinderEventIoctl {
             arg: value.arg,
             ioctl_id: 0,
             read_only: value.read_only != 0,
+            is_compat: value.is_compat != 0,
         })
     }
 }
@@ -540,6 +551,41 @@ impl TryFrom<&[u8]> for BinderTransactionStack {
         Ok(Self {
             reply_debug_id: raw_event.reply_debug_id,
             request_debug_id: raw_event.request_debug_id,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BinderTransactionPtrChunk {
+    pub offset_index: u32,
+    pub chunk_index: u32,
+    pub buffer_addr: u64,
+    pub total_size: u64,
+    pub data: Vec<u8>,
+}
+
+const TXN_PTR_HEADER_SIZE: usize = std::mem::size_of::<binder_event_txn_ptr_data>();
+
+impl TryFrom<&[u8]> for BinderTransactionPtrChunk {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        if value.len() < TXN_PTR_HEADER_SIZE {
+            return Err(anyhow!("binder_event_txn_ptr_data too small"));
+        }
+        let header: &binder_event_txn_ptr_data =
+            plain::from_bytes(&value[..TXN_PTR_HEADER_SIZE])
+                .map_err(|err| err.to_anyhow("Failed to parse binder_event_txn_ptr_data"))?;
+        let chunk_size = header.chunk_size as usize;
+        let payload = value
+            .get(TXN_PTR_HEADER_SIZE..TXN_PTR_HEADER_SIZE + chunk_size)
+            .ok_or_else(|| anyhow!("ptr data chunk shorter than declared chunk_size"))?;
+        Ok(Self {
+            offset_index: header.offset_index,
+            chunk_index: header.chunk_index,
+            buffer_addr: header.buffer_addr,
+            total_size: header.total_size,
+            data: payload.to_vec(),
         })
     }
 }

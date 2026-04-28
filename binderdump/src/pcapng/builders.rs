@@ -1,16 +1,17 @@
 use crate::capture::events::{
     BinderEventIoctl, BinderEventWriteRead, BinderTransactionContents, BinderTransactionData,
-    BinderTransactionStack,
+    BinderTransactionPtrChunk, BinderTransactionStack,
 };
 use crate::capture::process_cache::ProcessCache;
 use anyhow::{Context, Ok};
 use binderdump_structs::binder_types::transaction::binder_transaction_data;
 use binderdump_structs::binder_types::{binder_ioctl, BinderInterface};
 use binderdump_structs::bwr_layer::{
-    BinderWriteReadProtocol, BinderWriteReadType, Transaction, TransactionProtocol,
+    BinderWriteReadProtocol, BinderWriteReadType, PtrPayload, Transaction, TransactionProtocol,
 };
 pub use binderdump_structs::event_layer::EventType;
 use binderdump_structs::event_layer::{EventProtocol, IoctlProtocol};
+use std::collections::BTreeMap;
 
 #[derive(Default)]
 pub struct IoctlProtocolBuilder {
@@ -200,6 +201,18 @@ pub struct TransactionProtocolBuilder {
     data: Option<BinderTransactionData>,
     offsets: Option<BinderTransactionData>,
     command_data: Option<binder_transaction_data>,
+    is_compat: bool,
+    // Reassembly buffer for PTR scatter-gather payloads. Keyed by offset_index
+    // (one entry in `offsets` may span multiple chunks if its `length` exceeds
+    // MAX_PTR_PAYLOAD); inner BTreeMap is keyed by chunk_index to keep ordering.
+    ptr_payloads: BTreeMap<u32, PtrPayloadAccum>,
+}
+
+#[derive(Default)]
+struct PtrPayloadAccum {
+    buffer_addr: u64,
+    total_size: u64,
+    chunks: BTreeMap<u32, Vec<u8>>,
 }
 
 impl TransactionProtocolBuilder {
@@ -239,7 +252,21 @@ impl TransactionProtocolBuilder {
             txn.sender_euid = cmd.sender_euid;
         }
 
+        txn.is_compat = self.is_compat;
         Some(txn)
+    }
+
+    pub fn is_compat(mut self, is_compat: bool) -> Self {
+        self.is_compat = is_compat;
+        self
+    }
+
+    pub fn ptr_payload_chunk(mut self, chunk: BinderTransactionPtrChunk) -> Self {
+        let entry = self.ptr_payloads.entry(chunk.offset_index).or_default();
+        entry.buffer_addr = chunk.buffer_addr;
+        entry.total_size = chunk.total_size;
+        entry.chunks.insert(chunk.chunk_index, chunk.data);
+        self
     }
 
     pub fn command_data(mut self, data: binder_transaction_data) -> Self {

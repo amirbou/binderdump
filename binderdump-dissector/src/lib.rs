@@ -1,4 +1,5 @@
 mod binderdump;
+mod dissect_flat_objects;
 mod dissect_offsets;
 mod epan_plugin;
 mod header_fields_manager;

@@ -148,6 +148,7 @@ impl<W: Write> PacketGenerator<W> {
                 }
                 BinderEventData::BinderIoctl(ioctl) => {
                     ioctl_builder = ioctl_builder.with_ioctl_event(&ioctl);
+                    txn_builder = txn_builder.is_compat(ioctl.is_compat);
                     comm = Some(
                         ioctl
                             .comm
@@ -219,6 +220,9 @@ impl<W: Write> PacketGenerator<W> {
                 }
                 BinderEventData::BinderTransactionStack(binder_transaction_stack) => {
                     txn_builder = txn_builder.transaction_stack(binder_transaction_stack)?;
+                }
+                BinderEventData::BinderTransactionPtrData(chunk) => {
+                    txn_builder = txn_builder.ptr_payload_chunk(chunk);
                 }
 
                 BinderEventData::BinderInvalidateProcess => unreachable!(),

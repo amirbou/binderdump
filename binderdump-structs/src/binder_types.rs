@@ -1,10 +1,11 @@
 use anyhow;
-use binderdump_derive::EpanProtocolEnum;
+use binderdump_derive::{EpanProtocol, EpanProtocolEnum};
 use binderdump_sys;
 pub use binderdump_sys::{binder_write_read, BINDER_CURRENT_PROTOCOL_VERSION};
 use nix::{request_code_readwrite, request_code_write};
 use num_derive;
 use num_derive::FromPrimitive;
+use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
@@ -45,7 +46,7 @@ impl TryFrom<PathBuf> for BinderInterface {
     }
 }
 
-#[derive(Debug, FromPrimitive)]
+#[derive(Debug, FromPrimitive, EpanProtocolEnum)]
 #[allow(non_camel_case_types)]
 #[repr(u32)]
 pub enum binder_type {
@@ -135,4 +136,61 @@ struct binder_extended_error {
     id: u32,
     command: u32,
     param: i32,
+}
+
+// Registration-only structs for the Wireshark dissector. They are never
+// serialized on the wire — `dissect_offsets_array` walks the offsets array,
+// picks the matching variant, and renders each field directly from tvb using
+// the handles registered from these types via `add_extra_type`.
+
+#[derive(Default, Serialize, Deserialize, EpanProtocol, Debug)]
+pub struct FlatBinder {
+    #[epan(display = Hex)]
+    pub flags: u32,
+    #[epan(display = Hex)]
+    pub binder: u64,
+    #[epan(display = Hex)]
+    pub cookie: u64,
+}
+
+#[derive(Default, Serialize, Deserialize, EpanProtocol, Debug)]
+pub struct FlatHandle {
+    #[epan(display = Hex)]
+    pub flags: u32,
+    #[epan(display = Hex)]
+    pub handle: u32,
+    #[epan(display = Hex)]
+    pub cookie: u64,
+}
+
+#[derive(Default, Serialize, Deserialize, EpanProtocol, Debug)]
+pub struct FlatFd {
+    #[epan(display = Hex)]
+    pub pad_flags: u32,
+    pub fd: i32,
+    #[epan(display = Hex)]
+    pub cookie: u64,
+}
+
+#[derive(Default, Serialize, Deserialize, EpanProtocol, Debug)]
+pub struct FlatPtr {
+    #[epan(display = Hex)]
+    pub flags: u32,
+    #[epan(display = Hex)]
+    pub buffer: u64,
+    pub length: u64,
+    pub parent: u64,
+    pub parent_offset: u64,
+    #[epan(display = SepSpace)]
+    pub payload: Vec<u8>,
+}
+
+#[derive(Default, Serialize, Deserialize, EpanProtocol, Debug)]
+pub struct FlatFda {
+    pub num_fds: u64,
+    pub parent: u64,
+    pub parent_offset: u64,
+    // single handle used per fd; the dissector emits one proto_tree_add_item
+    // for each fd value at a separate tvb offset.
+    pub fds: i32,
 }

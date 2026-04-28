@@ -98,4 +98,23 @@ pub struct TransactionProtocol {
     pub data: Vec<u8>,
     #[epan(display = SepSpace)]
     pub offsets: Vec<u8>,
+
+    pub is_compat: bool,
+
+    // Payloads of BINDER_TYPE_PTR scatter-gather buffers found by walking the
+    // transaction's offsets array. The custom handler for `offsets` renders
+    // them inline under `offsets[i].payload`, so we mark them `#[epan(skip)]`
+    // to avoid duplicate Wireshark fields.
+    #[epan(skip)]
+    pub ptr_payloads: Vec<PtrPayload>,
+}
+
+#[derive(Default, Serialize, Deserialize, EpanProtocol, Debug)]
+pub struct PtrPayload {
+    pub offset_index: u32,
+    #[epan(display = Hex)]
+    pub buffer_addr: u64,
+    pub total_size: u64,
+    #[epan(display = SepSpace)]
+    pub data: Vec<u8>,
 }

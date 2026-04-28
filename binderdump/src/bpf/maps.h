@@ -64,6 +64,47 @@ struct {
     __type(value, struct write_read_buffer);
 } tmp_buffers SEC(".maps");
 
+// Separate scratch buffer used by emit_ptr_payloads when we walk the offsets
+// array and ship BINDER_TYPE_PTR scatter-gather payloads up to userspace.
+// Aliasing tmp_buffers would corrupt the offsets bytes mid-walk.
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct write_read_buffer);
+} ptr_payload_buffers SEC(".maps");
+
+// Per-cpu state for the offsets-array walker. Stashing args here keeps the
+// emit_ptr_payloads / emit_one_ptr_payload subprog frames small enough to fit
+// the BPF 512-byte combined-stack budget across the call chain.
+struct ptr_walk_state {
+    __u64 task_id;
+    __u64 data_user_addr;
+    __u32 offsets_size;
+    int is_compat;
+    // per-iteration scratch — populated by the walker, consumed by emit_one_ptr_payload
+    __u32 cur_offset_index;
+    __u64 cur_ptr_buffer_addr;
+    __u64 cur_ptr_length;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct ptr_walk_state);
+} ptr_walk_state_map SEC(".maps");
+
+// Per-cpu scratch for raw_sys_exit's struct my_pt_regs read. Keeping the
+// ~280-byte regs blob off the BPF stack frees enough budget for the PTR-walk
+// subprogs further down the call chain.
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct my_pt_regs);
+} pt_regs_scratch SEC(".maps");
+
 // Map of tid to binder_write_read buffers
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);

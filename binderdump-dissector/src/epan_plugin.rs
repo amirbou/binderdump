@@ -10,9 +10,13 @@ use std::sync::OnceLock;
 
 use crate::binderdump::dissect_bwr_data;
 use crate::binderdump::AddBinderTypes;
+use crate::dissect_flat_objects;
 use crate::dissect_offsets;
 use crate::header_fields_manager::{
     FieldHandler, FieldHandlerFunc, HeaderField, HeaderFieldsManager,
+};
+use binderdump_structs::binder_types::{
+    binder_type, FlatBinder, FlatFd, FlatFda, FlatHandle, FlatPtr,
 };
 
 pub struct Protocol {
@@ -262,6 +266,11 @@ impl ProtocolBuilder {
     ) -> Self {
         self.add_epan_type::<T>(name, abbrev, false)
     }
+
+    pub fn add_extra_subtree(mut self, abbrev: &'static str) -> Self {
+        self.extra_subtrees.push(abbrev.to_string());
+        self
+    }
 }
 
 struct Dissector {
@@ -299,6 +308,35 @@ pub extern "C" fn register_protoinfo() {
     G_PROTOCOL.get_or_init(|| {
         ProtocolBuilder::new(PROTOCOL_NAME, PROTOCOL_SHORT_NAME, PROTOCOL_FILTER)
             .add_custom_handler("binderdump.ioctl_data.bwr.data", dissect_bwr_data)
+            .add_custom_handler(
+                "binderdump.ioctl_data.bwr.transaction.offsets",
+                dissect_flat_objects::dissect_offsets_array,
+            )
+            .add_extra_enum::<binder_type>(
+                "Object Type",
+                "binderdump.ioctl_data.bwr.transaction.offsets.entry.type",
+            )
+            .add_extra_type::<FlatBinder>(
+                "Flat Binder",
+                "binderdump.ioctl_data.bwr.transaction.offsets.entry.binder",
+            )
+            .add_extra_type::<FlatHandle>(
+                "Flat Handle",
+                "binderdump.ioctl_data.bwr.transaction.offsets.entry.handle",
+            )
+            .add_extra_type::<FlatFd>(
+                "Flat FD",
+                "binderdump.ioctl_data.bwr.transaction.offsets.entry.fd",
+            )
+            .add_extra_type::<FlatPtr>(
+                "Flat PTR",
+                "binderdump.ioctl_data.bwr.transaction.offsets.entry.ptr",
+            )
+            .add_extra_type::<FlatFda>(
+                "Flat FDA",
+                "binderdump.ioctl_data.bwr.transaction.offsets.entry.fda",
+            )
+            .add_extra_subtree("binderdump.ioctl_data.bwr.transaction.offsets.entry")
             .add_bc_types()
             .add_br_types()
             .build()
