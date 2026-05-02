@@ -206,3 +206,73 @@ fn ioctl_data_dissected_for_at_least_one_frame() {
         "no frame had a dissected ioctl_data.cmd field"
     );
 }
+
+#[test]
+fn dissector_resolves_iservicemanager_method() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let path = fixture.to_str().unwrap();
+
+    let out = tshark(&[
+        "-r",
+        path,
+        "-T",
+        "fields",
+        "-e",
+        "binder.transaction.interface",
+        "-e",
+        "binder.transaction.method_name",
+        "-Y",
+        "binder.transaction.interface == \"android.os.IServiceManager\"",
+    ]);
+
+    let any_resolved = out.lines().any(|l| {
+        let mut parts = l.splitn(2, '\t');
+        let iface = parts.next().unwrap_or("");
+        let method = parts.next().unwrap_or("");
+        iface.contains("android.os.IServiceManager") && !method.trim().is_empty()
+    });
+    assert!(
+        any_resolved,
+        "expected at least one IServiceManager packet with a resolved method, got:\n{}",
+        out,
+    );
+}
+
+#[test]
+fn dissector_recognizes_special_transaction() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let path = fixture.to_str().unwrap();
+
+    // Filter on the resolved method name. The transaction code field is
+    // registered as FT_BYTES so a `== 0x...` numeric compare doesn't work
+    // — instead, ensure that whenever the method-resolution machinery
+    // labels something PING_TRANSACTION, it also marks it as `special`.
+    let out = tshark(&[
+        "-r",
+        path,
+        "-T",
+        "fields",
+        "-e",
+        "binder.transaction.method_name",
+        "-e",
+        "binder.transaction.method_source",
+        "-Y",
+        "binder.transaction.method_name == \"PING_TRANSACTION\"",
+    ]);
+
+    let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+    for line in &lines {
+        let mut parts = line.splitn(2, '\t');
+        let method = parts.next().unwrap_or("");
+        let source = parts.next().unwrap_or("");
+        assert_eq!(method, "PING_TRANSACTION", "row: {:?}", line);
+        assert_eq!(
+            source.trim(),
+            "special",
+            "expected method_source=special for PING; row: {:?}",
+            line,
+        );
+    }
+}
