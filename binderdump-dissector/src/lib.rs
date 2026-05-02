@@ -1,3 +1,4 @@
+mod aidl_resolve;
 mod binderdump;
 mod dissect_flat_objects;
 mod dissect_offsets;

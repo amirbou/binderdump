@@ -1,5 +1,6 @@
 use binderdump_epan_sys::epan;
 use binderdump_structs;
+use binderdump_structs::binder_serde::FieldOffset;
 use binderdump_structs::event_layer::EventProtocol;
 use binderdump_trait::{EpanProtocol, EpanProtocolEnum};
 use core::slice;
@@ -8,6 +9,7 @@ use std::ffi::{c_int, c_void, CStr, CString};
 use std::ptr::null_mut;
 use std::sync::OnceLock;
 
+use crate::aidl_resolve;
 use crate::binderdump::dissect_bwr_data;
 use crate::binderdump::AddBinderTypes;
 use crate::dissect_flat_objects;
@@ -316,6 +318,10 @@ pub extern "C" fn register_protoinfo() {
         ProtocolBuilder::new(PROTOCOL_NAME, PROTOCOL_SHORT_NAME, PROTOCOL_FILTER)
             .add_custom_handler("binderdump.ioctl_data.bwr.data", dissect_bwr_data)
             .add_custom_handler(
+                "binderdump.ioctl_data.bwr.transaction.code",
+                handle_transaction_code,
+            )
+            .add_custom_handler(
                 "binderdump.ioctl_data.bwr.transaction.offsets",
                 dissect_flat_objects::dissect_offsets_array,
             )
@@ -369,6 +375,95 @@ pub extern "C" fn register_protoinfo() {
             .add_br_types()
             .build()
     });
+}
+
+fn add_string_item(
+    tree: *mut epan::proto_node,
+    hf: c_int,
+    tvb: *mut epan::tvbuff,
+    offset: usize,
+    length: i32,
+    value: &str,
+) -> anyhow::Result<()> {
+    if hf < 0 {
+        return Ok(());
+    }
+    let cs = CString::new(value).unwrap_or_else(|_| CString::new("<invalid>").unwrap());
+    unsafe {
+        epan::proto_tree_add_string(tree, hf, tvb, offset.try_into()?, length, cs.as_ptr());
+    }
+    Ok(())
+}
+
+fn handle_transaction_code(
+    handle: c_int,
+    manager: &HeaderFieldsManager<EventProtocol>,
+    base: &EventProtocol,
+    offset: FieldOffset,
+    tvb: *mut epan::tvbuff,
+    _pinfo: *mut epan::packet_info,
+    tree: *mut epan::proto_node,
+) -> anyhow::Result<()> {
+    // 1. Render the transaction code field as the default handler would.
+    unsafe {
+        epan::proto_tree_add_item(
+            tree,
+            handle,
+            tvb,
+            offset.offset.try_into()?,
+            offset.size.try_into()?,
+            epan::ENC_LITTLE_ENDIAN,
+        );
+    }
+
+    // 2. Pull the captured transaction's data buffer + code from the event.
+    let Some(ioctl) = base.ioctl_data.as_ref() else {
+        return Ok(());
+    };
+    let Some(bwr) = ioctl.bwr.as_ref() else {
+        return Ok(());
+    };
+    let Some(txn) = bwr.transaction.as_ref() else {
+        return Ok(());
+    };
+    let code = txn.code;
+    let data_buf: &[u8] = &txn.data;
+
+    // 3. Resolve interface + method via the AIDL/HIDL registry.
+    let registry = aidl_resolve::registry();
+    let r = aidl_resolve::resolve(
+        registry,
+        base.binder_interface(),
+        code,
+        base.android_sdk(),
+        data_buf,
+    );
+
+    // 4. Add interface / method_name / method_source fields. Anchor them at
+    //    the same tvb offset as the code field with length 0 so they appear
+    //    alongside it in the protocol tree without claiming extra bytes.
+    if let Some(iface_str) = r.interface.as_deref() {
+        let h = manager
+            .get_handle("binder.transaction.interface")
+            .unwrap_or(-1);
+        add_string_item(tree, h, tvb, offset.offset, 0, iface_str)?;
+    }
+    if let Some(m) = r.method_name.as_deref() {
+        let h = manager
+            .get_handle("binder.transaction.method_name")
+            .unwrap_or(-1);
+        add_string_item(tree, h, tvb, offset.offset, 0, m)?;
+    }
+    let label = match r.overlay_path.as_deref() {
+        Some(p) => format!("overlay:{}", p),
+        None => r.method_source.to_string(),
+    };
+    let h = manager
+        .get_handle("binder.transaction.method_source")
+        .unwrap_or(-1);
+    add_string_item(tree, h, tvb, offset.offset, 0, &label)?;
+
+    Ok(())
 }
 
 pub extern "C" fn register_handoff() {
