@@ -13,6 +13,7 @@ crate-type = ["cdylib"]
 binderdump-structs = { path = "../binderdump-structs" }
 binderdump-trait = { path = "../binderdump-trait" }
 binderdump-epan-sys = { path = "../binderdump-epan-sys" }
+binderdump-aidl = { path = "../binderdump-aidl" }
 bitmask = "0.5.0"
 lazy_static = "1.4.0"
 anyhow = "1.0.86"

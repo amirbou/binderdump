@@ -18,6 +18,7 @@ use crate::header_fields_manager::{
 use binderdump_structs::binder_types::{
     binder_type, FlatBinder, FlatFd, FlatFda, FlatHandle, FlatPtr,
 };
+use binderdump_trait::{FieldDisplay, FieldInfo, FtEnum};
 
 pub struct Protocol {
     name: &'static CStr,
@@ -271,6 +272,12 @@ impl ProtocolBuilder {
         self.extra_subtrees.push(abbrev.to_string());
         self
     }
+
+    pub fn add_extra_field(mut self, info: FieldInfo) -> Self {
+        let field = HeaderField::try_from(info).unwrap();
+        self.extra_fields.push(field);
+        self
+    }
 }
 
 struct Dissector {
@@ -337,6 +344,27 @@ pub extern "C" fn register_protoinfo() {
                 "binderdump.ioctl_data.bwr.transaction.offsets.entry.fda",
             )
             .add_extra_subtree("binderdump.ioctl_data.bwr.transaction.offsets.entry")
+            .add_extra_field(FieldInfo {
+                name: "Interface".into(),
+                abbrev: "binder.transaction.interface".into(),
+                ftype: FtEnum::String,
+                display: FieldDisplay::StrAsciis,
+                strings: None,
+            })
+            .add_extra_field(FieldInfo {
+                name: "Method".into(),
+                abbrev: "binder.transaction.method_name".into(),
+                ftype: FtEnum::String,
+                display: FieldDisplay::StrAsciis,
+                strings: None,
+            })
+            .add_extra_field(FieldInfo {
+                name: "Method source".into(),
+                abbrev: "binder.transaction.method_source".into(),
+                ftype: FtEnum::String,
+                display: FieldDisplay::StrAsciis,
+                strings: None,
+            })
             .add_bc_types()
             .add_br_types()
             .build()
