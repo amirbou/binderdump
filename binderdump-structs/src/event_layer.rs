@@ -24,6 +24,7 @@ pub struct EventProtocol {
     pub comm: [u8; 16],
     pub event_type: EventType,
     pub binder_interface: BinderInterface,
+    pub android_sdk: u32,
     #[epan(display = StrAsciis, ftype = String)]
     pub cmdline: Vec<u8>,
     pub ioctl_data: Option<IoctlProtocol>,
@@ -37,6 +38,7 @@ impl EventProtocol {
         comm: [u8; 16],
         event_type: EventType,
         binder_interface: BinderInterface,
+        android_sdk: u32,
         cmdline: Vec<u8>,
         ioctl_data: Option<IoctlProtocol>,
     ) -> Self {
@@ -47,6 +49,7 @@ impl EventProtocol {
             comm,
             event_type,
             binder_interface,
+            android_sdk,
             cmdline,
             ioctl_data,
         }
@@ -58,6 +61,10 @@ impl EventProtocol {
 
     pub fn timestamp(&self) -> u64 {
         self.timestamp
+    }
+
+    pub fn android_sdk(&self) -> u32 {
+        self.android_sdk
     }
 }
 

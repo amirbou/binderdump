@@ -133,6 +133,7 @@ impl EventProtocolBuilder {
             comm,
             self.event_type,
             self.binder_interface,
+            0u32,
             self.cmdline.map(|s| s.into_bytes()).unwrap_or_default(),
             self.ioctl_data,
         ))
