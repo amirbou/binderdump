@@ -1,3 +1,8 @@
+// HIDL parser. Versioned package syntax (`package a.b@1.0;`) and
+// `extends b@1.0::IBar` make this distinct from AIDL: HIDL child interfaces
+// continue parent method numbering, so resolve_inheritance() must run after
+// every .hal in scope is parsed before base_codes are valid.
+
 use crate::model::{Direction, Flavor, Interface, Method, Parameter, Prim, TypeRef};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -464,4 +469,119 @@ mod tests {
         let r = parse_hidl(src).unwrap();
         assert!(r[0].methods[0].oneway);
     }
+
+    #[test]
+    fn inheritance_offsets_base_code() {
+        use crate::parser::hidl::resolve_inheritance;
+        let parent = Interface {
+            fqn: "p@1.0::IBase".into(),
+            flavor: Flavor::Hidl,
+            base_code: 1,
+            methods: vec![
+                Method {
+                    name: "p1".into(),
+                    params: vec![],
+                    return_type: None,
+                    oneway: false,
+                },
+                Method {
+                    name: "p2".into(),
+                    params: vec![],
+                    return_type: None,
+                    oneway: false,
+                },
+                Method {
+                    name: "p3".into(),
+                    params: vec![],
+                    return_type: None,
+                    oneway: false,
+                },
+            ],
+            extends: None,
+        };
+        let child = Interface {
+            fqn: "c@1.0::IChild".into(),
+            flavor: Flavor::Hidl,
+            base_code: 1,
+            methods: vec![Method {
+                name: "c1".into(),
+                params: vec![],
+                return_type: None,
+                oneway: false,
+            }],
+            extends: Some("p@1.0::IBase".into()),
+        };
+        let ifaces = resolve_inheritance(vec![parent, child]).unwrap();
+        let by_fqn: std::collections::HashMap<_, _> =
+            ifaces.iter().map(|i| (i.fqn.clone(), i)).collect();
+        assert_eq!(by_fqn["p@1.0::IBase"].base_code, 1);
+        assert_eq!(by_fqn["c@1.0::IChild"].base_code, 4); // 1 + 3 parent methods
+        assert_eq!(by_fqn["c@1.0::IChild"].lookup(4).unwrap().name, "c1");
+    }
+
+    #[test]
+    fn inheritance_unknown_parent_errors() {
+        use crate::parser::hidl::resolve_inheritance;
+        let orphan = Interface {
+            fqn: "x@1.0::IOrphan".into(),
+            flavor: Flavor::Hidl,
+            base_code: 1,
+            methods: vec![Method {
+                name: "f".into(),
+                params: vec![],
+                return_type: None,
+                oneway: false,
+            }],
+            extends: Some("missing@1.0::IGone".into()),
+        };
+        let err = resolve_inheritance(vec![orphan]).unwrap_err();
+        assert!(err.contains("missing@1.0::IGone"), "got: {}", err);
+    }
+}
+
+// HIDL inheritance crosses .hal files, so callers must gather every interface
+// they want resolvable into a single `Vec<Interface>` before calling this.
+// Returns Err if any `extends` parent is not present in the input — silently
+// pretending the parent has zero methods would produce wrong base_codes for
+// child interfaces and silently mis-resolve transactions.
+pub fn resolve_inheritance(mut interfaces: Vec<Interface>) -> Result<Vec<Interface>, String> {
+    use std::collections::HashMap;
+    let counts: HashMap<String, usize> = interfaces
+        .iter()
+        .map(|i| (i.fqn.clone(), i.methods.len()))
+        .collect();
+
+    fn ancestor_method_total(
+        fqn: &str,
+        edges: &HashMap<String, Option<String>>,
+        counts: &HashMap<String, usize>,
+        seen: &mut std::collections::HashSet<String>,
+    ) -> Result<usize, String> {
+        if !seen.insert(fqn.to_string()) {
+            // cycle: HIDL grammar forbids this, but guard so we don't recurse forever.
+            return Err(format!("inheritance cycle at {}", fqn));
+        }
+        match edges.get(fqn).and_then(|p| p.clone()) {
+            None => Ok(0),
+            Some(parent) => match counts.get(&parent) {
+                Some(n) => Ok(ancestor_method_total(&parent, edges, counts, seen)? + n),
+                None => Err(format!(
+                    "interface {} extends unknown parent {}",
+                    fqn, parent
+                )),
+            },
+        }
+    }
+
+    let edges: HashMap<String, Option<String>> = interfaces
+        .iter()
+        .map(|i| (i.fqn.clone(), i.extends.clone()))
+        .collect();
+
+    for iface in interfaces.iter_mut() {
+        let mut seen = std::collections::HashSet::new();
+        let total = ancestor_method_total(&iface.fqn, &edges, &counts, &mut seen)?;
+        iface.base_code = 1 + total as u32;
+    }
+    Ok(interfaces)
 }
