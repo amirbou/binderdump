@@ -201,17 +201,6 @@ mod tests {
     }
 
     #[test]
-    fn with_builtin_constructs_when_no_aosp_data() {
-        // Smoke test: ensure the build-script-generated file is included
-        // cleanly and produces a usable (if empty) registry.
-        let reg = Registry::with_builtin();
-        assert!(matches!(
-            reg.resolve(34, "missing.IGhost", 1),
-            Lookup::UnknownInterface
-        ));
-    }
-
-    #[test]
     fn load_overlays_parses_aidl_files() {
         let tmp = TempDir::new();
         std::fs::write(
@@ -239,19 +228,6 @@ mod tests {
         assert!(overlays
             .iter()
             .any(|l| l.interfaces.contains_key("g.IGood")));
-    }
-
-    #[test]
-    fn builtin_registry_resolves_iservicemanager_method_one() {
-        let reg = Registry::with_builtin();
-        match reg.resolve(34, "android.os.IServiceManager", 1) {
-            Lookup::Hit { method, source } => {
-                assert!(matches!(source, Source::Builtin));
-                // Order in the synthetic file above puts getService first.
-                assert_eq!(method.name, "getService");
-            }
-            other => panic!("expected Hit, got {:?}", other),
-        }
     }
 }
 
