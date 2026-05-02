@@ -215,6 +215,7 @@ pub fn parse_aidl(source: &str) -> Result<Vec<crate::model::Interface>, Vec<Simp
                                 break;
                             }
                         }
+                        continue;
                     }
                     _ => {
                         let oneway = cur.eat_kw("oneway");
@@ -320,7 +321,10 @@ fn lexer() -> impl Parser<char, Vec<Token>, Error = Simple<char>> {
     let punct = one_of("{}()[]<>;,.=").map(Token::Punct);
     let at = just('@').map(|_| Token::AtSymbol);
 
-    let token = ident_or_kw.or(at).or(punct);
+    // Numeric literals (integers)
+    let number = text::digits(10).map(|s: String| Token::NumLit(s));
+
+    let token = ident_or_kw.or(number).or(at).or(punct);
     token.padded_by(pad).repeated()
 }
 
@@ -407,5 +411,54 @@ mod tests {
             p1.ty,
             crate::model::TypeRef::List(Box::new(crate::model::TypeRef::String))
         );
+    }
+
+    #[test]
+    fn parses_oneway_method() {
+        let src = "package a; interface IFoo { oneway void fire(); }";
+        let i = parse_aidl(src).unwrap();
+        assert!(i[0].methods[0].oneway);
+    }
+
+    #[test]
+    fn parses_method_with_annotation() {
+        let src = r#"
+            package a;
+            interface IFoo {
+                @nullable String maybeName();
+            }
+        "#;
+        let i = parse_aidl(src).unwrap();
+        assert_eq!(i[0].methods[0].name, "maybeName");
+    }
+
+    #[test]
+    fn ignores_const_declarations_for_codes() {
+        let src = r#"
+            package a;
+            interface IFoo {
+                const int FLAG_X = 1;
+                void first();
+                const int FLAG_Y = 2;
+                void second();
+            }
+        "#;
+        let i = parse_aidl(src).unwrap();
+        assert_eq!(i[0].methods.len(), 2);
+        assert_eq!(i[0].lookup(1).unwrap().name, "first");
+        assert_eq!(i[0].lookup(2).unwrap().name, "second");
+    }
+
+    #[test]
+    fn skips_parcelable_and_enum_at_top_level() {
+        let src = r#"
+            package a;
+            parcelable Bar { int x; }
+            interface IFoo { void hi(); }
+            enum E { A, B; }
+        "#;
+        let i = parse_aidl(src).unwrap();
+        assert_eq!(i.len(), 1);
+        assert_eq!(i[0].fqn, "a.IFoo");
     }
 }
