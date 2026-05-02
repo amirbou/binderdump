@@ -240,6 +240,19 @@ mod tests {
             .iter()
             .any(|l| l.interfaces.contains_key("g.IGood")));
     }
+
+    #[test]
+    fn builtin_registry_resolves_iservicemanager_method_one() {
+        let reg = Registry::with_builtin();
+        match reg.resolve(34, "android.os.IServiceManager", 1) {
+            Lookup::Hit { method, source } => {
+                assert!(matches!(source, Source::Builtin));
+                // Order in the synthetic file above puts getService first.
+                assert_eq!(method.name, "getService");
+            }
+            other => panic!("expected Hit, got {:?}", other),
+        }
+    }
 }
 
 use crate::model::{Interface, Method, OverlayLayer};
