@@ -80,16 +80,18 @@ pub struct EventProtocolBuilder {
     comm: Option<String>,
     event_type: EventType,
     binder_interface: BinderInterface,
+    android_sdk: u32,
     cmdline: Option<String>,
     ioctl_data: Option<IoctlProtocol>,
 }
 
 impl EventProtocolBuilder {
-    pub fn new(timestamp: u64, pid: i32, tid: i32) -> Self {
+    pub fn new(timestamp: u64, pid: i32, tid: i32, android_sdk: u32) -> Self {
         Self {
             timestamp,
             pid,
             tid,
+            android_sdk,
             ..Default::default()
         }
     }
@@ -133,7 +135,7 @@ impl EventProtocolBuilder {
             comm,
             self.event_type,
             self.binder_interface,
-            0u32,
+            self.android_sdk,
             self.cmdline.map(|s| s.into_bytes()).unwrap_or_default(),
             self.ioctl_data,
         ))

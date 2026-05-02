@@ -8,6 +8,7 @@ use crate::capture::{
     events::{BinderEvent, BinderEventData, BinderEventWriteRead},
     process_cache::ProcessCache,
     ringbuf::EventChannel,
+    system_property,
 };
 use anyhow::{Context, Result};
 use binderdump_structs::bwr_layer::Transaction;
@@ -40,6 +41,7 @@ pub struct PacketGenerator<W: Write> {
     events_aggregator: Option<EventsAggregator>,
     ongoing_txn: HashMap<i32, Transaction>,
     timeshift: Duration,
+    android_sdk: u32,
 }
 
 impl<W: Write> PacketGenerator<W> {
@@ -80,6 +82,7 @@ impl<W: Write> PacketGenerator<W> {
             events_aggregator: Some(EventsAggregator::new(channel)),
             ongoing_txn: HashMap::new(),
             timeshift: capture_info.get_timeshift().clone(),
+            android_sdk: system_property::read_sdk_int(),
         })
     }
 
@@ -110,12 +113,13 @@ impl<W: Write> PacketGenerator<W> {
 
     fn handle_invalidate_process(&mut self, event: &BinderEvent) -> Result<EventProtocol> {
         let info = self.process_cache.invalidate_proc(event.pid, event.tid);
-        let mut builder = EventProtocolBuilder::new(event.timestamp, event.pid, event.tid)
-            .event_type(if event.pid == event.tid {
-                EventType::DeadProcess
-            } else {
-                EventType::DeadThread
-            });
+        let mut builder =
+            EventProtocolBuilder::new(event.timestamp, event.pid, event.tid, self.android_sdk)
+                .event_type(if event.pid == event.tid {
+                    EventType::DeadProcess
+                } else {
+                    EventType::DeadThread
+                });
         if let Some(info) = info {
             builder = builder
                 .cmdline(info.get_cmdline().into())
@@ -134,7 +138,7 @@ impl<W: Write> PacketGenerator<W> {
             return self.handle_invalidate_process(last_event);
         }
 
-        let mut builder = EventProtocolBuilder::new(timestamp, pid, tid);
+        let mut builder = EventProtocolBuilder::new(timestamp, pid, tid, self.android_sdk);
         let mut ioctl_builder = IoctlProtocolBuilder::default();
         let mut bwr_builder = BinderWriteReadProtocolBuilder::new();
         let mut txn_builder = TransactionProtocolBuilder::new();
