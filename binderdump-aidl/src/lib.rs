@@ -9,3 +9,6 @@ pub mod model;
 pub mod parser;
 pub mod registry;
 pub mod token;
+
+pub use model::{Direction, Flavor, Interface, Method, Parameter, Prim, TypeRef};
+pub use registry::{Lookup, Registry, Source};

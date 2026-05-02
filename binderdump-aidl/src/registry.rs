@@ -201,6 +201,17 @@ mod tests {
     }
 
     #[test]
+    fn with_builtin_constructs_when_no_aosp_data() {
+        // Smoke test: ensure the build-script-generated file is included
+        // cleanly and produces a usable (if empty) registry.
+        let reg = Registry::with_builtin();
+        assert!(matches!(
+            reg.resolve(34, "missing.IGhost", 1),
+            Lookup::UnknownInterface
+        ));
+    }
+
+    #[test]
     fn load_overlays_parses_aidl_files() {
         let tmp = TempDir::new();
         std::fs::write(
