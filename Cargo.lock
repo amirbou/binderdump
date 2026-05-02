@@ -218,6 +218,7 @@ dependencies = [
  "binderdump-structs",
  "binderdump-trait",
  "bitmask",
+ "dirs",
  "lazy_static",
 ]
 

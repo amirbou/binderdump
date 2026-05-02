@@ -64,6 +64,7 @@ impl Protocol {
         proto.register_exported_pdu_tap();
         proto.register_hf_array();
         proto.register_subtrees();
+        proto.register_prefs();
 
         proto
     }
@@ -76,6 +77,10 @@ impl Protocol {
                 self.filter.as_ptr(),
             )
         };
+    }
+
+    fn register_prefs(&self) {
+        unsafe { register_aidl_overlay_pref(self.handle) };
     }
 
     fn register_dissector(&mut self) {
@@ -476,4 +481,57 @@ pub extern "C" fn register_handoff() {
             G_PROTOCOL.get().unwrap().dissector.handle.0,
         )
     };
+
+    // Wireshark has finished reading user prefs by the time handoff runs, so
+    // OVERLAY_DIR now points at either the default or the user's override.
+    // Build the AIDL/HIDL Registry from it.
+    let dir = unsafe {
+        if OVERLAY_DIR.is_null() {
+            default_overlay_dir()
+        } else {
+            CStr::from_ptr(OVERLAY_DIR)
+                .to_str()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| default_overlay_dir())
+        }
+    };
+    aidl_resolve::init_registry(&dir);
+}
+
+/// Storage for the `aidl_overlay_dir` Wireshark preference. Wireshark reads
+/// and writes this pointer directly (it owns the buffer) so we hold it as a
+/// raw `*const c_char` in a static. The initial value is leaked from a
+/// CString so the pointer stays valid for the lifetime of the process.
+static mut OVERLAY_DIR: *const std::os::raw::c_char = std::ptr::null();
+
+fn default_overlay_dir() -> std::path::PathBuf {
+    dirs::config_dir()
+        .map(|c| c.join("wireshark").join("binderdump").join("aidl"))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+unsafe fn register_aidl_overlay_pref(proto_id: c_int) {
+    let module = epan::prefs_register_protocol(proto_id, None);
+    if module.is_null() {
+        return;
+    }
+
+    // Leak the strings: Wireshark stores the raw pointers and dereferences
+    // them later, so they must outlive the call. They live for the lifetime
+    // of the plugin / process.
+    let name = CString::new("aidl_overlay_dir").unwrap().into_raw();
+    let title = CString::new("AIDL/HIDL overlay directory")
+        .unwrap()
+        .into_raw();
+    let descr = CString::new(
+        "Directory scanned for user .aidl/.hal files (in addition to the bundled AOSP definitions).",
+    )
+    .unwrap()
+    .into_raw();
+    let default = CString::new(default_overlay_dir().to_string_lossy().as_ref())
+        .unwrap()
+        .into_raw();
+    OVERLAY_DIR = default as *const _;
+
+    epan::prefs_register_directory_preference(module, name, title, descr, &raw mut OVERLAY_DIR);
 }

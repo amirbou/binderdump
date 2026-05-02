@@ -78,9 +78,26 @@ pub fn resolve(
     }
 }
 
-// builtin-only stub for v1; init_registry replaces this in the next commit
+// populated once at plugin load (init_registry); falls back to builtin-only
+// when callers (tests, Wireshark builds without prefs) skip init.
 static REGISTRY: OnceLock<Registry> = OnceLock::new();
 
 pub fn registry() -> &'static Registry {
     REGISTRY.get_or_init(Registry::with_builtin)
+}
+
+pub fn init_registry(overlay_dir: &std::path::Path) {
+    let mut reg = Registry::with_builtin();
+    if overlay_dir.exists() {
+        if let Err(e) = reg.load_overlays_into(overlay_dir) {
+            eprintln!(
+                "binderdump: failed to scan AIDL overlay dir {}: {}",
+                overlay_dir.display(),
+                e
+            );
+        }
+    }
+    // If REGISTRY was already populated (e.g. by a previous registry() call
+    // in tests), set() is a no-op.
+    let _ = REGISTRY.set(reg);
 }

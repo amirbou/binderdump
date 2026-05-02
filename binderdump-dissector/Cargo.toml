@@ -17,3 +17,4 @@ binderdump-aidl = { path = "../binderdump-aidl" }
 bitmask = "0.5.0"
 lazy_static = "1.4.0"
 anyhow = "1.0.86"
+dirs = "5"
