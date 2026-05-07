@@ -217,6 +217,31 @@ pub fn parse_aidl(source: &str) -> Result<Vec<crate::model::Interface>, Vec<Simp
                         }
                         continue;
                     }
+                    Some(Token::Keyword(k))
+                        if *k == "parcelable" || *k == "enum" || *k == "interface" =>
+                    {
+                        // Nested parcelable / enum / interface declarations
+                        // inside an interface body. AIDL allows them but they
+                        // don't contribute to transaction codes — skip the
+                        // body (balanced `{...}` or trailing `;`).
+                        cur.pos += 1;
+                        let _ = cur.ident();
+                        if cur.eat_punct(';') {
+                            continue;
+                        }
+                        if cur.eat_punct('{') {
+                            let mut depth = 1;
+                            while depth > 0 {
+                                match cur.advance() {
+                                    Some(Token::Punct('{')) => depth += 1,
+                                    Some(Token::Punct('}')) => depth -= 1,
+                                    None => break,
+                                    _ => {}
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     _ => {
                         let oneway = cur.eat_kw("oneway");
                         let return_type = cur.parse_type();
