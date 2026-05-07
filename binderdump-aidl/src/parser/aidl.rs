@@ -324,7 +324,14 @@ fn lexer() -> impl Parser<char, Vec<Token>, Error = Simple<char>> {
     // Numeric literals (integers)
     let number = text::digits(10).map(|s: String| Token::NumLit(s));
 
-    let token = ident_or_kw.or(number).or(at).or(punct);
+    // Catch-all for any other non-whitespace byte so unknown punctuation
+    // (`|`, `<<`, `+`, `-`, etc. in const-expression bodies) doesn't make
+    // chumsky's `repeated()` bail mid-file. The const-skip path discards
+    // every token up to `;` so emitting these as opaque Punct tokens is
+    // safe — the rest of the parser never inspects them.
+    let other = filter(|c: &char| !c.is_whitespace()).map(Token::Punct);
+
+    let token = ident_or_kw.or(number).or(at).or(punct).or(other);
     token.padded_by(pad).repeated()
 }
 
