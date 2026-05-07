@@ -357,21 +357,21 @@ pub extern "C" fn register_protoinfo() {
             .add_extra_subtree("binderdump.ioctl_data.bwr.transaction.offsets.entry")
             .add_extra_field(FieldInfo {
                 name: "Interface".into(),
-                abbrev: "binder.transaction.interface".into(),
+                abbrev: "binderdump.ioctl_data.bwr.transaction.interface".into(),
                 ftype: FtEnum::String,
                 display: FieldDisplay::StrAsciis,
                 strings: None,
             })
             .add_extra_field(FieldInfo {
                 name: "Method".into(),
-                abbrev: "binder.transaction.method_name".into(),
+                abbrev: "binderdump.ioctl_data.bwr.transaction.method_name".into(),
                 ftype: FtEnum::String,
                 display: FieldDisplay::StrAsciis,
                 strings: None,
             })
             .add_extra_field(FieldInfo {
                 name: "Method source".into(),
-                abbrev: "binder.transaction.method_source".into(),
+                abbrev: "binderdump.ioctl_data.bwr.transaction.method_source".into(),
                 ftype: FtEnum::String,
                 display: FieldDisplay::StrAsciis,
                 strings: None,
@@ -401,7 +401,8 @@ fn add_string_item(
 }
 
 fn handle_transaction_code(
-    handle: c_int,
+    hf: c_int,
+    _ett: c_int,
     manager: &HeaderFieldsManager<EventProtocol>,
     base: &EventProtocol,
     offset: FieldOffset,
@@ -413,7 +414,7 @@ fn handle_transaction_code(
     unsafe {
         epan::proto_tree_add_item(
             tree,
-            handle,
+            hf,
             tvb,
             offset.offset.try_into()?,
             offset.size.try_into()?,
@@ -431,6 +432,20 @@ fn handle_transaction_code(
     let Some(txn) = bwr.transaction.as_ref() else {
         return Ok(());
     };
+
+    // Reply transactions don't carry a writeInterfaceToken or a method code:
+    // the kernel sets `code` to 0 (or to a status value) and the data buffer
+    // holds the reply payload from the original method. Resolving here would
+    // tag the reply as some unrelated method-1 of whatever interface the
+    // payload happens to start with.
+    //
+    // TODO - correlate reply -> originating BC_TRANSACTION via debug_id /
+    // in_reply_to_debug_id and display "reply - <method used in the
+    // transaction>" so users can see which call this reply belongs to.
+    if txn.reply != 0 {
+        return Ok(());
+    }
+
     let code = txn.code;
     let data_buf: &[u8] = &txn.data;
 
@@ -449,13 +464,13 @@ fn handle_transaction_code(
     //    alongside it in the protocol tree without claiming extra bytes.
     if let Some(iface_str) = r.interface.as_deref() {
         let h = manager
-            .get_handle("binder.transaction.interface")
+            .get_handle("binderdump.ioctl_data.bwr.transaction.interface")
             .unwrap_or(-1);
         add_string_item(tree, h, tvb, offset.offset, 0, iface_str)?;
     }
     if let Some(m) = r.method_name.as_deref() {
         let h = manager
-            .get_handle("binder.transaction.method_name")
+            .get_handle("binderdump.ioctl_data.bwr.transaction.method_name")
             .unwrap_or(-1);
         add_string_item(tree, h, tvb, offset.offset, 0, m)?;
     }
@@ -464,7 +479,7 @@ fn handle_transaction_code(
         None => r.method_source.to_string(),
     };
     let h = manager
-        .get_handle("binder.transaction.method_source")
+        .get_handle("binderdump.ioctl_data.bwr.transaction.method_source")
         .unwrap_or(-1);
     add_string_item(tree, h, tvb, offset.offset, 0, &label)?;
 

@@ -15,7 +15,6 @@ macro_rules! offsets_prefix {
     };
 }
 
-const OFFSETS_PREFIX: &str = offsets_prefix!("");
 const ENTRY_SUBTREE: &str = offsets_prefix!("entry");
 const ENTRY_TYPE_HF: &str = offsets_prefix!("entry.type");
 
@@ -212,7 +211,8 @@ fn ptr_payload_tvb_offsets(base: usize, payloads: &[PtrPayload]) -> Vec<(usize, 
 }
 
 pub fn dissect_offsets_array(
-    _handle: c_int,
+    _hf: c_int,
+    ett: c_int,
     manager: &HeaderFieldsManager<EventProtocol>,
     event: &EventProtocol,
     field: FieldOffset,
@@ -236,7 +236,10 @@ pub fn dissect_offsets_array(
     }
 
     let refs = collect_refs(manager)?;
-    let ett_offsets = lookup(manager, OFFSETS_PREFIX)?;
+    // ett for the offsets subtree comes from the custom-handler dispatch,
+    // not from the regular fields_to_handles map (custom-handled abbrevs
+    // live in HeaderFieldsManager::custom_subtrees).
+    let ett_offsets = ett;
     let ett_entry = lookup(manager, ENTRY_SUBTREE)?;
 
     if txn.offsets.len() % ENTRY_SIZE != 0 {

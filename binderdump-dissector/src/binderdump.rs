@@ -337,7 +337,8 @@ fn dissect_bc_data(
 }
 
 pub fn dissect_bwr_data(
-    handle: c_int,
+    _hf: c_int,
+    ett: c_int,
     manager: &HeaderFieldsManager<EventProtocol>,
     event: &EventProtocol,
     offset: FieldOffset,
@@ -348,8 +349,8 @@ pub fn dissect_bwr_data(
     let bwr = event.ioctl_data.as_ref().unwrap().bwr.as_ref().unwrap();
 
     match bwr.is_write() {
-        true => dissect_bc_data(event, handle, manager, &bwr.data, offset, tvb, pinfo, tree),
-        false => dissect_br_data(event, handle, manager, &bwr.data, offset, tvb, pinfo, tree),
+        true => dissect_bc_data(event, ett, manager, &bwr.data, offset, tvb, pinfo, tree),
+        false => dissect_br_data(event, ett, manager, &bwr.data, offset, tvb, pinfo, tree),
     }
 }
 

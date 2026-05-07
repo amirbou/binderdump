@@ -73,7 +73,7 @@ pub struct TransactionProtocol {
     pub to_proc: i32,
     pub to_thread: i32,
     pub reply: i32,
-    #[epan(display = SepSpace, ftype = Bytes)]
+    // #[epan(display = SepSpace, ftype = Bytes)]
     pub code: u32,
     pub flags: u32,
 

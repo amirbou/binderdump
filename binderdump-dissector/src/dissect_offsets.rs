@@ -47,7 +47,8 @@ pub fn dissect_offsets_inner<T: EpanProtocol>(
             };
 
             if let Some(handler) = manager.get_custom_handle(&field_path) {
-                handler.call(handle, manager, base, field, tvb, pinfo, tree)?;
+                let ett = manager.get_custom_subtree(&field_path).unwrap_or(-1);
+                handler.call(handle, ett, manager, base, field, tvb, pinfo, tree)?;
             } else {
                 unsafe {
                     epan::proto_tree_add_item(

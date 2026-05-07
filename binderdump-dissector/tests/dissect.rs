@@ -219,11 +219,11 @@ fn dissector_resolves_iservicemanager_method() {
         "-T",
         "fields",
         "-e",
-        "binder.transaction.interface",
+        "binderdump.ioctl_data.bwr.transaction.interface",
         "-e",
-        "binder.transaction.method_name",
+        "binderdump.ioctl_data.bwr.transaction.method_name",
         "-Y",
-        "binder.transaction.interface == \"android.os.IServiceManager\"",
+        "binderdump.ioctl_data.bwr.transaction.interface == \"android.os.IServiceManager\"",
     ]);
 
     let any_resolved = out.lines().any(|l| {
@@ -255,11 +255,11 @@ fn dissector_recognizes_special_transaction() {
         "-T",
         "fields",
         "-e",
-        "binder.transaction.method_name",
+        "binderdump.ioctl_data.bwr.transaction.method_name",
         "-e",
-        "binder.transaction.method_source",
+        "binderdump.ioctl_data.bwr.transaction.method_source",
         "-Y",
-        "binder.transaction.method_name == \"PING_TRANSACTION\"",
+        "binderdump.ioctl_data.bwr.transaction.method_name == \"PING_TRANSACTION\"",
     ]);
 
     let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
