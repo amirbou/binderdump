@@ -89,13 +89,29 @@ pub fn registry() -> &'static Registry {
 pub fn init_registry(overlay_dir: &std::path::Path) {
     let mut reg = Registry::with_builtin();
     if overlay_dir.exists() {
+        eprintln!(
+            "binderdump: scanning AIDL overlay dir {}",
+            overlay_dir.display()
+        );
+        let before = reg.overlay_count();
         if let Err(e) = reg.load_overlays_into(overlay_dir) {
             eprintln!(
                 "binderdump: failed to scan AIDL overlay dir {}: {}",
                 overlay_dir.display(),
                 e
             );
+        } else {
+            eprintln!(
+                "binderdump: loaded {} overlay file(s) from {}",
+                reg.overlay_count() - before,
+                overlay_dir.display()
+            );
         }
+    } else {
+        eprintln!(
+            "binderdump: AIDL overlay dir {} does not exist, skipping",
+            overlay_dir.display()
+        );
     }
     // If REGISTRY was already populated (e.g. by a previous registry() call
     // in tests), set() is a no-op.

@@ -388,17 +388,31 @@ impl Registry {
             };
             match ext {
                 "aidl" => match parse_aidl(&src) {
-                    Ok(v) => layers.push(OverlayLayer {
-                        source_path: path,
-                        interfaces: v.into_iter().map(|i| (i.fqn.clone(), i)).collect(),
-                    }),
+                    Ok(v) => {
+                        eprintln!(
+                            "binderdump-aidl: loaded {} interface(s) from {}",
+                            v.len(),
+                            path.display()
+                        );
+                        layers.push(OverlayLayer {
+                            source_path: path,
+                            interfaces: v.into_iter().map(|i| (i.fqn.clone(), i)).collect(),
+                        });
+                    }
                     Err(_) => {
                         eprintln!("binderdump-aidl: failed to parse {}", path.display());
                         continue;
                     }
                 },
                 "hal" => match parse_hidl(&src) {
-                    Ok(v) => hidl_pending.push((path, v)),
+                    Ok(v) => {
+                        eprintln!(
+                            "binderdump-hidl: parsed {} interface(s) from {} (inheritance resolved across all .hal files)",
+                            v.len(),
+                            path.display()
+                        );
+                        hidl_pending.push((path, v));
+                    }
                     Err(_) => {
                         eprintln!("binderdump-hidl: failed to parse {}", path.display());
                         continue;
@@ -437,5 +451,9 @@ impl Registry {
         let layers = Self::load_overlay_dir(dir)?;
         self.overlays.extend(layers);
         Ok(())
+    }
+
+    pub fn overlay_count(&self) -> usize {
+        self.overlays.len()
     }
 }
