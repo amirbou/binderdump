@@ -7,7 +7,15 @@ use std::collections::HashMap;
 use std::ffi::{c_int, CString};
 use std::ptr::{null, null_mut};
 
+// Custom handlers receive both:
+//   * `hf`  — the header_field_info index for the field, suitable for
+//             `proto_tree_add_item(tree, hf, ...)` to render the value.
+//   * `ett` — the ett (subtree) index for the field, suitable for
+//             `proto_tree_add_subtree(tree, ..., ett, ...)`.
+// Both are pre-registered for every custom-handled abbrev so handlers can
+// either render the field directly, open a subtree under it, or both.
 pub type FieldHandlerFunc<T> = fn(
+    c_int,
     c_int,
     &HeaderFieldsManager<T>,
     &T,
@@ -29,7 +37,8 @@ impl<T: EpanProtocol> FieldHandler<T> {
 
     pub fn call(
         &self,
-        handle: c_int,
+        hf: c_int,
+        ett: c_int,
         manager: &HeaderFieldsManager<T>,
         base: &T,
         offset: FieldOffset,
@@ -37,13 +46,18 @@ impl<T: EpanProtocol> FieldHandler<T> {
         pinfo: *mut epan::packet_info,
         tree: *mut epan::proto_node,
     ) -> anyhow::Result<()> {
-        (self.func)(handle, manager, base, offset, tvb, pinfo, tree)
+        (self.func)(hf, ett, manager, base, offset, tvb, pinfo, tree)
     }
 }
 
 #[derive(Debug)]
 pub struct HeaderFieldsManager<T: EpanProtocol> {
     pub fields_to_handles: HashMap<String, c_int>,
+    // ett ids for fields handled by custom dispatchers — registered alongside
+    // their hf so a custom handler can both render the value and open a
+    // subtree under it. Stored separately from fields_to_handles to avoid
+    // colliding with the field's hf at the same abbrev.
+    custom_subtrees: HashMap<String, c_int>,
     header_fields: Vec<HeaderField>,
     subtrees: Vec<String>,
     custom: HashMap<&'static str, FieldHandler<T>>,
@@ -244,20 +258,16 @@ impl<T: EpanProtocol> HeaderFieldsManager<T> {
             .collect::<Result<Vec<_>, _>>()?;
 
         header_fields.extend(extra_fields);
-        let header_fields = header_fields
-            .into_iter()
-            .filter(|field| !custom.contains_key(field.abbrev.to_str().unwrap()))
-            .collect();
+        // Don't filter out custom-handled abbrevs: every custom field still
+        // gets a real hf so the handler can pass it to proto_tree_add_item.
+        // Its ett is registered separately, in custom_subtrees.
 
         let mut subtrees = T::get_subtrees(abbrev);
-        for key in custom.keys() {
-            subtrees.push(key.to_string());
-        }
-
         subtrees.extend(extra_subtrees);
 
         Ok(Self {
             fields_to_handles: HashMap::new(),
+            custom_subtrees: HashMap::new(),
             header_fields,
             subtrees: subtrees,
             custom,
@@ -294,10 +304,14 @@ impl<T: EpanProtocol> HeaderFieldsManager<T> {
 
     pub fn register_subtrees(&mut self) {
         let mut handles = vec![-1 as c_int; self.subtrees.len()];
-        // let mut custom_handles = vec![-1 as c_int; self.custom.len()];
-        let mut ett_array = Vec::with_capacity(handles.len() + self.custom.len());
+        let custom_keys: Vec<&'static str> = self.custom.keys().copied().collect();
+        let mut custom_handles = vec![-1 as c_int; custom_keys.len()];
+        let mut ett_array = Vec::with_capacity(handles.len() + custom_handles.len());
 
         for handle in &mut handles {
+            ett_array.push(handle as *mut c_int);
+        }
+        for handle in &mut custom_handles {
             ett_array.push(handle as *mut c_int);
         }
 
@@ -305,17 +319,24 @@ impl<T: EpanProtocol> HeaderFieldsManager<T> {
         unsafe {
             epan::proto_register_subtree_array(
                 ett_array.as_ptr(),
-                handles.len().try_into().unwrap(),
+                ett_array.len().try_into().unwrap(),
             )
         };
 
         for (string, handle) in self.subtrees.iter().zip(handles) {
             self.fields_to_handles.insert(string.clone(), handle);
         }
+        for (key, handle) in custom_keys.iter().zip(custom_handles) {
+            self.custom_subtrees.insert(key.to_string(), handle);
+        }
     }
 
     pub fn get_handle(&self, field_name: &str) -> Option<c_int> {
         self.fields_to_handles.get(field_name).copied()
+    }
+
+    pub fn get_custom_subtree(&self, field_name: &str) -> Option<c_int> {
+        self.custom_subtrees.get(field_name).copied()
     }
 
     pub fn get_custom_handle(&self, name: &str) -> Option<&FieldHandler<T>> {

@@ -6,4 +6,5 @@ mod common_types;
 pub mod events;
 pub mod process_cache;
 pub mod ringbuf;
+pub mod system_property;
 pub mod tracepoints;

@@ -27,6 +27,8 @@ typedef enum {
                       // received
     BINDER_TXN_STACK, // gets sent when a reply transaction is received for another transaction.
                       // Only used if FEATURE_TRANSACTION_STACK is enabled.
+    BINDER_TXN_PTR_DATA, // payload bytes of a BINDER_TYPE_PTR scatter-gather buffer referenced
+                         // from a transaction's offsets array.
 } binder_process_state_t;
 
 // header before every message
@@ -51,6 +53,7 @@ struct binder_event_ioctl {
     unsigned long arg;
     unsigned int read_only; // true if we only saw the read part of BINDER_WRITE_READ without seeing
                             // the ioctl sys_enter
+    unsigned int is_compat; // 1 when the calling task is in a 32-bit compat ioctl, 0 otherwise
 };
 
 // BINDER_IOCTL_DONE message
@@ -81,4 +84,17 @@ struct binder_event_transaction_received {
 struct binder_event_transaction_stack {
     int reply_debug_id;
     int request_debug_id;
+};
+
+// BINDER_TXN_PTR_DATA message: contents of a BINDER_TYPE_PTR scatter-gather
+// buffer captured from the sender (BC) or receiver (BR) task's address space
+// via bpf_probe_read_user. One event per chunk; if total_size > MAX_PTR_PAYLOAD
+// the BPF program splits across multiple chunks indexed by chunk_index.
+struct binder_event_txn_ptr_data {
+    __u32 offset_index; // index of this PTR object in the transaction's offsets array
+    __u32 chunk_index;  // 0-based chunk number for payloads larger than MAX_PTR_PAYLOAD
+    __u64 buffer_addr;  // sender VA the kernel was passed (informational)
+    __u64 total_size;   // un-truncated buffer length as declared by binder_buffer_object.length
+    __u32 chunk_size;   // bytes carried in this event's `data[]`
+    char data[];
 };

@@ -8,6 +8,7 @@ use crate::capture::{
     events::{BinderEvent, BinderEventData, BinderEventWriteRead},
     process_cache::ProcessCache,
     ringbuf::EventChannel,
+    system_property,
 };
 use anyhow::{Context, Result};
 use binderdump_structs::bwr_layer::Transaction;
@@ -31,7 +32,7 @@ use pcap_file::{
 };
 use std::collections::HashMap;
 use std::io::{Cursor, Write};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use yansi::Paint;
 
 pub struct PacketGenerator<W: Write> {
@@ -40,6 +41,7 @@ pub struct PacketGenerator<W: Write> {
     events_aggregator: Option<EventsAggregator>,
     ongoing_txn: HashMap<i32, Transaction>,
     timeshift: Duration,
+    android_sdk: u32,
 }
 
 impl<W: Write> PacketGenerator<W> {
@@ -80,6 +82,7 @@ impl<W: Write> PacketGenerator<W> {
             events_aggregator: Some(EventsAggregator::new(channel)),
             ongoing_txn: HashMap::new(),
             timeshift: capture_info.get_timeshift().clone(),
+            android_sdk: system_property::read_sdk_int(),
         })
     }
 
@@ -110,12 +113,13 @@ impl<W: Write> PacketGenerator<W> {
 
     fn handle_invalidate_process(&mut self, event: &BinderEvent) -> Result<EventProtocol> {
         let info = self.process_cache.invalidate_proc(event.pid, event.tid);
-        let mut builder = EventProtocolBuilder::new(event.timestamp, event.pid, event.tid)
-            .event_type(if event.pid == event.tid {
-                EventType::DeadProcess
-            } else {
-                EventType::DeadThread
-            });
+        let mut builder =
+            EventProtocolBuilder::new(event.timestamp, event.pid, event.tid, self.android_sdk)
+                .event_type(if event.pid == event.tid {
+                    EventType::DeadProcess
+                } else {
+                    EventType::DeadThread
+                });
         if let Some(info) = info {
             builder = builder
                 .cmdline(info.get_cmdline().into())
@@ -134,7 +138,7 @@ impl<W: Write> PacketGenerator<W> {
             return self.handle_invalidate_process(last_event);
         }
 
-        let mut builder = EventProtocolBuilder::new(timestamp, pid, tid);
+        let mut builder = EventProtocolBuilder::new(timestamp, pid, tid, self.android_sdk);
         let mut ioctl_builder = IoctlProtocolBuilder::default();
         let mut bwr_builder = BinderWriteReadProtocolBuilder::new();
         let mut txn_builder = TransactionProtocolBuilder::new();
@@ -148,6 +152,7 @@ impl<W: Write> PacketGenerator<W> {
                 }
                 BinderEventData::BinderIoctl(ioctl) => {
                     ioctl_builder = ioctl_builder.with_ioctl_event(&ioctl);
+                    txn_builder = txn_builder.is_compat(ioctl.is_compat);
                     comm = Some(
                         ioctl
                             .comm
@@ -163,6 +168,17 @@ impl<W: Write> PacketGenerator<W> {
                     );
                 }
                 BinderEventData::BinderWriteRead(bwr_event) => {
+                    // Surface BC_/BR_ TRANSACTION wire fields (target.handle,
+                    // cookie, sender_pid, sender_euid, ...) into the
+                    // TransactionProtocol layer so the dissector shows them
+                    // alongside the resolved/reassembled fields, not buried
+                    // under the Commands array.
+                    if let Some(cmd_data) = bwr_event
+                        .first_transaction_command_data()
+                        .context("failed to inspect bwr commands")?
+                    {
+                        txn_builder = txn_builder.command_data(cmd_data);
+                    }
                     bwr_builder = bwr_builder
                         .bwr_event(bwr_event)
                         .context("failed to parse bwr event")?
@@ -209,6 +225,9 @@ impl<W: Write> PacketGenerator<W> {
                 BinderEventData::BinderTransactionStack(binder_transaction_stack) => {
                     txn_builder = txn_builder.transaction_stack(binder_transaction_stack)?;
                 }
+                BinderEventData::BinderTransactionPtrData(chunk) => {
+                    txn_builder = txn_builder.ptr_payload_chunk(chunk);
+                }
 
                 BinderEventData::BinderInvalidateProcess => unreachable!(),
             }
@@ -237,7 +256,7 @@ impl<W: Write> PacketGenerator<W> {
 
     fn write_packet(&mut self, proto: EventProtocol, link: &[u8]) -> Result<()> {
         let mut cursor = Cursor::new(Vec::new());
-        cursor.write(link)?;
+        cursor.write_all(link)?;
         binder_serde::write(&mut cursor, &proto)?;
         let data = cursor.into_inner();
 
@@ -252,10 +271,10 @@ impl<W: Write> PacketGenerator<W> {
         Ok(())
     }
 
-    pub fn capture(&mut self) -> Result<()> {
+    pub fn capture(&mut self, duration: Option<Duration>) -> Result<()> {
         let link_layer = link_layer::get_pdu_header();
         let events_aggregator = self.events_aggregator.take();
-        let events_aggregator = match events_aggregator {
+        let mut events_aggregator = match events_aggregator {
             Some(events_aggregator) => events_aggregator,
             None => {
                 return Err(anyhow::anyhow!(
@@ -263,6 +282,9 @@ impl<W: Write> PacketGenerator<W> {
                 ));
             }
         };
+        if let Some(d) = duration {
+            events_aggregator.set_deadline(Instant::now() + d);
+        }
         for events in events_aggregator {
             let str = format!("{:#?}", events);
             let proto = match self.handle_events(events) {

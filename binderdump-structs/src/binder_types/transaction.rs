@@ -16,10 +16,22 @@ pub struct TransactionSg {
     buffers_size: u64,
 }
 
+impl TransactionSg {
+    pub fn transaction(&self) -> &Transaction {
+        &self.transaction
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct Transaction {
     transaction_data: binder_transaction_data,
+}
+
+impl Transaction {
+    pub fn data(&self) -> &binder_transaction_data {
+        &self.transaction_data
+    }
 }
 
 impl Default for Transaction {

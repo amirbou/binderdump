@@ -16,6 +16,11 @@ trait Todo<T> {
 struct OffsetDeserializer {
     structs_stack: Vec<StructOffset>,
     fields_stack: Vec<&'static [&'static str]>,
+    // Parallel stack of "this struct frame is a Vec<T: struct> element".
+    // Set by `mark_seq_element` (called from PlainSeqDeserializer in SEQ mode
+    // right before each element's `deserialize`) and consumed in begin_struct.
+    is_seq_element_stack: Vec<bool>,
+    pending_seq_element: bool,
     result: Option<StructOffset>,
 }
 
@@ -24,8 +29,14 @@ impl OffsetDeserializer {
         Self {
             structs_stack: vec![],
             fields_stack: vec![],
+            is_seq_element_stack: vec![],
+            pending_seq_element: false,
             result: None,
         }
+    }
+
+    pub fn mark_seq_element(&mut self) {
+        self.pending_seq_element = true;
     }
 
     pub fn begin_struct(
@@ -44,6 +55,7 @@ impl OffsetDeserializer {
             fields: vec![],
         });
         self.fields_stack.push(fields);
+        self.is_seq_element_stack.push(self.pending_seq_element);
 
         Ok(())
     }
@@ -136,6 +148,7 @@ impl OffsetDeserializer {
         if remaining_fields_count != 0 {
             return Err(PlainSerializerError::TooLittleFields);
         }
+        let is_seq_element = self.is_seq_element_stack.pop().unwrap_or(false);
         if let Some(last_field) = finished_struct.fields.last_mut() {
             last_field.size = offset - last_field.offset;
         }
@@ -143,14 +156,26 @@ impl OffsetDeserializer {
 
         match self.structs_stack.last_mut() {
             Some(last_struct) => {
-                let inner_struct = &mut last_struct
+                let last_field = last_struct
                     .fields
                     .last_mut()
-                    .ok_or(PlainSerializerError::NoFields)?
-                    .inner_struct;
-                match inner_struct {
-                    Some(_) => return Err(PlainSerializerError::DoubleInnerStruct),
-                    None => *inner_struct = Some(finished_struct),
+                    .ok_or(PlainSerializerError::NoFields)?;
+                if is_seq_element && last_field.inner_struct.is_some() {
+                    // Subsequent Vec<T: struct> element. Append a sibling field
+                    // reusing the same field_name so the dissector resolves the
+                    // same hf/ett registrations as element 0.
+                    let elem_name = last_field.field_name.clone();
+                    last_struct.fields.push(FieldOffset {
+                        field_name: elem_name,
+                        offset: finished_struct.offset,
+                        size: finished_struct.size,
+                        inner_struct: Some(finished_struct),
+                    });
+                } else if last_field.inner_struct.is_none() {
+                    // First Vec<T: struct> element OR a regular nested struct field.
+                    last_field.inner_struct = Some(finished_struct);
+                } else {
+                    return Err(PlainSerializerError::DoubleInnerStruct);
                 }
             }
             None => self.result = Some(finished_struct),
@@ -163,6 +188,9 @@ impl OffsetDeserializer {
             return Err(PlainSerializerError::UnexpectedFields);
         }
         if !self.structs_stack.is_empty() {
+            return Err(PlainSerializerError::UnexpectedStruct);
+        }
+        if !self.is_seq_element_stack.is_empty() {
             return Err(PlainSerializerError::UnexpectedStruct);
         }
 
@@ -530,6 +558,12 @@ impl<'a, 'de, R: Read> SeqAccess<'de> for PlainSeqDeserializer<'a, R> {
         if matches!(self.mode, SeqMode::SEQ) && self.count == 0 {
             return Ok(None);
         }
+        if matches!(self.mode, SeqMode::SEQ) {
+            // Tag the next struct frame as a Vec<T: struct> element so its
+            // finish_struct knows to append a sibling instead of attaching to
+            // the parent's last field.
+            self.de.offsets_deserializer.mark_seq_element();
+        }
         let result = seed.deserialize(&mut *self.de).map(Some);
         if matches!(self.mode, SeqMode::STRUCT) && self.count == 1 {
             self.de
@@ -858,5 +892,182 @@ mod test {
         let result = from_bytes_with_offsets::<Test>(test).unwrap();
         assert_eq!(result.0, expected);
         assert_eq!(result.1.unwrap(), expected_offsets);
+    }
+
+    #[test]
+    fn test_vec_of_struct_roundtrip() {
+        #[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq, Debug)]
+        struct Inner {
+            foo: u32,
+            bar: u8,
+        }
+        #[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq, Debug)]
+        struct Outer {
+            items: Vec<Inner>,
+        }
+
+        let outer = Outer {
+            items: vec![
+                Inner { foo: 1, bar: 2 },
+                Inner { foo: 3, bar: 4 },
+                Inner { foo: 5, bar: 6 },
+            ],
+        };
+
+        let bytes = crate::binder_serde::to_bytes(&outer).unwrap();
+        let parsed = super::from_bytes::<Outer>(&bytes).unwrap();
+        assert_eq!(parsed, outer);
+    }
+
+    #[test]
+    fn test_vec_of_struct_offsets_two_elements() {
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct Inner {
+            foo: u32,
+            bar: u8,
+        }
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct Outer {
+            items: Vec<Inner>,
+        }
+
+        // 2 elements: count=2 (u16) + Inner{1,2} (5 bytes) + Inner{3,4} (5 bytes) = 12 bytes.
+        let bytes = b"\x02\x00\x01\x00\x00\x00\x02\x03\x00\x00\x00\x04";
+        let (parsed, offsets) = from_bytes_with_offsets::<Outer>(bytes).unwrap();
+        assert_eq!(
+            parsed,
+            Outer {
+                items: vec![Inner { foo: 1, bar: 2 }, Inner { foo: 3, bar: 4 }],
+            }
+        );
+
+        let offsets = offsets.unwrap();
+        assert_eq!(offsets.name, "Outer");
+        assert_eq!(offsets.offset, 0);
+        assert_eq!(offsets.size, 12);
+
+        // Layout: items_len pseudo (_len) + items (real, with Inner #0 attached)
+        // + items sibling (with Inner #1 attached, reusing the name "items"
+        // so dissector lookups still resolve).
+        assert_eq!(offsets.fields.len(), 3);
+
+        assert_eq!(offsets.fields[0].field_name, "items_len");
+        assert_eq!(offsets.fields[0].offset, 0);
+        assert_eq!(offsets.fields[0].size, 2);
+        assert!(offsets.fields[0].inner_struct.is_none());
+
+        // Element 0 attaches to the original "items" field.
+        assert_eq!(offsets.fields[1].field_name, "items");
+        assert_eq!(offsets.fields[1].offset, 2);
+        let inner0 = offsets.fields[1]
+            .inner_struct
+            .as_ref()
+            .expect("first element must have inner_struct attached");
+        assert_eq!(inner0.name, "Inner");
+        assert_eq!(inner0.offset, 2);
+        assert_eq!(inner0.size, 5);
+        assert_eq!(inner0.fields.len(), 2);
+        assert_eq!(inner0.fields[0].field_name, "foo");
+        assert_eq!(inner0.fields[1].field_name, "bar");
+
+        // Element 1 lands on a sibling with the same field name as element 0's
+        // host so the dissector resolves the same hf/ett registrations.
+        assert_eq!(offsets.fields[2].field_name, "items");
+        assert_eq!(offsets.fields[2].offset, 7);
+        let inner1 = offsets.fields[2]
+            .inner_struct
+            .as_ref()
+            .expect("second element must have inner_struct attached");
+        assert_eq!(inner1.name, "Inner");
+        assert_eq!(inner1.offset, 7);
+        assert_eq!(inner1.size, 5);
+    }
+
+    #[test]
+    fn test_vec_of_struct_offsets_three_elements() {
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct Inner {
+            foo: u32,
+        }
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct Outer {
+            items: Vec<Inner>,
+        }
+
+        // count=3 (u16) + 3 × u32
+        let bytes = b"\x03\x00\x01\x00\x00\x00\x02\x00\x00\x00\x03\x00\x00\x00";
+        let (parsed, offsets) = from_bytes_with_offsets::<Outer>(bytes).unwrap();
+        assert_eq!(
+            parsed,
+            Outer {
+                items: vec![Inner { foo: 1 }, Inner { foo: 2 }, Inner { foo: 3 }],
+            }
+        );
+
+        let offsets = offsets.unwrap();
+        // _len pseudo + 3 sibling "items" fields, one per element.
+        assert_eq!(offsets.fields.len(), 4);
+        assert_eq!(offsets.fields[0].field_name, "items_len");
+        for i in 1..=3 {
+            assert_eq!(offsets.fields[i].field_name, "items");
+            let inner = offsets.fields[i]
+                .inner_struct
+                .as_ref()
+                .expect("each element must have inner_struct attached");
+            assert_eq!(inner.name, "Inner");
+            assert_eq!(inner.fields.len(), 1);
+            assert_eq!(inner.fields[0].field_name, "foo");
+        }
+    }
+
+    #[test]
+    fn test_vec_of_struct_offsets_empty() {
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct Inner {
+            foo: u32,
+        }
+        #[derive(Deserialize, PartialEq, Eq, Debug)]
+        struct Outer {
+            items: Vec<Inner>,
+        }
+
+        let bytes = b"\x00\x00";
+        let (parsed, offsets) = from_bytes_with_offsets::<Outer>(bytes).unwrap();
+        assert_eq!(parsed, Outer { items: vec![] });
+
+        let offsets = offsets.unwrap();
+        // Empty Vec: just the _len pseudo and the (empty) items field.
+        assert_eq!(offsets.fields.len(), 2);
+        assert_eq!(offsets.fields[0].field_name, "items_len");
+        assert_eq!(offsets.fields[1].field_name, "items");
+        assert!(offsets.fields[1].inner_struct.is_none());
+    }
+
+    #[test]
+    fn test_vec_of_struct_followed_by_field() {
+        // Vec<Struct> followed by another field exercises the
+        // "next add_field after my synthetic siblings" path — the
+        // deserializer's prev_field.size update must not panic on the
+        // synthetic sibling.
+        #[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq, Debug)]
+        struct Inner {
+            foo: u32,
+        }
+        #[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq, Debug)]
+        struct Outer {
+            items: Vec<Inner>,
+            tail: u8,
+        }
+
+        let outer = Outer {
+            items: vec![Inner { foo: 1 }, Inner { foo: 2 }],
+            tail: 0xab,
+        };
+        let bytes = crate::binder_serde::to_bytes(&outer).unwrap();
+        let (parsed, offsets) = from_bytes_with_offsets::<Outer>(&bytes).unwrap();
+        assert_eq!(parsed, outer);
+
+        let offsets = offsets.unwrap();
+        assert_eq!(offsets.fields.last().unwrap().field_name, "tail");
     }
 }

@@ -5,3 +5,4 @@ src/bpf-skel
 .cargo/config.toml
 /static_libs
 tmp/
+.worktrees/

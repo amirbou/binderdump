@@ -1,0 +1,21 @@
+cargo-features = ["per-package-target"]
+
+[package]
+name = "binderdump-aidl"
+version = "0.1.0"
+edition = "2021"
+forced-target = "x86_64-unknown-linux-gnu"
+
+[dependencies]
+chumsky = "0.9"
+phf = { version = "0.11", features = ["macros"] }
+dirs = "5"
+thiserror = "1"
+walkdir = "2"
+
+[build-dependencies]
+phf_codegen = "0.11"
+walkdir = "2"
+chumsky = "0.9"
+
+[dev-dependencies]
