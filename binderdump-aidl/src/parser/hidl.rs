@@ -64,9 +64,8 @@ fn lex(src: &str) -> Vec<Tok> {
                 "package" | "import" | "interface" | "extends" | "oneway" | "generates"
                 | "typedef" | "enum" | "struct" | "union" | "string" | "vec" | "ref" | "bool"
                 | "int8_t" | "uint8_t" | "int16_t" | "uint16_t" | "int32_t" | "uint32_t"
-                | "int64_t" | "uint64_t" | "float" | "double" => {
-                    Tok::Keyword(Box::leak(word.to_string().into_boxed_str()))
-                }
+                | "int64_t" | "uint64_t" | "float" | "double" | "bitfield" | "fmq_sync"
+                | "fmq_unsync" => Tok::Keyword(Box::leak(word.to_string().into_boxed_str())),
                 _ => Tok::Ident(word.to_string()),
             });
             continue;
@@ -246,6 +245,32 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
                     TypeRef::List(Box::new(inner))
                 }
                 "ref" => {
+                    *p += 1;
+                    if !matches!(t.get(*p), Some(Tok::Punct('<'))) {
+                        return None;
+                    }
+                    *p += 1;
+                    let inner = parse_type(p, t)?;
+                    if !matches!(t.get(*p), Some(Tok::Punct('>'))) {
+                        return None;
+                    }
+                    *p += 1;
+                    inner
+                }
+                "bitfield" => {
+                    *p += 1;
+                    if !matches!(t.get(*p), Some(Tok::Punct('<'))) {
+                        return None;
+                    }
+                    *p += 1;
+                    let inner = parse_type(p, t)?;
+                    if !matches!(t.get(*p), Some(Tok::Punct('>'))) {
+                        return None;
+                    }
+                    *p += 1;
+                    inner
+                }
+                "fmq_sync" | "fmq_unsync" => {
                     *p += 1;
                     if !matches!(t.get(*p), Some(Tok::Punct('<'))) {
                         return None;
@@ -572,6 +597,35 @@ mod tests {
         let src = "package a@1.0; interface IFoo extends b@2.0::IBar { hi(); };";
         let r = parse_hidl(src).unwrap();
         assert_eq!(r[0].extends.as_deref(), Some("b@2.0::IBar"));
+    }
+
+    #[test]
+    fn parses_bitfield_in_param() {
+        let src = "package a@1.0; \
+                   interface I { setMask(bitfield<X> mask); };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r[0].methods.len(), 1);
+        assert_eq!(r[0].methods[0].name, "setMask");
+        assert_eq!(r[0].methods[0].params.len(), 1);
+    }
+
+    #[test]
+    fn parses_bitfield_in_generates_clause() {
+        let src = "package a@1.0; \
+                   interface I { getMask() generates (bitfield<X> mask); };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r[0].methods[0].name, "getMask");
+    }
+
+    #[test]
+    fn parses_fmq_types() {
+        let src = "package a@1.0; \
+                   interface I { \
+                       q1(fmq_sync<uint8_t> a); \
+                       q2(fmq_unsync<uint8_t> a); \
+                   };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r[0].methods.len(), 2);
     }
 }
 
