@@ -32,6 +32,12 @@ pub fn resolve(
 
     // Special codes are interface-agnostic - check first.
     if let Some(s) = binderdump_aidl::registry::lookup_special(code) {
+        let interface = match s {
+            binderdump_aidl::registry::SpecialTxn::Interface if interface.is_none() => {
+                Some("<query>".to_string())
+            }
+            _ => interface,
+        };
         return ResolvedTransaction {
             interface,
             method_name: Some(binderdump_aidl::registry::special_method_name(s).to_string()),
