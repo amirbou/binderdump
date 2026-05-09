@@ -181,7 +181,7 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
         }
     }
 
-    fn parse_type(p: &mut usize, t: &[Tok]) -> Option<TypeRef> {
+    fn parse_type(p: &mut usize, t: &[Tok], implicit_pkg: &str) -> Option<TypeRef> {
         let tok = t.get(*p)?.clone();
         let base = match tok {
             Tok::Keyword(kw) => match kw {
@@ -239,7 +239,7 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
                         return None;
                     }
                     *p += 1;
-                    let inner = parse_type(p, t)?;
+                    let inner = parse_type(p, t, implicit_pkg)?;
                     if !matches!(t.get(*p), Some(Tok::Punct('>'))) {
                         return None;
                     }
@@ -252,7 +252,7 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
                         return None;
                     }
                     *p += 1;
-                    let inner = parse_type(p, t)?;
+                    let inner = parse_type(p, t, implicit_pkg)?;
                     if !matches!(t.get(*p), Some(Tok::Punct('>'))) {
                         return None;
                     }
@@ -265,7 +265,7 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
                         return None;
                     }
                     *p += 1;
-                    let inner = parse_type(p, t)?;
+                    let inner = parse_type(p, t, implicit_pkg)?;
                     if !matches!(t.get(*p), Some(Tok::Punct('>'))) {
                         return None;
                     }
@@ -278,7 +278,7 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
                         return None;
                     }
                     *p += 1;
-                    let inner = parse_type(p, t)?;
+                    let inner = parse_type(p, t, implicit_pkg)?;
                     if !matches!(t.get(*p), Some(Tok::Punct('>'))) {
                         return None;
                     }
@@ -287,9 +287,9 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
                 }
                 _ => return None,
             },
-            Tok::Ident(_) => {
+            Tok::Ident(_) | Tok::AtSymbol => {
                 let mut p2 = *p;
-                let f = parse_versioned_fqn_inner(&mut p2, t)?;
+                let f = parse_versioned_fqn_inner(&mut p2, t, implicit_pkg)?;
                 *p = p2;
                 TypeRef::UserDefined(f)
             }
@@ -297,7 +297,39 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
         };
         Some(base)
     }
-    fn parse_versioned_fqn_inner(p: &mut usize, t: &[Tok]) -> Option<String> {
+    fn parse_versioned_fqn_inner(p: &mut usize, t: &[Tok], implicit_pkg: &str) -> Option<String> {
+        // Shorthand: `@<ver>::<Ident>` resolves into the current package.
+        if matches!(t.get(*p), Some(Tok::AtSymbol)) {
+            if implicit_pkg.is_empty() {
+                return None;
+            }
+            let dot_pkg = implicit_pkg
+                .split_once('@')
+                .map(|(p, _)| p)
+                .unwrap_or(implicit_pkg);
+            *p += 1; // consume '@'
+            let ver = match t.get(*p) {
+                Some(Tok::Ident(s)) => {
+                    let v = s.clone();
+                    *p += 1;
+                    v
+                }
+                _ => return None,
+            };
+            let mut out = format!("{}@{}", dot_pkg, ver);
+            if matches!(t.get(*p), Some(Tok::DoubleColon)) {
+                *p += 1;
+                match t.get(*p) {
+                    Some(Tok::Ident(s)) => {
+                        out.push_str("::");
+                        out.push_str(s);
+                        *p += 1;
+                    }
+                    _ => return None,
+                }
+            }
+            return Some(out);
+        }
         let mut parts = Vec::new();
         if let Some(Tok::Ident(s)) = t.get(*p) {
             parts.push(s.clone());
@@ -337,14 +369,14 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
         }
         Some(out)
     }
-    fn parse_param_list(p: &mut usize, t: &[Tok]) -> Option<Vec<Parameter>> {
+    fn parse_param_list(p: &mut usize, t: &[Tok], implicit_pkg: &str) -> Option<Vec<Parameter>> {
         if !matches!(t.get(*p), Some(Tok::Punct('('))) {
             return Some(vec![]);
         }
         *p += 1;
         let mut out = Vec::new();
         while !matches!(t.get(*p), Some(Tok::Punct(')'))) {
-            let ty = parse_type(p, t)?;
+            let ty = parse_type(p, t, implicit_pkg)?;
             let name = if let Some(Tok::Ident(s)) = t.get(*p) {
                 let v = s.clone();
                 *p += 1;
@@ -435,9 +467,9 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
                         continue;
                     }
                 };
-                let params = parse_param_list(&mut pos, &toks).ok_or("bad params")?;
+                let params = parse_param_list(&mut pos, &toks, &package).ok_or("bad params")?;
                 let return_type = if eat_kw(&mut pos, &toks, "generates") {
-                    let g = parse_param_list(&mut pos, &toks).ok_or("bad generates")?;
+                    let g = parse_param_list(&mut pos, &toks, &package).ok_or("bad generates")?;
                     g.into_iter().next().map(|p| p.ty)
                 } else {
                     None
@@ -688,6 +720,17 @@ mod tests {
         assert_eq!(r.len(), 1);
         let names: Vec<_> = r[0].methods.iter().map(|m| m.name.as_str()).collect();
         assert_eq!(names, vec!["doStuff", "doMore"]);
+    }
+
+    #[test]
+    fn parses_type_with_at_version_shorthand() {
+        let src = "package a@1.0; \
+                   interface I { \
+                       foo() generates (@2.0::Bar b); \
+                   };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r[0].methods.len(), 1);
+        assert_eq!(r[0].methods[0].name, "foo");
     }
 }
 
