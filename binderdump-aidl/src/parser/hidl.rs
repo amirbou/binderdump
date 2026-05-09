@@ -131,13 +131,30 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
         }
         Some(parts.join("."))
     };
-    let parse_versioned_fqn = |p: &mut usize, t: &[Tok]| -> Option<String> {
-        // Ident('.'Ident)* '@' Version ('::' Ident)?
-        let pkg = parse_dot_fqn(p, t)?;
+    let parse_versioned_fqn = |p: &mut usize, t: &[Tok], implicit_pkg: &str| -> Option<String> {
+        // Two accepted shapes:
+        //   <dot.fqn> '@' <ver> ('::' <Ident>)?       full form
+        //                '@' <ver> ('::' <Ident>)?    shorthand — pkg = implicit_pkg
+        let pkg = if matches!(t.get(*p), Some(Tok::AtSymbol)) {
+            if implicit_pkg.is_empty() {
+                return None;
+            }
+            // implicit_pkg is the current package fqn (e.g. "a.b@2.0"); strip the
+            // @version suffix so the shorthand's own @ver replaces it.
+            let dot_pkg = implicit_pkg
+                .split_once('@')
+                .map(|(p, _)| p)
+                .unwrap_or(implicit_pkg);
+            dot_pkg.to_string()
+        } else {
+            parse_dot_fqn(p, t)?
+        };
         if !eat_at(p, t) {
+            // No '@' — just a dot-fqn (used for non-versioned identifiers in
+            // type position).
             return Some(pkg);
         }
-        let ver = take_ident(p, t)?; // numeric "1.0"
+        let ver = take_ident(p, t)?;
         let mut s = format!("{}@{}", pkg, ver);
         if matches!(t.get(*p), Some(Tok::DoubleColon)) {
             *p += 1;
@@ -150,7 +167,7 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
 
     // package + version
     if eat_kw(&mut pos, &toks, "package") {
-        package = parse_versioned_fqn(&mut pos, &toks).ok_or("expected package fqn")?;
+        package = parse_versioned_fqn(&mut pos, &toks, "").ok_or("expected package fqn")?;
         eat_punct(&mut pos, &toks, ';');
     }
     // imports — skip
@@ -330,7 +347,7 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
         if eat_kw(&mut pos, &toks, "interface") {
             let name = take_ident(&mut pos, &toks).ok_or("expected interface name")?;
             let extends = if eat_kw(&mut pos, &toks, "extends") {
-                Some(parse_versioned_fqn(&mut pos, &toks).ok_or("expected parent fqn")?)
+                Some(parse_versioned_fqn(&mut pos, &toks, &package).ok_or("expected parent fqn")?)
             } else {
                 None
             };
@@ -536,6 +553,25 @@ mod tests {
         };
         let err = resolve_inheritance(vec![orphan]).unwrap_err();
         assert!(err.contains("missing@1.0::IGone"), "got: {}", err);
+    }
+
+    #[test]
+    fn parses_extends_with_current_package_shorthand() {
+        let src = "package a.b@2.0; \
+                   interface IFoo extends @1.0::IBar { hi(); };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].fqn, "a.b@2.0::IFoo");
+        // Parent must resolve into the current package.
+        assert_eq!(r[0].extends.as_deref(), Some("a.b@1.0::IBar"));
+    }
+
+    #[test]
+    fn parses_extends_with_full_versioned_fqn() {
+        // Regression — full form must keep working.
+        let src = "package a@1.0; interface IFoo extends b@2.0::IBar { hi(); };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r[0].extends.as_deref(), Some("b@2.0::IBar"));
     }
 }
 
