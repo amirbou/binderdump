@@ -263,6 +263,28 @@ mod tests {
         let r2 = reg.resolve(34, "com.does.not.IExist", 1);
         assert!(matches!(r2, Lookup::UnknownInterface));
     }
+
+    #[test]
+    fn lazy_resolve_consults_index_for_misplaced_aidl() {
+        // File at <root>/android-34/aidl/some/wrong/path/IFoo.aidl
+        // declares `package com.example; interface IFoo`. Lookup by fqn
+        // `com.example.IFoo` must succeed via the index, even though
+        // aidl_path() wouldn't find it directly.
+        let tmp = TempDir::new();
+        let misplaced = tmp.path().join("android-34/aidl/wrong/place/here");
+        std::fs::create_dir_all(&misplaced).unwrap();
+        std::fs::write(
+            misplaced.join("IFoo.aidl"),
+            "package com.example; interface IFoo { void hello(); }",
+        )
+        .unwrap();
+
+        let reg = Registry::with_aosp_dir(tmp.path().to_path_buf());
+        match reg.resolve(34, "com.example.IFoo", 1) {
+            Lookup::Hit { method, .. } => assert_eq!(method.name, "hello"),
+            other => panic!("expected Hit, got {:?}", other),
+        }
+    }
 }
 
 use crate::model::{Interface, Method, OverlayLayer};
@@ -297,6 +319,10 @@ pub struct Registry {
     /// `&'static Interface` borrow can outlive the RwLockReadGuard at
     /// resolve time.
     lazy_cache: RwLock<HashMap<(u32, String), Option<&'static Interface>>>,
+    /// fqn → file-path index, populated lazily once per SDK on first
+    /// indirect lookup. The Option means we've populated for that SDK
+    /// already (Some) or not yet (absent).
+    fqn_index: RwLock<HashMap<u32, HashMap<String, PathBuf>>>,
 }
 
 impl Registry {
@@ -309,6 +335,7 @@ impl Registry {
             overlays,
             aosp_root,
             lazy_cache: RwLock::new(HashMap::new()),
+            fqn_index: RwLock::new(HashMap::new()),
         }
     }
 
@@ -345,53 +372,126 @@ impl Registry {
     fn lazy_load_one(&self, sdk: u32, fqn: &str) -> Option<Interface> {
         let root = self.aosp_root.as_ref()?;
 
-        // try AIDL first
-        let aidl_path = crate::aosp_layout::aidl_path(root, sdk, fqn);
-        if let Ok(src) = std::fs::read_to_string(&aidl_path) {
-            match crate::parser::aidl::parse_aidl(&src) {
-                Ok(parsed) => {
-                    if let Some(found) = parsed.into_iter().find(|i| i.fqn == fqn) {
-                        return Some(found);
+        // helper: parse a candidate file as AIDL or HIDL based on extension
+        let try_parse = |path: &Path| -> Option<Interface> {
+            let src = std::fs::read_to_string(path).ok()?;
+            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+            match ext {
+                "aidl" => match crate::parser::aidl::parse_aidl(&src) {
+                    Ok(parsed) => parsed.into_iter().find(|i| i.fqn == fqn),
+                    Err(e) => {
+                        eprintln!(
+                            "binderdump-aidl: lazy parse failed for {}: {:?}",
+                            path.display(),
+                            e
+                        );
+                        None
                     }
-                }
-                Err(e) => {
-                    eprintln!(
-                        "binderdump-aidl: lazy parse failed for {}: {:?}",
-                        aidl_path.display(),
-                        e
-                    );
-                }
-            }
-        }
-
-        // HIDL fallback — path resolution requires `pkg@ver::Name` shape
-        if let Some(hidl_path) = crate::aosp_layout::hidl_path(root, sdk, fqn) {
-            if let Ok(src) = std::fs::read_to_string(&hidl_path) {
-                match crate::parser::hidl::parse_hidl(&src) {
+                },
+                "hal" => match crate::parser::hidl::parse_hidl(&src) {
                     Ok(parsed) => {
-                        if let Some(mut iface) = parsed.into_iter().find(|i| i.fqn == fqn) {
-                            // resolve `extends` chain so base_code is correct
-                            if let Some(parent_fqn) = iface.extends.clone() {
-                                if let Some(parent) = self.lazy_resolve_recursive(sdk, &parent_fqn)
-                                {
-                                    iface.base_code = 1 + parent.methods.len() as u32;
-                                }
+                        let mut iface = parsed.into_iter().find(|i| i.fqn == fqn)?;
+                        // resolve `extends` chain so base_code is correct
+                        if let Some(parent_fqn) = iface.extends.clone() {
+                            if let Some(parent) = self.lazy_resolve_recursive(sdk, &parent_fqn) {
+                                iface.base_code = 1 + parent.methods.len() as u32;
                             }
-                            return Some(iface);
                         }
+                        Some(iface)
                     }
                     Err(e) => {
                         eprintln!(
                             "binderdump-hidl: lazy parse failed for {}: {}",
-                            hidl_path.display(),
+                            path.display(),
                             e
                         );
+                        None
                     }
-                }
+                },
+                _ => None,
+            }
+        };
+
+        // fast path: AIDL by dotted-fqn convention
+        let aidl_path = crate::aosp_layout::aidl_path(root, sdk, fqn);
+        if let Some(found) = try_parse(&aidl_path) {
+            return Some(found);
+        }
+
+        // fast path: HIDL by versioned-fqn convention
+        if let Some(hidl_path) = crate::aosp_layout::hidl_path(root, sdk, fqn) {
+            if let Some(found) = try_parse(&hidl_path) {
+                return Some(found);
+            }
+        }
+
+        // slow path: build (or consult) per-SDK fqn→path index. Some files
+        // live at AOSP source-tree paths that don't match the dotted/versioned
+        // fqn convention (e.g. system/hardware/interfaces/suspend/aidl/...).
+        self.populate_fqn_index(sdk);
+        let candidate: Option<PathBuf> = {
+            let idx = self.fqn_index.read().unwrap();
+            idx.get(&sdk).and_then(|m| m.get(fqn)).cloned()
+        };
+        if let Some(path) = candidate {
+            if let Some(found) = try_parse(&path) {
+                return Some(found);
             }
         }
 
         None
+    }
+
+    fn populate_fqn_index(&self, sdk: u32) {
+        // already populated?
+        {
+            let idx = self.fqn_index.read().unwrap();
+            if idx.contains_key(&sdk) {
+                return;
+            }
+        }
+        let Some(root) = self.aosp_root.as_ref() else {
+            return;
+        };
+        let sdk_dir = root.join(format!("android-{}", sdk));
+        if !sdk_dir.exists() {
+            self.fqn_index.write().unwrap().insert(sdk, HashMap::new());
+            return;
+        }
+
+        let mut entries: HashMap<String, PathBuf> = HashMap::new();
+        for entry in walkdir::WalkDir::new(&sdk_dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.path();
+            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+            let Ok(src) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            match ext {
+                "aidl" => {
+                    for fqn in crate::aosp_layout::aidl_interfaces_in(&src) {
+                        entries.entry(fqn).or_insert_with(|| path.to_path_buf());
+                    }
+                }
+                "hal" => {
+                    for fqn in crate::aosp_layout::hidl_interfaces_in(&src) {
+                        entries.entry(fqn).or_insert_with(|| path.to_path_buf());
+                    }
+                }
+                _ => {}
+            }
+        }
+        eprintln!(
+            "binderdump-aidl: indexed {} fqns for android-{}",
+            entries.len(),
+            sdk
+        );
+        self.fqn_index.write().unwrap().insert(sdk, entries);
     }
 
     fn lazy_resolve_recursive(&self, sdk: u32, fqn: &str) -> Option<&'static Interface> {
