@@ -106,13 +106,8 @@ impl<W: Write> ser::Serializer for &mut PlainSerializer<W> {
     }
 
     fn serialize_bytes(self, v: &[u8]) -> Result<Self::Ok, Self::Error> {
-        let len = v.len().try_into();
-        match len {
-            Ok(len) => self.serialize_u16(len)?,
-            Err(e) => {
-                return Err(PlainSerializerError::TooBig(e));
-            }
-        }
+        let len: u32 = v.len().try_into().map_err(PlainSerializerError::TooBig)?;
+        self.serialize_u32(len)?;
         for byte in v {
             self.serialize_u8(*byte)?;
         }
@@ -173,16 +168,9 @@ impl<W: Write> ser::Serializer for &mut PlainSerializer<W> {
     }
 
     fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
-        let len = match len {
-            Some(l) => l,
-            None => return Err(PlainSerializerError::UnknownLength),
-        };
-        let len = match len.try_into() {
-            Ok(l) => l,
-            Err(e) => return Err(PlainSerializerError::TooBig(e)),
-        };
-        self.serialize_u16(len)?;
-
+        let len = len.ok_or(PlainSerializerError::UnknownLength)?;
+        let len: u32 = len.try_into().map_err(PlainSerializerError::TooBig)?;
+        self.serialize_u32(len)?;
         Ok(self)
     }
 
@@ -297,6 +285,8 @@ pub fn to_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, PlainSerializerError
 
 #[cfg(test)]
 mod test {
+    use super::to_bytes;
+
     #[test]
     fn test_struct() {
         #[derive(serde::Serialize)]
@@ -310,7 +300,7 @@ mod test {
             seq: vec![1, 2, 3],
         };
 
-        let expected = b"\x03\x00\x00\x00\x03\x00\x01\x02\x03";
+        let expected = b"\x03\x00\x00\x00\x03\x00\x00\x00\x01\x02\x03";
         assert_eq!(super::to_bytes(&test).unwrap(), expected);
     }
 
@@ -323,7 +313,7 @@ mod test {
 
         let test = Test { seq: vec![] };
 
-        let expected = b"\x00\x00";
+        let expected = b"\x00\x00\x00\x00";
         assert_eq!(super::to_bytes(&test).unwrap(), expected);
     }
 
@@ -372,5 +362,32 @@ mod test {
         let expected = b"abc";
 
         assert_eq!(super::to_bytes(&test).unwrap(), expected);
+    }
+
+    #[test]
+    fn serialize_bytes_over_u16_max_does_not_overflow() {
+        let large: Vec<u8> = vec![0xab; 70_000]; // > u16::MAX (65535)
+        let encoded = to_bytes(&large).expect("must serialize >64KB without overflow");
+        // first 4 bytes = u32 LE length
+        assert_eq!(&encoded[..4], &(70_000u32).to_le_bytes());
+        assert_eq!(encoded.len(), 4 + 70_000);
+    }
+
+    #[test]
+    fn round_trip_large_seq() {
+        // Vec<u32> of 70k elements: length is u32, each element is u32.
+        #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
+        struct Wrapper {
+            items: Vec<u32>,
+        }
+        let w = Wrapper {
+            items: (0u32..70_000).collect(),
+        };
+        let encoded = to_bytes(&w).unwrap();
+        // first 4 bytes = u32 LE count = 70000
+        assert_eq!(&encoded[..4], &(70_000u32).to_le_bytes());
+        // round-trip via the deserializer
+        let decoded: Wrapper = crate::binder_serde::from_bytes(&encoded).unwrap();
+        assert_eq!(w, decoded);
     }
 }
