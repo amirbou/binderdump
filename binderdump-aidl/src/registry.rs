@@ -1,7 +1,7 @@
-// Layered (interface, code) -> Method lookup. Built-in tables are codegen'd
-// from data/aosp/ at build time and live in `builtin_by_version`; runtime
-// .aidl/.hal overlays from the user's plugin pref dir stack on top and
-// override the built-ins.
+// Layered (interface, code) -> Method lookup. Three sources stack, last
+// wins: runtime .aidl/.hal overlays from the user's pref dir; the bundled
+// AOSP corpus loaded lazily on demand from Registry::with_aosp_dir(); and
+// special transaction codes hard-coded in this file.
 
 // Special transaction codes from frameworks/native/libs/binder/include/binder/IBinder.h.
 // Each is `B_PACK_CHARS('_','X','Y','Z')` which packs ASCII into u32:
@@ -106,36 +106,19 @@ mod tests {
     }
 
     #[test]
-    fn registry_finds_method_in_builtin() {
-        let mut builtin: std::collections::HashMap<String, Interface> = Default::default();
-        builtin.insert("a.b.IFoo".into(), iface("a.b.IFoo", &["start", "stop"]));
-        let reg = Registry::from_parts(HashMap::from([(34u32, builtin)]), vec![], None);
-        let l = reg.resolve(34, "a.b.IFoo", 1);
-        match l {
-            Lookup::Hit { method, source } => {
-                assert_eq!(method.name, "start");
-                assert!(matches!(source, Source::Builtin));
-            }
-            _ => panic!("expected Hit"),
-        }
-    }
-
-    #[test]
-    fn registry_overlay_overrides_builtin() {
-        let mut builtin: std::collections::HashMap<String, Interface> = Default::default();
-        builtin.insert("a.b.IFoo".into(), iface("a.b.IFoo", &["legacy"]));
+    fn registry_overlay_hit() {
         let mut overlay = OverlayLayer {
             source_path: "/tmp/x.aidl".into(),
             interfaces: Default::default(),
         };
         overlay
             .interfaces
-            .insert("a.b.IFoo".into(), iface("a.b.IFoo", &["new"]));
-        let reg = Registry::from_parts(HashMap::from([(34, builtin)]), vec![overlay], None);
+            .insert("a.b.IFoo".into(), iface("a.b.IFoo", &["start", "stop"]));
+        let reg = Registry::from_parts(vec![overlay], None);
         let l = reg.resolve(34, "a.b.IFoo", 1);
         match l {
             Lookup::Hit { method, source } => {
-                assert_eq!(method.name, "new");
+                assert_eq!(method.name, "start");
                 assert!(matches!(source, Source::Overlay(_)));
             }
             _ => panic!("expected Hit"),
@@ -143,11 +126,16 @@ mod tests {
     }
 
     #[test]
-    fn registry_special_takes_precedence_over_builtin() {
-        let mut builtin: std::collections::HashMap<String, Interface> = Default::default();
-        // Even if some interface declared a method at PING's value, special table wins.
-        builtin.insert("a.b.IFoo".into(), iface("a.b.IFoo", &[]));
-        let reg = Registry::from_parts(HashMap::from([(34, builtin)]), vec![], None);
+    fn registry_special_takes_precedence_over_overlay() {
+        let mut overlay = OverlayLayer {
+            source_path: "/tmp/x.aidl".into(),
+            interfaces: Default::default(),
+        };
+        // Even if an overlay declared a method at PING's value, special table wins.
+        overlay
+            .interfaces
+            .insert("a.b.IFoo".into(), iface("a.b.IFoo", &[]));
+        let reg = Registry::from_parts(vec![overlay], None);
         match reg.resolve(34, "a.b.IFoo", 0x5f504e47) {
             Lookup::SpecialCode(SpecialTxn::Ping) => {}
             other => panic!("expected SpecialCode(Ping), got {:?}", other),
@@ -165,9 +153,14 @@ mod tests {
 
     #[test]
     fn registry_unknown_code() {
-        let mut builtin: std::collections::HashMap<String, Interface> = Default::default();
-        builtin.insert("a.b.IFoo".into(), iface("a.b.IFoo", &["only"]));
-        let reg = Registry::from_parts(HashMap::from([(34, builtin)]), vec![], None);
+        let mut overlay = OverlayLayer {
+            source_path: "/tmp/x.aidl".into(),
+            interfaces: Default::default(),
+        };
+        overlay
+            .interfaces
+            .insert("a.b.IFoo".into(), iface("a.b.IFoo", &["only"]));
+        let reg = Registry::from_parts(vec![overlay], None);
         assert!(matches!(
             reg.resolve(34, "a.b.IFoo", 99),
             Lookup::UnknownCode { .. }
@@ -201,17 +194,6 @@ mod tests {
     }
 
     #[test]
-    fn with_builtin_constructs_when_no_aosp_data() {
-        // Smoke test: ensure the build-script-generated file is included
-        // cleanly and produces a usable (if empty) registry.
-        let reg = Registry::with_builtin();
-        assert!(matches!(
-            reg.resolve(34, "missing.IGhost", 1),
-            Lookup::UnknownInterface
-        ));
-    }
-
-    #[test]
     fn load_overlays_parses_aidl_files() {
         let tmp = TempDir::new();
         std::fs::write(
@@ -239,19 +221,6 @@ mod tests {
         assert!(overlays
             .iter()
             .any(|l| l.interfaces.contains_key("g.IGood")));
-    }
-
-    #[test]
-    fn builtin_registry_resolves_iservicemanager_method_one() {
-        let reg = Registry::with_builtin();
-        match reg.resolve(34, "android.os.IServiceManager", 1) {
-            Lookup::Hit { method, source } => {
-                assert!(matches!(source, Source::Builtin));
-                // Order in the synthetic file above puts getService first.
-                assert_eq!(method.name, "getService");
-            }
-            other => panic!("expected Hit, got {:?}", other),
-        }
     }
 
     #[test]
@@ -316,13 +285,11 @@ pub enum Lookup<'a> {
 
 #[derive(Debug, Clone, Copy)]
 pub enum Source<'a> {
-    Builtin,
     Overlay(&'a Path),
     Lazy,
 }
 
 pub struct Registry {
-    builtin_by_version: HashMap<u32, HashMap<String, Interface>>,
     overlays: Vec<OverlayLayer>,
     aosp_root: Option<PathBuf>,
     /// Cache for lazy loads. `None` value caches negative lookups so we
@@ -332,54 +299,21 @@ pub struct Registry {
     lazy_cache: RwLock<HashMap<(u32, String), Option<&'static Interface>>>,
 }
 
-// build-script-generated code uses this as a stable populate API:
-// the emitted aosp_generated.rs calls acc.add(sdk, fqn, iface) per entry.
-pub struct BuiltinAccumulator<'a>(pub &'a mut HashMap<u32, HashMap<String, Interface>>);
-
-impl BuiltinAccumulator<'_> {
-    pub fn add(&mut self, sdk: u32, fqn: &str, iface: Interface) {
-        self.0
-            .entry(sdk)
-            .or_default()
-            .insert(fqn.to_string(), iface);
-    }
-}
-
 impl Registry {
     pub fn empty() -> Self {
-        Self::from_parts(HashMap::new(), vec![], None)
+        Self::from_parts(vec![], None)
     }
 
-    pub fn from_parts(
-        builtin_by_version: HashMap<u32, HashMap<String, Interface>>,
-        overlays: Vec<OverlayLayer>,
-        aosp_root: Option<PathBuf>,
-    ) -> Self {
+    pub fn from_parts(overlays: Vec<OverlayLayer>, aosp_root: Option<PathBuf>) -> Self {
         Self {
-            builtin_by_version,
             overlays,
             aosp_root,
             lazy_cache: RwLock::new(HashMap::new()),
         }
     }
 
-    // pre-populated from the bundled AOSP tables emitted by build.rs
-    pub fn with_builtin() -> Self {
-        let mut map: HashMap<u32, HashMap<String, Interface>> = HashMap::new();
-        // Wrap the `include!` in a block expression so the included file can
-        // contain a sequence of statements (one `{ acc.add(...); }` block per
-        // interface). The build script always emits at least one no-op block,
-        // so the included content is never empty.
-        let _: () = {
-            let mut acc = BuiltinAccumulator(&mut map);
-            let _ = &mut acc;
-            include!(concat!(env!("OUT_DIR"), "/aosp_generated.rs"))
-        };
-        Self::from_parts(map, vec![], None)
-    }
-
     pub fn with_aosp_dir(root: PathBuf) -> Self {
-        Self::from_parts(HashMap::new(), vec![], Some(root))
+        Self::from_parts(vec![], Some(root))
     }
 
     pub fn resolve(&self, android_sdk: u32, fqn: &str, code: u32) -> Lookup<'_> {
@@ -400,27 +334,12 @@ impl Registry {
             }
         }
 
-        let iface = self
-            .builtin_by_version
-            .get(&android_sdk)
-            .and_then(|m| m.get(fqn));
-        match iface {
-            Some(iface) => match iface.lookup(code) {
-                Some(m) => Lookup::Hit {
-                    method: m,
-                    source: Source::Builtin,
-                },
-                None => Lookup::UnknownCode { interface: iface },
-            },
-            None => {
-                // fall through to lazy backend, if any
-                if self.aosp_root.is_some() {
-                    let leaked = self.lazy_resolve_recursive(android_sdk, fqn);
-                    return self.materialize_lazy(leaked, code);
-                }
-                Lookup::UnknownInterface
-            }
+        // fall through to lazy backend, if any
+        if self.aosp_root.is_some() {
+            let leaked = self.lazy_resolve_recursive(android_sdk, fqn);
+            return self.materialize_lazy(leaked, code);
         }
+        Lookup::UnknownInterface
     }
 
     fn lazy_load_one(&self, sdk: u32, fqn: &str) -> Option<Interface> {
