@@ -10,7 +10,6 @@ use binderdump_structs::binder_types::{
 };
 use binderdump_structs::bwr_layer::Transaction;
 use binderdump_structs::errors::ToAnyhow;
-use log::warn;
 use num::FromPrimitive;
 use num_derive::FromPrimitive;
 use plain::Plain;
@@ -507,24 +506,17 @@ impl TryFrom<&[u8]> for BinderTransactionContents {
         let buffer = &value[BWR_SIZE..];
 
         if raw_bwr.write_buffer > 0 {
-            if raw_bwr.write_consumed != raw_bwr.write_size {
-                warn!(
-                    "truncated txn data: {}/{} {}",
-                    raw_bwr.write_consumed, raw_bwr.write_size, raw_bwr.write_buffer
-                );
-            }
+            // chunk_index > 0 means this is one piece of a multi-chunk payload;
+            // consumed != size is expected here. reassembly happens in
+            // builders.rs::transaction_contents.
             return Ok(Self::Data(BinderTransactionData {
                 total_size: raw_bwr.write_size as usize,
                 data: buffer.to_vec(),
                 chunk_index: raw_bwr.write_buffer as usize,
             }));
         } else if raw_bwr.read_buffer == 1 {
-            if raw_bwr.read_consumed != raw_bwr.read_size {
-                warn!(
-                    "trunacted txn offsets: {}/{}",
-                    raw_bwr.read_consumed, raw_bwr.read_size
-                );
-            }
+            // offsets are single-shot, but consumed != size can still happen on
+            // partial reads. don't warn — the aggregator handles partial chunks.
             return Ok(Self::Offsets(BinderTransactionData {
                 total_size: raw_bwr.read_size as usize,
                 data: buffer.to_vec(),
