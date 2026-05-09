@@ -299,7 +299,22 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
             }
             _ => return None,
         };
-        Some(base)
+        // Trailing `[N]` for sized arrays. HIDL only allows fixed-size; the
+        // size value is irrelevant for method-resolution.
+        let mut ty = base;
+        while matches!(t.get(*p), Some(Tok::Punct('['))) {
+            *p += 1;
+            // Walk past the size token (Ident with the numeric literal) and
+            // the closing `]`. Multi-dim arrays repeat naturally.
+            while let Some(tok) = t.get(*p) {
+                *p += 1;
+                if matches!(tok, Tok::Punct(']')) {
+                    break;
+                }
+            }
+            ty = TypeRef::Array(Box::new(ty));
+        }
+        Some(ty)
     }
     fn parse_versioned_fqn_inner(p: &mut usize, t: &[Tok], implicit_pkg: &str) -> Option<String> {
         // Shorthand: `@<ver>::<Ident>` resolves into the current package.
@@ -744,6 +759,18 @@ mod tests {
                    interface I { \
                        foo(vec<interface> ifs); \
                        bar() generates (interface i); \
+                   };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r[0].methods.len(), 2);
+    }
+
+    #[test]
+    fn parses_sized_array_type() {
+        // HIDL allows fixed-size arrays, including nested inside vec<>.
+        let src = "package a@1.0; \
+                   interface I { \
+                       foo() generates (vec<uint8_t[16]> schemes); \
+                       bar(uint32_t[4] m); \
                    };";
         let r = parse_hidl(src).unwrap();
         assert_eq!(r[0].methods.len(), 2);
