@@ -8,6 +8,7 @@
 
 // BR constants: added to enum binder_driver_return_protocol (kernel 6.x).
 // _IO('r', N) packs as ((0x72) << 8) | (N & 0xff).
+#define BR_TRANSACTION_PENDING_FROZEN 0x7214
 #define BR_FROZEN_BINDER 0x7215
 #define BR_CLEAR_FREEZE_NOTIFICATION_DONE 0x7216
 
