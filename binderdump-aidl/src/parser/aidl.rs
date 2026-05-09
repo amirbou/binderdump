@@ -279,6 +279,9 @@ pub fn parse_aidl(source: &str) -> Result<Vec<crate::model::Interface>, Vec<Simp
                         {
                             cur.pos += 1; // eat 'interface'
                             let _ = cur.ident(); // eat name
+                            if cur.eat_punct(';') {
+                                continue;
+                            }
                             if cur.eat_punct('{') {
                                 let mut depth = 1;
                                 while depth > 0 {
