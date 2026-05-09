@@ -128,7 +128,7 @@ pub fn parse_aidl(source: &str) -> Result<Vec<crate::model::Interface>, Vec<Simp
                     "List" => {
                         self.pos += 1;
                         if !self.eat_punct('<') {
-                            return None;
+                            return Some(TypeRef::UserDefined("List".into()));
                         }
                         let inner = self.parse_type()?;
                         if !self.eat_punct('>') {
@@ -139,7 +139,9 @@ pub fn parse_aidl(source: &str) -> Result<Vec<crate::model::Interface>, Vec<Simp
                     "Map" => {
                         self.pos += 1;
                         if !self.eat_punct('<') {
-                            return None;
+                            // Bare `Map` (Java raw type). Treat as a user-defined name so
+                            // method-resolution still gets a sensible type label.
+                            return Some(TypeRef::UserDefined("Map".into()));
                         }
                         let k = self.parse_type()?;
                         if !self.eat_punct(',') {
@@ -539,6 +541,22 @@ mod tests {
         let src = "package a; interface I { \
                    void m(in Foo<Bar<Baz>> x); \
                    }";
+        let r = parse_aidl(src).unwrap();
+        assert_eq!(r[0].methods[0].params.len(), 1);
+    }
+
+    #[test]
+    fn parses_bare_map_param() {
+        let src = "package a; interface I { void onChange(in Map data); }";
+        let r = parse_aidl(src).unwrap();
+        assert_eq!(r[0].methods[0].name, "onChange");
+        assert_eq!(r[0].methods[0].params.len(), 1);
+    }
+
+    #[test]
+    fn parses_typed_map_param_still_works() {
+        // Regression — typed form must keep working.
+        let src = "package a; interface I { void m(in Map<String, IBinder> x); }";
         let r = parse_aidl(src).unwrap();
         assert_eq!(r[0].methods[0].params.len(), 1);
     }
