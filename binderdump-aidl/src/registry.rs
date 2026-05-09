@@ -109,7 +109,7 @@ mod tests {
     fn registry_finds_method_in_builtin() {
         let mut builtin: std::collections::HashMap<String, Interface> = Default::default();
         builtin.insert("a.b.IFoo".into(), iface("a.b.IFoo", &["start", "stop"]));
-        let reg = Registry::from_parts(HashMap::from([(34u32, builtin)]), vec![]);
+        let reg = Registry::from_parts(HashMap::from([(34u32, builtin)]), vec![], None);
         let l = reg.resolve(34, "a.b.IFoo", 1);
         match l {
             Lookup::Hit { method, source } => {
@@ -131,7 +131,7 @@ mod tests {
         overlay
             .interfaces
             .insert("a.b.IFoo".into(), iface("a.b.IFoo", &["new"]));
-        let reg = Registry::from_parts(HashMap::from([(34, builtin)]), vec![overlay]);
+        let reg = Registry::from_parts(HashMap::from([(34, builtin)]), vec![overlay], None);
         let l = reg.resolve(34, "a.b.IFoo", 1);
         match l {
             Lookup::Hit { method, source } => {
@@ -147,7 +147,7 @@ mod tests {
         let mut builtin: std::collections::HashMap<String, Interface> = Default::default();
         // Even if some interface declared a method at PING's value, special table wins.
         builtin.insert("a.b.IFoo".into(), iface("a.b.IFoo", &[]));
-        let reg = Registry::from_parts(HashMap::from([(34, builtin)]), vec![]);
+        let reg = Registry::from_parts(HashMap::from([(34, builtin)]), vec![], None);
         match reg.resolve(34, "a.b.IFoo", 0x5f504e47) {
             Lookup::SpecialCode(SpecialTxn::Ping) => {}
             other => panic!("expected SpecialCode(Ping), got {:?}", other),
@@ -167,7 +167,7 @@ mod tests {
     fn registry_unknown_code() {
         let mut builtin: std::collections::HashMap<String, Interface> = Default::default();
         builtin.insert("a.b.IFoo".into(), iface("a.b.IFoo", &["only"]));
-        let reg = Registry::from_parts(HashMap::from([(34, builtin)]), vec![]);
+        let reg = Registry::from_parts(HashMap::from([(34, builtin)]), vec![], None);
         assert!(matches!(
             reg.resolve(34, "a.b.IFoo", 99),
             Lookup::UnknownCode { .. }
@@ -253,11 +253,53 @@ mod tests {
             other => panic!("expected Hit, got {:?}", other),
         }
     }
+
+    #[test]
+    fn lazy_resolve_loads_aidl_on_demand() {
+        let tmp = TempDir::new();
+        let aidl_dir = tmp.path().join("android-34/aidl/com/example");
+        std::fs::create_dir_all(&aidl_dir).unwrap();
+        std::fs::write(
+            aidl_dir.join("IFoo.aidl"),
+            "package com.example; interface IFoo { void hello(); void world(); }",
+        )
+        .unwrap();
+
+        let reg = Registry::with_aosp_dir(tmp.path().to_path_buf());
+
+        match reg.resolve(34, "com.example.IFoo", 1) {
+            Lookup::Hit { method, source } => {
+                assert!(matches!(source, Source::Lazy));
+                assert_eq!(method.name, "hello");
+            }
+            other => panic!("expected Hit, got {:?}", other),
+        }
+
+        // second call: cached, same outcome
+        match reg.resolve(34, "com.example.IFoo", 2) {
+            Lookup::Hit { method, .. } => assert_eq!(method.name, "world"),
+            other => panic!("expected Hit, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lazy_resolve_misses_unknown_fqn_caches_negative() {
+        let tmp = TempDir::new();
+        std::fs::create_dir_all(tmp.path().join("android-34/aidl")).unwrap();
+
+        let reg = Registry::with_aosp_dir(tmp.path().to_path_buf());
+
+        let r1 = reg.resolve(34, "com.does.not.IExist", 1);
+        assert!(matches!(r1, Lookup::UnknownInterface));
+        let r2 = reg.resolve(34, "com.does.not.IExist", 1);
+        assert!(matches!(r2, Lookup::UnknownInterface));
+    }
 }
 
 use crate::model::{Interface, Method, OverlayLayer};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
 #[derive(Debug)]
 pub enum Lookup<'a> {
@@ -276,11 +318,18 @@ pub enum Lookup<'a> {
 pub enum Source<'a> {
     Builtin,
     Overlay(&'a Path),
+    Lazy,
 }
 
 pub struct Registry {
     builtin_by_version: HashMap<u32, HashMap<String, Interface>>,
     overlays: Vec<OverlayLayer>,
+    aosp_root: Option<PathBuf>,
+    /// Cache for lazy loads. `None` value caches negative lookups so we
+    /// don't re-stat / re-parse missing files. Box::leak'd so the
+    /// `&'static Interface` borrow can outlive the RwLockReadGuard at
+    /// resolve time.
+    lazy_cache: RwLock<HashMap<(u32, String), Option<&'static Interface>>>,
 }
 
 // build-script-generated code uses this as a stable populate API:
@@ -298,16 +347,19 @@ impl BuiltinAccumulator<'_> {
 
 impl Registry {
     pub fn empty() -> Self {
-        Self::from_parts(HashMap::new(), vec![])
+        Self::from_parts(HashMap::new(), vec![], None)
     }
 
     pub fn from_parts(
         builtin_by_version: HashMap<u32, HashMap<String, Interface>>,
         overlays: Vec<OverlayLayer>,
+        aosp_root: Option<PathBuf>,
     ) -> Self {
         Self {
             builtin_by_version,
             overlays,
+            aosp_root,
+            lazy_cache: RwLock::new(HashMap::new()),
         }
     }
 
@@ -323,7 +375,11 @@ impl Registry {
             let _ = &mut acc;
             include!(concat!(env!("OUT_DIR"), "/aosp_generated.rs"))
         };
-        Self::from_parts(map, vec![])
+        Self::from_parts(map, vec![], None)
+    }
+
+    pub fn with_aosp_dir(root: PathBuf) -> Self {
+        Self::from_parts(HashMap::new(), vec![], Some(root))
     }
 
     pub fn resolve(&self, android_sdk: u32, fqn: &str, code: u32) -> Lookup<'_> {
@@ -356,7 +412,95 @@ impl Registry {
                 },
                 None => Lookup::UnknownCode { interface: iface },
             },
+            None => {
+                // fall through to lazy backend, if any
+                if self.aosp_root.is_some() {
+                    let leaked = self.lazy_resolve_recursive(android_sdk, fqn);
+                    return self.materialize_lazy(leaked, code);
+                }
+                Lookup::UnknownInterface
+            }
+        }
+    }
+
+    fn lazy_load_one(&self, sdk: u32, fqn: &str) -> Option<Interface> {
+        let root = self.aosp_root.as_ref()?;
+
+        // try AIDL first
+        let aidl_path = crate::aosp_layout::aidl_path(root, sdk, fqn);
+        if let Ok(src) = std::fs::read_to_string(&aidl_path) {
+            match crate::parser::aidl::parse_aidl(&src) {
+                Ok(parsed) => {
+                    if let Some(found) = parsed.into_iter().find(|i| i.fqn == fqn) {
+                        return Some(found);
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "binderdump-aidl: lazy parse failed for {}: {:?}",
+                        aidl_path.display(),
+                        e
+                    );
+                }
+            }
+        }
+
+        // HIDL fallback — path resolution requires `pkg@ver::Name` shape
+        if let Some(hidl_path) = crate::aosp_layout::hidl_path(root, sdk, fqn) {
+            if let Ok(src) = std::fs::read_to_string(&hidl_path) {
+                match crate::parser::hidl::parse_hidl(&src) {
+                    Ok(parsed) => {
+                        if let Some(mut iface) = parsed.into_iter().find(|i| i.fqn == fqn) {
+                            // resolve `extends` chain so base_code is correct
+                            if let Some(parent_fqn) = iface.extends.clone() {
+                                if let Some(parent) = self.lazy_resolve_recursive(sdk, &parent_fqn)
+                                {
+                                    iface.base_code = 1 + parent.methods.len() as u32;
+                                }
+                            }
+                            return Some(iface);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "binderdump-hidl: lazy parse failed for {}: {}",
+                            hidl_path.display(),
+                            e
+                        );
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    fn lazy_resolve_recursive(&self, sdk: u32, fqn: &str) -> Option<&'static Interface> {
+        {
+            let cache = self.lazy_cache.read().unwrap();
+            if let Some(slot) = cache.get(&(sdk, fqn.to_string())) {
+                return *slot;
+            }
+        }
+        let loaded = self.lazy_load_one(sdk, fqn);
+        let leaked: Option<&'static Interface> = loaded.map(|i| &*Box::leak(Box::new(i)));
+        self.lazy_cache
+            .write()
+            .unwrap()
+            .insert((sdk, fqn.to_string()), leaked);
+        leaked
+    }
+
+    fn materialize_lazy(&self, slot: Option<&'static Interface>, code: u32) -> Lookup<'static> {
+        match slot {
             None => Lookup::UnknownInterface,
+            Some(iface) => match iface.lookup(code) {
+                Some(m) => Lookup::Hit {
+                    method: m,
+                    source: Source::Lazy,
+                },
+                None => Lookup::UnknownCode { interface: iface },
+            },
         }
     }
 
