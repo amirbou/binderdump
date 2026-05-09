@@ -153,7 +153,26 @@ pub fn parse_aidl(source: &str) -> Result<Vec<crate::model::Interface>, Vec<Simp
                     }
                     _ => return None,
                 },
-                Token::Ident(_) => TypeRef::UserDefined(self.fqn()?),
+                Token::Ident(_) => {
+                    let name = self.fqn()?;
+                    // User-defined types may carry generic args, e.g. `Foo<Bar, Baz<X>>`.
+                    // The recursive descent must consume the entire balanced group so
+                    // the caller (return-type or param-type slot) sees the next *real*
+                    // token afterwards. Method-resolution doesn't care about the
+                    // type-args, so the entire shape is collapsed back into UserDefined.
+                    if self.eat_punct('<') {
+                        let mut depth = 1;
+                        while depth > 0 {
+                            match self.advance() {
+                                Some(Token::Punct('<')) => depth += 1,
+                                Some(Token::Punct('>')) => depth -= 1,
+                                Some(_) => {}
+                                None => return None,
+                            }
+                        }
+                    }
+                    TypeRef::UserDefined(name)
+                }
                 _ => return None,
             };
             // Trailing `[]` for array
@@ -492,5 +511,35 @@ mod tests {
         let i = parse_aidl(src).unwrap();
         assert_eq!(i.len(), 1);
         assert_eq!(i[0].fqn, "a.IFoo");
+    }
+
+    #[test]
+    fn parses_generic_user_defined_return_type() {
+        let src = "package a; interface I { \
+                   ParceledListSlice<TaskInfo> list(); \
+                   }";
+        let r = parse_aidl(src).unwrap();
+        assert_eq!(r[0].methods.len(), 1);
+        assert_eq!(r[0].methods[0].name, "list");
+    }
+
+    #[test]
+    fn parses_generic_user_defined_param_type() {
+        let src = "package a; interface I { \
+                   void name(in AndroidFuture<String> result); \
+                   }";
+        let r = parse_aidl(src).unwrap();
+        assert_eq!(r[0].methods.len(), 1);
+        assert_eq!(r[0].methods[0].name, "name");
+        assert_eq!(r[0].methods[0].params.len(), 1);
+    }
+
+    #[test]
+    fn parses_nested_generics() {
+        let src = "package a; interface I { \
+                   void m(in Foo<Bar<Baz>> x); \
+                   }";
+        let r = parse_aidl(src).unwrap();
+        assert_eq!(r[0].methods[0].params.len(), 1);
     }
 }
