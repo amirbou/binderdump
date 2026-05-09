@@ -172,10 +172,38 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
         eat_punct(&mut pos, &toks, ';');
     }
     // imports — skip
+    // Map bare interface name -> fully-qualified import target, so
+    // `extends IFoo` can resolve to `pkg@ver::IFoo` when IFoo was imported.
+    let mut imports: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     while eat_kw(&mut pos, &toks, "import") {
+        let start = pos;
         while let Some(t) = toks.get(pos) {
             pos += 1;
             if matches!(t, Tok::Punct(';')) {
+                break;
+            }
+        }
+        // Only `import x.y@1.0::IName;` contributes a name; package-only
+        // imports (`import x.y@1.0;`) are skipped.
+        let stop = pos.saturating_sub(1); // before the ';'
+        let mut bracket_depth = 0i32;
+        for i in start..stop {
+            if matches!(toks.get(i), Some(Tok::DoubleColon)) && bracket_depth == 0 {
+                if let Some(Tok::Ident(name)) = toks.get(i + 1) {
+                    // Reconstruct the full fqn from `start..i+2`.
+                    let mut fqn = String::new();
+                    for j in start..i {
+                        match toks.get(j) {
+                            Some(Tok::Ident(s)) => fqn.push_str(s),
+                            Some(Tok::Punct('.')) => fqn.push('.'),
+                            Some(Tok::AtSymbol) => fqn.push('@'),
+                            _ => {}
+                        }
+                    }
+                    fqn.push_str("::");
+                    fqn.push_str(name);
+                    imports.insert(name.clone(), fqn);
+                }
                 break;
             }
         }
@@ -425,7 +453,20 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
         if eat_kw(&mut pos, &toks, "interface") {
             let name = take_ident(&mut pos, &toks).ok_or("expected interface name")?;
             let extends = if eat_kw(&mut pos, &toks, "extends") {
-                Some(parse_versioned_fqn(&mut pos, &toks, &package).ok_or("expected parent fqn")?)
+                let raw =
+                    parse_versioned_fqn(&mut pos, &toks, &package).ok_or("expected parent fqn")?;
+                // Bare ident (no '@') resolves either through imports
+                // (`import a@1.0::IFoo;` then `extends IFoo`) or via current-
+                // package shorthand (`extends IStream` inside `package x@1.0;`).
+                if raw.contains('@') {
+                    Some(raw)
+                } else if let Some(fqn) = imports.get(&raw) {
+                    Some(fqn.clone())
+                } else if package.is_empty() {
+                    Some(raw)
+                } else {
+                    Some(format!("{}::{}", package, raw))
+                }
             } else {
                 None
             };
@@ -762,6 +803,23 @@ mod tests {
                    };";
         let r = parse_hidl(src).unwrap();
         assert_eq!(r[0].methods.len(), 2);
+    }
+
+    #[test]
+    fn parses_extends_with_bare_ident_in_current_package() {
+        let src = "package a.b@1.0; \
+                   interface IChild extends IBase { hi(); };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r[0].extends.as_deref(), Some("a.b@1.0::IBase"));
+    }
+
+    #[test]
+    fn parses_extends_via_import() {
+        let src = "package a.b@1.0; \
+                   import x.y@2.0::IBase; \
+                   interface IChild extends IBase { hi(); };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r[0].extends.as_deref(), Some("x.y@2.0::IBase"));
     }
 
     #[test]
