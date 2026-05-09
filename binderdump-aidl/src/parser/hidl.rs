@@ -285,6 +285,10 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
                     *p += 1;
                     inner
                 }
+                "interface" => {
+                    *p += 1;
+                    TypeRef::UserDefined("interface".into())
+                }
                 _ => return None,
             },
             Tok::Ident(_) | Tok::AtSymbol => {
@@ -731,6 +735,18 @@ mod tests {
         let r = parse_hidl(src).unwrap();
         assert_eq!(r[0].methods.len(), 1);
         assert_eq!(r[0].methods[0].name, "foo");
+    }
+
+    #[test]
+    fn parses_interface_keyword_as_type() {
+        // HIDL allows `interface` as a generic interface-handle type.
+        let src = "package a@1.0; \
+                   interface I { \
+                       foo(vec<interface> ifs); \
+                       bar() generates (interface i); \
+                   };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r[0].methods.len(), 2);
     }
 }
 
