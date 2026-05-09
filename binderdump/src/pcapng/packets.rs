@@ -174,11 +174,18 @@ impl<W: Write> PacketGenerator<W> {
                     // TransactionProtocol layer so the dissector shows them
                     // alongside the resolved/reassembled fields, not buried
                     // under the Commands array.
-                    if let Some(cmd_data) = bwr_event
-                        .first_transaction_command_data()
-                        .context("failed to inspect bwr commands")?
-                    {
-                        txn_builder = txn_builder.command_data(cmd_data);
+                    match bwr_event.first_transaction_command_data() {
+                        Ok(Some(cmd_data)) => {
+                            txn_builder = txn_builder.command_data(cmd_data);
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            // Unknown BC_/BR_ opcode in the buffer. Most likely a kernel
+                            // version added a new command that our enum doesn't model.
+                            // The cmd_data plumbing is informational; the rest of the
+                            // packet is still good.
+                            warn!("first_transaction_command_data: {:#}", e);
+                        }
                     }
                     bwr_builder = bwr_builder
                         .bwr_event(bwr_event)
