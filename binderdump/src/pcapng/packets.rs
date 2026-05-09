@@ -196,20 +196,30 @@ impl<W: Write> PacketGenerator<W> {
                     builder = builder.event_type(EventType::FinishedIoctl);
                 }
                 BinderEventData::BinderTransaction(txn) => {
+                    // Kernel-native reply: 0 = transaction, 1 = reply. Both
+                    // sender and receiver bundles must agree on this so the
+                    // dissector's skip rule covers both directions.
+                    //
+                    // Sender bundle gets the raw txn (to_proc/to_thread =
+                    // kernel-resolved destination). Receiver bundle gets a
+                    // copy with to_proc/to_thread overridden to the current
+                    // (receiver-side) pid/tid, since the receiver IS the
+                    // destination and the BinderTransactionReceived event
+                    // carries only the debug_id.
                     let recv_txn = Transaction {
                         debug_id: txn.debug_id,
                         in_reply_to_debug_id: txn.in_reply_to_debug_id,
                         target_node: txn.target_node,
                         to_proc: pid,
                         to_thread: tid,
-                        reply: (!(txn.reply != 0)) as i32,
+                        reply: txn.reply,
                         code: txn.code,
                         flags: txn.flags,
                     };
-                    if let Some(txn) = self.ongoing_txn.insert(txn.debug_id, recv_txn) {
+                    if let Some(prev) = self.ongoing_txn.insert(txn.debug_id, recv_txn) {
                         return Err(anyhow::anyhow!(format!(
                             "Transaction {} is already ongoing",
-                            txn.debug_id
+                            prev.debug_id
                         )));
                     }
                     txn_builder = txn_builder.transaction(txn, &mut self.process_cache)?

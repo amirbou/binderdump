@@ -276,3 +276,40 @@ fn dissector_recognizes_special_transaction() {
         );
     }
 }
+
+#[test]
+fn dissector_resolves_method_on_br_transaction() {
+    // BC_/BR_TRANSACTIONs should resolve their method names. The fixture
+    // contains transactions for android.os.IServiceManager. Assert that
+    // at least one row with `transaction.reply == 0` (kernel-native:
+    // 0 == transaction, 1 == reply) carries a resolved method_name.
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let out = tshark(&[
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "binderdump.ioctl_data.bwr.transaction.reply",
+        "-e",
+        "binderdump.ioctl_data.bwr.transaction.method_name",
+        "-e",
+        "binderdump.ioctl_data.bwr.transaction.method_source",
+        "-Y",
+        "binderdump.ioctl_data.bwr.transaction.reply == 0",
+    ]);
+
+    let any_tx_row_with_method = out.lines().filter(|l| !l.trim().is_empty()).any(|l| {
+        let mut parts = l.splitn(3, '\t');
+        let _ = parts.next();
+        let m = parts.next().unwrap_or("");
+        !m.is_empty()
+    });
+
+    assert!(
+        any_tx_row_with_method,
+        "expected at least one BR_TRANSACTION row with a resolved method_name; full output:\n{}",
+        out
+    );
+}
