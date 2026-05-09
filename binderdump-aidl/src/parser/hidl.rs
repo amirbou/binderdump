@@ -65,7 +65,9 @@ fn lex(src: &str) -> Vec<Tok> {
                 | "typedef" | "enum" | "struct" | "union" | "string" | "vec" | "ref" | "bool"
                 | "int8_t" | "uint8_t" | "int16_t" | "uint16_t" | "int32_t" | "uint32_t"
                 | "int64_t" | "uint64_t" | "float" | "double" | "bitfield" | "fmq_sync"
-                | "fmq_unsync" => Tok::Keyword(Box::leak(word.to_string().into_boxed_str())),
+                | "fmq_unsync" | "safe_union" => {
+                    Tok::Keyword(Box::leak(word.to_string().into_boxed_str()))
+                }
                 _ => Tok::Ident(word.to_string()),
             });
             continue;
@@ -384,6 +386,43 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
                 if pos >= toks.len() {
                     return Err("unterminated interface".into());
                 }
+                // Skip nested type decls — they don't contribute to transaction codes.
+                if eat_kw(&mut pos, &toks, "enum")
+                    || eat_kw(&mut pos, &toks, "struct")
+                    || eat_kw(&mut pos, &toks, "union")
+                    || eat_kw(&mut pos, &toks, "safe_union")
+                    || eat_kw(&mut pos, &toks, "typedef")
+                {
+                    // Walk to either the matching `};` (block decl) or trailing `;`
+                    // (typedef). Track brace depth.
+                    while let Some(t) = toks.get(pos) {
+                        pos += 1;
+                        if matches!(t, Tok::Punct('{')) {
+                            let mut d = 1;
+                            while d > 0 {
+                                match toks.get(pos) {
+                                    Some(Tok::Punct('{')) => {
+                                        d += 1;
+                                        pos += 1;
+                                    }
+                                    Some(Tok::Punct('}')) => {
+                                        d -= 1;
+                                        pos += 1;
+                                    }
+                                    None => break,
+                                    _ => pos += 1,
+                                }
+                            }
+                            // Optional trailing `;` after `}`.
+                            eat_punct(&mut pos, &toks, ';');
+                            break;
+                        }
+                        if matches!(t, Tok::Punct(';')) {
+                            break;
+                        }
+                    }
+                    continue;
+                }
                 let oneway = eat_kw(&mut pos, &toks, "oneway");
                 let mname = match toks.get(pos) {
                     Some(Tok::Ident(s)) => {
@@ -626,6 +665,23 @@ mod tests {
                    };";
         let r = parse_hidl(src).unwrap();
         assert_eq!(r[0].methods.len(), 2);
+    }
+
+    #[test]
+    fn skips_nested_struct_and_enum_inside_interface() {
+        let src = "package a@1.0; \
+                   interface I { \
+                       enum BitField : uint8_t { V0 = 1, V1 = 2 }; \
+                       struct J { vec<uint32_t> j1; }; \
+                       safe_union U { uint8_t a; uint16_t b; }; \
+                       typedef uint32_t Foo; \
+                       doStuff(uint32_t x); \
+                       doMore() generates (uint32_t r); \
+                   };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r.len(), 1);
+        let names: Vec<_> = r[0].methods.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["doStuff", "doMore"]);
     }
 }
 
