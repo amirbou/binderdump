@@ -4,6 +4,7 @@ mod dissect_flat_objects;
 mod dissect_offsets;
 mod epan_plugin;
 mod header_fields_manager;
+pub mod version_check;
 
 use binderdump_epan_sys::epan;
 use std::ffi::c_int;

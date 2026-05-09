@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use binderdump_epan_sys::epan;
 use binderdump_structs;
 use binderdump_structs::binder_serde::FieldOffset;
@@ -139,6 +140,30 @@ impl Protocol {
 
             let len = epan::tvb_captured_length(tvb);
             let tree_item = epan::proto_tree_add_item(tree, self.handle, tvb, 0, -1, epan::ENC_NA);
+
+            // per-frame version check via the IDB IfDescription option set by
+            // the capture binary. fail the dissector when the pcap's
+            // binderdump version doesn't match the one we were built against,
+            // since wire-format compat across versions isn't promised.
+            let interface_id = (*(*pinfo).rec).rec_header.packet_header.interface_id;
+            let descr_ptr = epan::epan_get_interface_description((*pinfo).epan, interface_id);
+            if !descr_ptr.is_null() {
+                let descr = CStr::from_ptr(descr_ptr);
+                if let Ok(s) = descr.to_str() {
+                    if let Some(captured) =
+                        crate::version_check::captured_version_from_idb_description(s)
+                    {
+                        if crate::version_check::is_mismatch(captured) {
+                            return Err(anyhow!(
+                                "binderdump version mismatch: pcap captured with {}, dissector built against {}",
+                                captured,
+                                crate::version_check::DISSECTOR_VERSION
+                            ));
+                        }
+                    }
+                }
+            }
+
             let data = epan::tvb_get_ptr(tvb, 0, len.try_into()?);
             let data = slice::from_raw_parts(data, len.try_into()?);
 
@@ -399,6 +424,23 @@ fn add_string_item(
     let cs = CString::new(value).unwrap_or_else(|_| CString::new("<invalid>").unwrap());
     unsafe {
         epan::proto_tree_add_string(tree, hf, tvb, offset.try_into()?, length, cs.as_ptr());
+    }
+    Ok(())
+}
+
+fn add_boolean_item(
+    tree: *mut epan::proto_node,
+    hf: c_int,
+    tvb: *mut epan::tvbuff,
+    offset: usize,
+    length: i32,
+    value: bool,
+) -> anyhow::Result<()> {
+    if hf < 0 {
+        return Ok(());
+    }
+    unsafe {
+        epan::proto_tree_add_boolean(tree, hf, tvb, offset.try_into()?, length, value as u32);
     }
     Ok(())
 }

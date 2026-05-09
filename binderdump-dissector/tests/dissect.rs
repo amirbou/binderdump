@@ -313,3 +313,33 @@ fn dissector_resolves_method_on_br_transaction() {
         out
     );
 }
+
+#[test]
+fn matching_version_fixture_dissects_cleanly() {
+    // fixture is regenerated under the same crate version as the dissector,
+    // so dissection must not error out on the version-mismatch guard.
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let output = Command::new("tshark")
+        .args([
+            "-r",
+            fixture.to_str().unwrap(),
+            "-T",
+            "fields",
+            "-e",
+            "frame.number",
+        ])
+        .output()
+        .expect("failed to spawn tshark");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "tshark failed:\nstderr: {}",
+        stderr
+    );
+    assert!(
+        !stderr.contains("binderdump version mismatch"),
+        "unexpected version-mismatch error on matching fixture:\nstderr: {}",
+        stderr,
+    );
+}
