@@ -18,6 +18,7 @@ use binderdump_structs::{
     event_layer::{EventProtocol, EventType},
     link_layer,
 };
+use log::warn;
 use pcap_file::{
     pcapng::{
         blocks::{
@@ -212,10 +213,16 @@ impl<W: Write> PacketGenerator<W> {
                             txn_builder = txn_builder.transaction(txn, &mut self.process_cache)?
                         }
                         None => {
-                            return Err(anyhow::anyhow!(format!(
-                                "Transaction {} is not ongoing",
+                            // The matching `binder_transaction` was never observed by the
+                            // BPF program. Most common cause: capture started after the
+                            // sender's ioctl was already in flight, or the ring buffer
+                            // dropped the event under load. Log and continue — the packet
+                            // still carries the bwr + ioctl payload, which is useful even
+                            // without the sender-side metadata.
+                            warn!(
+                                "transaction {} not in ongoing map (sender event missed)",
                                 txn_id
-                            )))
+                            );
                         }
                     }
                 }
