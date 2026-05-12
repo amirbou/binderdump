@@ -64,7 +64,8 @@ fn lex(src: &str) -> Vec<Tok> {
                 "package" | "import" | "interface" | "extends" | "oneway" | "generates"
                 | "typedef" | "enum" | "struct" | "union" | "string" | "vec" | "ref" | "bool"
                 | "int8_t" | "uint8_t" | "int16_t" | "uint16_t" | "int32_t" | "uint32_t"
-                | "int64_t" | "uint64_t" | "float" | "double" => {
+                | "int64_t" | "uint64_t" | "float" | "double" | "bitfield" | "fmq_sync"
+                | "fmq_unsync" | "safe_union" => {
                     Tok::Keyword(Box::leak(word.to_string().into_boxed_str()))
                 }
                 _ => Tok::Ident(word.to_string()),
@@ -131,13 +132,30 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
         }
         Some(parts.join("."))
     };
-    let parse_versioned_fqn = |p: &mut usize, t: &[Tok]| -> Option<String> {
-        // Ident('.'Ident)* '@' Version ('::' Ident)?
-        let pkg = parse_dot_fqn(p, t)?;
+    let parse_versioned_fqn = |p: &mut usize, t: &[Tok], implicit_pkg: &str| -> Option<String> {
+        // Two accepted shapes:
+        //   <dot.fqn> '@' <ver> ('::' <Ident>)?       full form
+        //                '@' <ver> ('::' <Ident>)?    shorthand — pkg = implicit_pkg
+        let pkg = if matches!(t.get(*p), Some(Tok::AtSymbol)) {
+            if implicit_pkg.is_empty() {
+                return None;
+            }
+            // implicit_pkg is the current package fqn (e.g. "a.b@2.0"); strip the
+            // @version suffix so the shorthand's own @ver replaces it.
+            let dot_pkg = implicit_pkg
+                .split_once('@')
+                .map(|(p, _)| p)
+                .unwrap_or(implicit_pkg);
+            dot_pkg.to_string()
+        } else {
+            parse_dot_fqn(p, t)?
+        };
         if !eat_at(p, t) {
+            // No '@' — just a dot-fqn (used for non-versioned identifiers in
+            // type position).
             return Some(pkg);
         }
-        let ver = take_ident(p, t)?; // numeric "1.0"
+        let ver = take_ident(p, t)?;
         let mut s = format!("{}@{}", pkg, ver);
         if matches!(t.get(*p), Some(Tok::DoubleColon)) {
             *p += 1;
@@ -150,20 +168,48 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
 
     // package + version
     if eat_kw(&mut pos, &toks, "package") {
-        package = parse_versioned_fqn(&mut pos, &toks).ok_or("expected package fqn")?;
+        package = parse_versioned_fqn(&mut pos, &toks, "").ok_or("expected package fqn")?;
         eat_punct(&mut pos, &toks, ';');
     }
     // imports — skip
+    // Map bare interface name -> fully-qualified import target, so
+    // `extends IFoo` can resolve to `pkg@ver::IFoo` when IFoo was imported.
+    let mut imports: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     while eat_kw(&mut pos, &toks, "import") {
+        let start = pos;
         while let Some(t) = toks.get(pos) {
             pos += 1;
             if matches!(t, Tok::Punct(';')) {
                 break;
             }
         }
+        // Only `import x.y@1.0::IName;` contributes a name; package-only
+        // imports (`import x.y@1.0;`) are skipped.
+        let stop = pos.saturating_sub(1); // before the ';'
+        let mut bracket_depth = 0i32;
+        for i in start..stop {
+            if matches!(toks.get(i), Some(Tok::DoubleColon)) && bracket_depth == 0 {
+                if let Some(Tok::Ident(name)) = toks.get(i + 1) {
+                    // Reconstruct the full fqn from `start..i+2`.
+                    let mut fqn = String::new();
+                    for j in start..i {
+                        match toks.get(j) {
+                            Some(Tok::Ident(s)) => fqn.push_str(s),
+                            Some(Tok::Punct('.')) => fqn.push('.'),
+                            Some(Tok::AtSymbol) => fqn.push('@'),
+                            _ => {}
+                        }
+                    }
+                    fqn.push_str("::");
+                    fqn.push_str(name);
+                    imports.insert(name.clone(), fqn);
+                }
+                break;
+            }
+        }
     }
 
-    fn parse_type(p: &mut usize, t: &[Tok]) -> Option<TypeRef> {
+    fn parse_type(p: &mut usize, t: &[Tok], implicit_pkg: &str) -> Option<TypeRef> {
         let tok = t.get(*p)?.clone();
         let base = match tok {
             Tok::Keyword(kw) => match kw {
@@ -221,7 +267,7 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
                         return None;
                     }
                     *p += 1;
-                    let inner = parse_type(p, t)?;
+                    let inner = parse_type(p, t, implicit_pkg)?;
                     if !matches!(t.get(*p), Some(Tok::Punct('>'))) {
                         return None;
                     }
@@ -234,26 +280,103 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
                         return None;
                     }
                     *p += 1;
-                    let inner = parse_type(p, t)?;
+                    let inner = parse_type(p, t, implicit_pkg)?;
                     if !matches!(t.get(*p), Some(Tok::Punct('>'))) {
                         return None;
                     }
                     *p += 1;
                     inner
                 }
+                "bitfield" => {
+                    *p += 1;
+                    if !matches!(t.get(*p), Some(Tok::Punct('<'))) {
+                        return None;
+                    }
+                    *p += 1;
+                    let inner = parse_type(p, t, implicit_pkg)?;
+                    if !matches!(t.get(*p), Some(Tok::Punct('>'))) {
+                        return None;
+                    }
+                    *p += 1;
+                    inner
+                }
+                "fmq_sync" | "fmq_unsync" => {
+                    *p += 1;
+                    if !matches!(t.get(*p), Some(Tok::Punct('<'))) {
+                        return None;
+                    }
+                    *p += 1;
+                    let inner = parse_type(p, t, implicit_pkg)?;
+                    if !matches!(t.get(*p), Some(Tok::Punct('>'))) {
+                        return None;
+                    }
+                    *p += 1;
+                    inner
+                }
+                "interface" => {
+                    *p += 1;
+                    TypeRef::UserDefined("interface".into())
+                }
                 _ => return None,
             },
-            Tok::Ident(_) => {
+            Tok::Ident(_) | Tok::AtSymbol => {
                 let mut p2 = *p;
-                let f = parse_versioned_fqn_inner(&mut p2, t)?;
+                let f = parse_versioned_fqn_inner(&mut p2, t, implicit_pkg)?;
                 *p = p2;
                 TypeRef::UserDefined(f)
             }
             _ => return None,
         };
-        Some(base)
+        // Trailing `[N]` for sized arrays. HIDL only allows fixed-size; the
+        // size value is irrelevant for method-resolution.
+        let mut ty = base;
+        while matches!(t.get(*p), Some(Tok::Punct('['))) {
+            *p += 1;
+            // Walk past the size token (Ident with the numeric literal) and
+            // the closing `]`. Multi-dim arrays repeat naturally.
+            while let Some(tok) = t.get(*p) {
+                *p += 1;
+                if matches!(tok, Tok::Punct(']')) {
+                    break;
+                }
+            }
+            ty = TypeRef::Array(Box::new(ty));
+        }
+        Some(ty)
     }
-    fn parse_versioned_fqn_inner(p: &mut usize, t: &[Tok]) -> Option<String> {
+    fn parse_versioned_fqn_inner(p: &mut usize, t: &[Tok], implicit_pkg: &str) -> Option<String> {
+        // Shorthand: `@<ver>::<Ident>` resolves into the current package.
+        if matches!(t.get(*p), Some(Tok::AtSymbol)) {
+            if implicit_pkg.is_empty() {
+                return None;
+            }
+            let dot_pkg = implicit_pkg
+                .split_once('@')
+                .map(|(p, _)| p)
+                .unwrap_or(implicit_pkg);
+            *p += 1; // consume '@'
+            let ver = match t.get(*p) {
+                Some(Tok::Ident(s)) => {
+                    let v = s.clone();
+                    *p += 1;
+                    v
+                }
+                _ => return None,
+            };
+            let mut out = format!("{}@{}", dot_pkg, ver);
+            if matches!(t.get(*p), Some(Tok::DoubleColon)) {
+                *p += 1;
+                match t.get(*p) {
+                    Some(Tok::Ident(s)) => {
+                        out.push_str("::");
+                        out.push_str(s);
+                        *p += 1;
+                    }
+                    _ => return None,
+                }
+            }
+            return Some(out);
+        }
         let mut parts = Vec::new();
         if let Some(Tok::Ident(s)) = t.get(*p) {
             parts.push(s.clone());
@@ -293,14 +416,14 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
         }
         Some(out)
     }
-    fn parse_param_list(p: &mut usize, t: &[Tok]) -> Option<Vec<Parameter>> {
+    fn parse_param_list(p: &mut usize, t: &[Tok], implicit_pkg: &str) -> Option<Vec<Parameter>> {
         if !matches!(t.get(*p), Some(Tok::Punct('('))) {
             return Some(vec![]);
         }
         *p += 1;
         let mut out = Vec::new();
         while !matches!(t.get(*p), Some(Tok::Punct(')'))) {
-            let ty = parse_type(p, t)?;
+            let ty = parse_type(p, t, implicit_pkg)?;
             let name = if let Some(Tok::Ident(s)) = t.get(*p) {
                 let v = s.clone();
                 *p += 1;
@@ -330,7 +453,20 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
         if eat_kw(&mut pos, &toks, "interface") {
             let name = take_ident(&mut pos, &toks).ok_or("expected interface name")?;
             let extends = if eat_kw(&mut pos, &toks, "extends") {
-                Some(parse_versioned_fqn(&mut pos, &toks).ok_or("expected parent fqn")?)
+                let raw =
+                    parse_versioned_fqn(&mut pos, &toks, &package).ok_or("expected parent fqn")?;
+                // Bare ident (no '@') resolves either through imports
+                // (`import a@1.0::IFoo;` then `extends IFoo`) or via current-
+                // package shorthand (`extends IStream` inside `package x@1.0;`).
+                if raw.contains('@') {
+                    Some(raw)
+                } else if let Some(fqn) = imports.get(&raw) {
+                    Some(fqn.clone())
+                } else if package.is_empty() {
+                    Some(raw)
+                } else {
+                    Some(format!("{}::{}", package, raw))
+                }
             } else {
                 None
             };
@@ -341,6 +477,43 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
             while !matches!(toks.get(pos), Some(Tok::Punct('}'))) {
                 if pos >= toks.len() {
                     return Err("unterminated interface".into());
+                }
+                // Skip nested type decls — they don't contribute to transaction codes.
+                if eat_kw(&mut pos, &toks, "enum")
+                    || eat_kw(&mut pos, &toks, "struct")
+                    || eat_kw(&mut pos, &toks, "union")
+                    || eat_kw(&mut pos, &toks, "safe_union")
+                    || eat_kw(&mut pos, &toks, "typedef")
+                {
+                    // Walk to either the matching `};` (block decl) or trailing `;`
+                    // (typedef). Track brace depth.
+                    while let Some(t) = toks.get(pos) {
+                        pos += 1;
+                        if matches!(t, Tok::Punct('{')) {
+                            let mut d = 1;
+                            while d > 0 {
+                                match toks.get(pos) {
+                                    Some(Tok::Punct('{')) => {
+                                        d += 1;
+                                        pos += 1;
+                                    }
+                                    Some(Tok::Punct('}')) => {
+                                        d -= 1;
+                                        pos += 1;
+                                    }
+                                    None => break,
+                                    _ => pos += 1,
+                                }
+                            }
+                            // Optional trailing `;` after `}`.
+                            eat_punct(&mut pos, &toks, ';');
+                            break;
+                        }
+                        if matches!(t, Tok::Punct(';')) {
+                            break;
+                        }
+                    }
+                    continue;
                 }
                 let oneway = eat_kw(&mut pos, &toks, "oneway");
                 let mname = match toks.get(pos) {
@@ -354,9 +527,9 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
                         continue;
                     }
                 };
-                let params = parse_param_list(&mut pos, &toks).ok_or("bad params")?;
+                let params = parse_param_list(&mut pos, &toks, &package).ok_or("bad params")?;
                 let return_type = if eat_kw(&mut pos, &toks, "generates") {
-                    let g = parse_param_list(&mut pos, &toks).ok_or("bad generates")?;
+                    let g = parse_param_list(&mut pos, &toks, &package).ok_or("bad generates")?;
                     g.into_iter().next().map(|p| p.ty)
                 } else {
                     None
@@ -372,6 +545,7 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
                     params,
                     return_type,
                     oneway,
+                    code: None,
                 });
             }
             if matches!(toks.get(pos), Some(Tok::Punct('}'))) {
@@ -483,18 +657,21 @@ mod tests {
                     params: vec![],
                     return_type: None,
                     oneway: false,
+                    code: None,
                 },
                 Method {
                     name: "p2".into(),
                     params: vec![],
                     return_type: None,
                     oneway: false,
+                    code: None,
                 },
                 Method {
                     name: "p3".into(),
                     params: vec![],
                     return_type: None,
                     oneway: false,
+                    code: None,
                 },
             ],
             extends: None,
@@ -508,6 +685,7 @@ mod tests {
                 params: vec![],
                 return_type: None,
                 oneway: false,
+                code: None,
             }],
             extends: Some("p@1.0::IBase".into()),
         };
@@ -531,11 +709,129 @@ mod tests {
                 params: vec![],
                 return_type: None,
                 oneway: false,
+                code: None,
             }],
             extends: Some("missing@1.0::IGone".into()),
         };
         let err = resolve_inheritance(vec![orphan]).unwrap_err();
         assert!(err.contains("missing@1.0::IGone"), "got: {}", err);
+    }
+
+    #[test]
+    fn parses_extends_with_current_package_shorthand() {
+        let src = "package a.b@2.0; \
+                   interface IFoo extends @1.0::IBar { hi(); };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].fqn, "a.b@2.0::IFoo");
+        // Parent must resolve into the current package.
+        assert_eq!(r[0].extends.as_deref(), Some("a.b@1.0::IBar"));
+    }
+
+    #[test]
+    fn parses_extends_with_full_versioned_fqn() {
+        // Regression — full form must keep working.
+        let src = "package a@1.0; interface IFoo extends b@2.0::IBar { hi(); };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r[0].extends.as_deref(), Some("b@2.0::IBar"));
+    }
+
+    #[test]
+    fn parses_bitfield_in_param() {
+        let src = "package a@1.0; \
+                   interface I { setMask(bitfield<X> mask); };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r[0].methods.len(), 1);
+        assert_eq!(r[0].methods[0].name, "setMask");
+        assert_eq!(r[0].methods[0].params.len(), 1);
+    }
+
+    #[test]
+    fn parses_bitfield_in_generates_clause() {
+        let src = "package a@1.0; \
+                   interface I { getMask() generates (bitfield<X> mask); };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r[0].methods[0].name, "getMask");
+    }
+
+    #[test]
+    fn parses_fmq_types() {
+        let src = "package a@1.0; \
+                   interface I { \
+                       q1(fmq_sync<uint8_t> a); \
+                       q2(fmq_unsync<uint8_t> a); \
+                   };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r[0].methods.len(), 2);
+    }
+
+    #[test]
+    fn skips_nested_struct_and_enum_inside_interface() {
+        let src = "package a@1.0; \
+                   interface I { \
+                       enum BitField : uint8_t { V0 = 1, V1 = 2 }; \
+                       struct J { vec<uint32_t> j1; }; \
+                       safe_union U { uint8_t a; uint16_t b; }; \
+                       typedef uint32_t Foo; \
+                       doStuff(uint32_t x); \
+                       doMore() generates (uint32_t r); \
+                   };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r.len(), 1);
+        let names: Vec<_> = r[0].methods.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["doStuff", "doMore"]);
+    }
+
+    #[test]
+    fn parses_type_with_at_version_shorthand() {
+        let src = "package a@1.0; \
+                   interface I { \
+                       foo() generates (@2.0::Bar b); \
+                   };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r[0].methods.len(), 1);
+        assert_eq!(r[0].methods[0].name, "foo");
+    }
+
+    #[test]
+    fn parses_interface_keyword_as_type() {
+        // HIDL allows `interface` as a generic interface-handle type.
+        let src = "package a@1.0; \
+                   interface I { \
+                       foo(vec<interface> ifs); \
+                       bar() generates (interface i); \
+                   };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r[0].methods.len(), 2);
+    }
+
+    #[test]
+    fn parses_extends_with_bare_ident_in_current_package() {
+        let src = "package a.b@1.0; \
+                   interface IChild extends IBase { hi(); };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r[0].extends.as_deref(), Some("a.b@1.0::IBase"));
+    }
+
+    #[test]
+    fn parses_extends_via_import() {
+        let src = "package a.b@1.0; \
+                   import x.y@2.0::IBase; \
+                   interface IChild extends IBase { hi(); };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r[0].extends.as_deref(), Some("x.y@2.0::IBase"));
+    }
+
+    #[test]
+    fn parses_sized_array_type() {
+        // HIDL allows fixed-size arrays, including nested inside vec<>.
+        let src = "package a@1.0; \
+                   interface I { \
+                       foo() generates (vec<uint8_t[16]> schemes); \
+                       bar(uint32_t[4] m); \
+                   };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r[0].methods.len(), 2);
     }
 }
 

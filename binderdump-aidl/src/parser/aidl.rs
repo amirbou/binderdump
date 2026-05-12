@@ -128,7 +128,7 @@ pub fn parse_aidl(source: &str) -> Result<Vec<crate::model::Interface>, Vec<Simp
                     "List" => {
                         self.pos += 1;
                         if !self.eat_punct('<') {
-                            return None;
+                            return Some(TypeRef::UserDefined("List".into()));
                         }
                         let inner = self.parse_type()?;
                         if !self.eat_punct('>') {
@@ -139,7 +139,9 @@ pub fn parse_aidl(source: &str) -> Result<Vec<crate::model::Interface>, Vec<Simp
                     "Map" => {
                         self.pos += 1;
                         if !self.eat_punct('<') {
-                            return None;
+                            // Bare `Map` (Java raw type). Treat as a user-defined name so
+                            // method-resolution still gets a sensible type label.
+                            return Some(TypeRef::UserDefined("Map".into()));
                         }
                         let k = self.parse_type()?;
                         if !self.eat_punct(',') {
@@ -153,12 +155,35 @@ pub fn parse_aidl(source: &str) -> Result<Vec<crate::model::Interface>, Vec<Simp
                     }
                     _ => return None,
                 },
-                Token::Ident(_) => TypeRef::UserDefined(self.fqn()?),
+                Token::Ident(_) => {
+                    let name = self.fqn()?;
+                    // User-defined types may carry generic args, e.g. `Foo<Bar, Baz<X>>`.
+                    // The recursive descent must consume the entire balanced group so
+                    // the caller (return-type or param-type slot) sees the next *real*
+                    // token afterwards. Method-resolution doesn't care about the
+                    // type-args, so the entire shape is collapsed back into UserDefined.
+                    if self.eat_punct('<') {
+                        let mut depth = 1;
+                        while depth > 0 {
+                            match self.advance() {
+                                Some(Token::Punct('<')) => depth += 1,
+                                Some(Token::Punct('>')) => depth -= 1,
+                                Some(_) => {}
+                                None => return None,
+                            }
+                        }
+                    }
+                    TypeRef::UserDefined(name)
+                }
                 _ => return None,
             };
-            // Trailing `[]` for array
+            // Trailing `[]` or `[N]` (fixed-size array) for array.
             let mut t = base;
             while self.eat_punct('[') {
+                // consume optional numeric size (e.g. `byte[16]`)
+                if matches!(self.peek(), Some(Token::NumLit(_))) {
+                    self.pos += 1;
+                }
                 if !self.eat_punct(']') {
                     return None;
                 }
@@ -218,9 +243,12 @@ pub fn parse_aidl(source: &str) -> Result<Vec<crate::model::Interface>, Vec<Simp
                         continue;
                     }
                     Some(Token::Keyword(k))
-                        if *k == "parcelable" || *k == "enum" || *k == "interface" =>
+                        if *k == "parcelable"
+                            || *k == "union"
+                            || *k == "enum"
+                            || *k == "interface" =>
                     {
-                        // Nested parcelable / enum / interface declarations
+                        // Nested parcelable / union / enum / interface declarations
                         // inside an interface body. AIDL allows them but they
                         // don't contribute to transaction codes — skip the
                         // body (balanced `{...}` or trailing `;`).
@@ -244,6 +272,29 @@ pub fn parse_aidl(source: &str) -> Result<Vec<crate::model::Interface>, Vec<Simp
                     }
                     _ => {
                         let oneway = cur.eat_kw("oneway");
+                        // `oneway interface IFoo { ... }` — nested interface after oneway.
+                        // Doesn't contribute transaction codes; skip its body.
+                        if oneway
+                            && matches!(cur.peek(), Some(Token::Keyword(k)) if *k == "interface")
+                        {
+                            cur.pos += 1; // eat 'interface'
+                            let _ = cur.ident(); // eat name
+                            if cur.eat_punct(';') {
+                                continue;
+                            }
+                            if cur.eat_punct('{') {
+                                let mut depth = 1;
+                                while depth > 0 {
+                                    match cur.advance() {
+                                        Some(Token::Punct('{')) => depth += 1,
+                                        Some(Token::Punct('}')) => depth -= 1,
+                                        None => break,
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            continue;
+                        }
                         let return_type = cur.parse_type();
                         let method_name = cur
                             .ident()
@@ -279,12 +330,31 @@ pub fn parse_aidl(source: &str) -> Result<Vec<crate::model::Interface>, Vec<Simp
                         if !cur.eat_punct(')') {
                             return Err(vec![Simple::custom(0..0, "expected ')'")]);
                         }
-                        let _ = cur.eat_punct(';');
+                        // stable AIDL pins a transaction code: `void foo() = 17;`.
+                        // The AIDL compiler emits N as the actual code, so capture it.
+                        let mut code: Option<u32> = None;
+                        if cur.eat_punct('=') {
+                            if let Some(Token::NumLit(s)) = cur.peek() {
+                                if let Ok(n) = s.parse::<u32>() {
+                                    code = Some(n);
+                                }
+                                cur.pos += 1;
+                            }
+                            // tolerate stray tokens up to `;` (shouldn't happen but be safe)
+                            while let Some(t) = cur.advance() {
+                                if matches!(t, Token::Punct(';')) {
+                                    break;
+                                }
+                            }
+                        } else {
+                            let _ = cur.eat_punct(';');
+                        }
                         methods.push(Method {
                             name: method_name,
                             params,
                             return_type,
                             oneway,
+                            code,
                         });
                     }
                 }
@@ -301,8 +371,8 @@ pub fn parse_aidl(source: &str) -> Result<Vec<crate::model::Interface>, Vec<Simp
                 methods,
                 extends: None,
             });
-        } else if cur.eat_kw("parcelable") || cur.eat_kw("enum") {
-            // Skip parcelable/enum body — we don't need their fields for code resolution.
+        } else if cur.eat_kw("parcelable") || cur.eat_kw("union") || cur.eat_kw("enum") {
+            // Skip parcelable/union/enum body — we don't need their fields for code resolution.
             // Skip any `;` or balanced `{...}`.
             if cur.eat_punct(';') {
                 continue;
@@ -335,9 +405,9 @@ fn lexer() -> impl Parser<char, Vec<Token>, Error = Simple<char>> {
     let pad = ws.or(comment).repeated();
 
     let ident_or_kw = text::ident().map(|s: String| match s.as_str() {
-        "interface" | "parcelable" | "enum" | "package" | "import" | "oneway" | "in" | "out"
-        | "inout" | "const" | "extends" | "void" | "boolean" | "byte" | "char" | "short"
-        | "int" | "long" | "float" | "double" | "String" | "IBinder" | "List" | "Map" => {
+        "interface" | "parcelable" | "union" | "enum" | "package" | "import" | "oneway" | "in"
+        | "out" | "inout" | "const" | "extends" | "void" | "boolean" | "byte" | "char"
+        | "short" | "int" | "long" | "float" | "double" | "String" | "IBinder" | "List" | "Map" => {
             Token::Keyword(Box::leak(s.into_boxed_str()))
         }
         _ => Token::Ident(s),
@@ -492,5 +562,133 @@ mod tests {
         let i = parse_aidl(src).unwrap();
         assert_eq!(i.len(), 1);
         assert_eq!(i[0].fqn, "a.IFoo");
+    }
+
+    #[test]
+    fn parses_generic_user_defined_return_type() {
+        let src = "package a; interface I { \
+                   ParceledListSlice<TaskInfo> list(); \
+                   }";
+        let r = parse_aidl(src).unwrap();
+        assert_eq!(r[0].methods.len(), 1);
+        assert_eq!(r[0].methods[0].name, "list");
+    }
+
+    #[test]
+    fn parses_generic_user_defined_param_type() {
+        let src = "package a; interface I { \
+                   void name(in AndroidFuture<String> result); \
+                   }";
+        let r = parse_aidl(src).unwrap();
+        assert_eq!(r[0].methods.len(), 1);
+        assert_eq!(r[0].methods[0].name, "name");
+        assert_eq!(r[0].methods[0].params.len(), 1);
+    }
+
+    #[test]
+    fn parses_nested_generics() {
+        let src = "package a; interface I { \
+                   void m(in Foo<Bar<Baz>> x); \
+                   }";
+        let r = parse_aidl(src).unwrap();
+        assert_eq!(r[0].methods[0].params.len(), 1);
+    }
+
+    #[test]
+    fn parses_bare_map_param() {
+        let src = "package a; interface I { void onChange(in Map data); }";
+        let r = parse_aidl(src).unwrap();
+        assert_eq!(r[0].methods[0].name, "onChange");
+        assert_eq!(r[0].methods[0].params.len(), 1);
+    }
+
+    #[test]
+    fn parses_typed_map_param_still_works() {
+        // Regression — typed form must keep working.
+        let src = "package a; interface I { void m(in Map<String, IBinder> x); }";
+        let r = parse_aidl(src).unwrap();
+        assert_eq!(r[0].methods[0].params.len(), 1);
+    }
+
+    #[test]
+    fn parses_method_with_explicit_transaction_code() {
+        let src = "package a; interface I { \
+                   void first() = 1; \
+                   void second() = 17; \
+                   }";
+        let r = parse_aidl(src).unwrap();
+        let names: Vec<_> = r[0].methods.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["first", "second"]);
+        assert_eq!(r[0].methods[0].code, Some(1));
+        assert_eq!(r[0].methods[1].code, Some(17));
+        // lookup() must honor the explicit code rather than the declaration index.
+        assert_eq!(r[0].lookup(17).map(|m| m.name.as_str()), Some("second"));
+        assert_eq!(r[0].lookup(1).map(|m| m.name.as_str()), Some("first"));
+        // index 2 (base_code + idx for "second") must NOT resolve via fallback.
+        assert!(r[0].lookup(2).is_none());
+    }
+
+    #[test]
+    fn skips_nested_union_inside_interface() {
+        // union nested in an interface body (e.g. hardware/interfaces bufferpool2)
+        let src = r#"
+            package a;
+            interface IFoo {
+                Foo[] fetch(in Foo.Info[] infos);
+                void sync();
+                parcelable Info { long id; }
+                union Result { Foo buf; int err; }
+            }
+        "#;
+        let r = parse_aidl(src).unwrap();
+        assert_eq!(r[0].methods.len(), 2);
+        assert_eq!(r[0].methods[0].name, "fetch");
+        assert_eq!(r[0].methods[1].name, "sync");
+    }
+
+    #[test]
+    fn parses_fixed_size_array_return_type() {
+        // `byte[16]` return type (used in e.g. IContextHubCallback.getUuid)
+        let src = "package a; interface I { byte[16] getUuid(); String getName(); }";
+        let r = parse_aidl(src).unwrap();
+        assert_eq!(r[0].methods.len(), 2);
+        assert_eq!(r[0].methods[0].name, "getUuid");
+        assert_eq!(r[0].methods[1].name, "getName");
+    }
+
+    #[test]
+    fn skips_oneway_nested_interface() {
+        // `oneway interface ICallback { ... }` nested inside an outer interface
+        let src = r#"
+            package a;
+            interface ISoundDose {
+                void setRs2(float v);
+                void registerCallback(in IHalSoundDoseCallback cb);
+                @VintfStability
+                oneway interface IHalSoundDoseCallback {
+                    void onWarning(float v);
+                    parcelable MelRecord { float[] vals; long ts; }
+                    void onMel(in MelRecord r);
+                }
+            }
+        "#;
+        let r = parse_aidl(src).unwrap();
+        assert_eq!(r[0].methods.len(), 2);
+        assert_eq!(r[0].methods[0].name, "setRs2");
+        assert_eq!(r[0].methods[1].name, "registerCallback");
+    }
+
+    #[test]
+    fn skips_top_level_union() {
+        // top-level union declaration — no interface, returns empty vec
+        let src = r#"
+            package a;
+            union AudioChannelLayout {
+                int none = 0;
+                int layoutMask;
+            }
+        "#;
+        let r = parse_aidl(src).unwrap();
+        assert!(r.is_empty());
     }
 }

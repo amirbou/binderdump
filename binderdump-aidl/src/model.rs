@@ -57,6 +57,9 @@ pub struct Method {
     pub params: Vec<Parameter>,
     pub return_type: Option<TypeRef>,
     pub oneway: bool,
+    // explicit transaction code from `void foo() = N;` (stable AIDL).
+    // None means "derive from base_code + idx".
+    pub code: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -70,8 +73,18 @@ pub struct Interface {
 
 impl Interface {
     pub fn lookup(&self, code: u32) -> Option<&Method> {
+        // explicit `= N` pins win first
+        if let Some(m) = self.methods.iter().find(|m| m.code == Some(code)) {
+            return Some(m);
+        }
+        // fall back to index-based, but don't double-match methods that have
+        // their own explicit code (those should only be reachable above).
         let idx = code.checked_sub(self.base_code)? as usize;
-        self.methods.get(idx)
+        let m = self.methods.get(idx)?;
+        if m.code.is_some() {
+            return None;
+        }
+        Some(m)
     }
 }
 
@@ -91,6 +104,7 @@ mod tests {
             params: vec![],
             return_type: None,
             oneway: false,
+            code: None,
         }
     }
 

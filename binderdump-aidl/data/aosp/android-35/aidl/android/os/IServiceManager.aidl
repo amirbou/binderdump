@@ -18,12 +18,14 @@ package android.os;
 
 import android.os.IClientCallback;
 import android.os.IServiceCallback;
-import android.os.Service;
 import android.os.ServiceDebugInfo;
 import android.os.ConnectionInfo;
 
 /**
  * Basic interface for finding and publishing system services.
+ *
+ * You likely want to use android.os.ServiceManager in Java or
+ * android::IServiceManager in C++ in order to use this interface.
  *
  * @hide
  */
@@ -32,41 +34,46 @@ interface IServiceManager {
      * Must update values in IServiceManager.h
      */
     /* Allows services to dump sections according to priorities. */
-    const int DUMP_FLAG_PRIORITY_CRITICAL = 1;
-    const int DUMP_FLAG_PRIORITY_HIGH = 2;
-    const int DUMP_FLAG_PRIORITY_NORMAL = 4;
-    const int DUMP_FLAG_PRIORITY_DEFAULT = 8;
-    const int DUMP_FLAG_PRIORITY_ALL = 15;
-    const int DUMP_FLAG_PROTO = 16;
-
-    /* Allows services to be registered as part of a static set of services that are always running.
-     * Services in this set are not allowed to be dynamically restarted on demand.
+    const int DUMP_FLAG_PRIORITY_CRITICAL = 1 << 0;
+    const int DUMP_FLAG_PRIORITY_HIGH = 1 << 1;
+    const int DUMP_FLAG_PRIORITY_NORMAL = 1 << 2;
+    /**
+     * Services are by default registered with a DEFAULT dump priority. DEFAULT priority has the
+     * same priority as NORMAL priority but the services are not called with dump priority
+     * arguments.
      */
-    const int FLAG_IS_LAZY_SERVICE = 1;
+    const int DUMP_FLAG_PRIORITY_DEFAULT = 1 << 3;
+
+    const int DUMP_FLAG_PRIORITY_ALL =
+             DUMP_FLAG_PRIORITY_CRITICAL | DUMP_FLAG_PRIORITY_HIGH
+             | DUMP_FLAG_PRIORITY_NORMAL | DUMP_FLAG_PRIORITY_DEFAULT;
+
+    /* Allows services to dump sections in protobuf format. */
+    const int DUMP_FLAG_PROTO = 1 << 4;
 
     /**
      * Retrieve an existing service called @a name from the
      * service manager.
      *
-     * Returns null if the service does not exist.
+     * This is the same as checkService (returns immediately) but
+     * exists for legacy purposes.
      *
-     * @deprecated use getService2 instead. There is no benefit to using this.
+     * Returns null if the service does not exist.
      */
+    @UnsupportedAppUsage
     @nullable IBinder getService(@utf8InCpp String name);
 
     /**
-     * Retrieves an existing service called @a name from the service manager.
+     * Retrieve an existing service called @a name from the service
+     * manager. Non-blocking. Returns null if the service does not
+     * exist.
      */
-    Service getService2(@utf8InCpp String name);
+    @UnsupportedAppUsage
+    @nullable IBinder checkService(@utf8InCpp String name);
 
     /**
-     * Retrieves an existing service called @a name from the service manager.
-     * Non-blocking.
-     */
-    Service checkService(@utf8InCpp String name);
-
-    /**
-     * Place a new @a service called @a name into the service manager.
+     * Place a new @a service called @a name into the service
+     * manager.
      */
     void addService(@utf8InCpp String name, IBinder service,
         boolean allowIsolated, int dumpPriority);
@@ -88,12 +95,16 @@ interface IServiceManager {
 
     /**
      * Returns whether a given interface is declared on the device, even if it
-     * is not started yet.
+     * is not started yet. For instance, this could be a service declared in the VINTF
+     * manifest.
      */
     boolean isDeclared(@utf8InCpp String name);
 
     /**
      * Returns all declared instances for a particular interface.
+     *
+     * For instance, if 'android.foo.IFoo/foo' is declared, and 'android.foo.IFoo' is
+     * passed here, then ["foo"] would be returned.
      */
     @utf8InCpp String[] getDeclaredInstances(@utf8InCpp String iface);
 
@@ -115,6 +126,7 @@ interface IServiceManager {
 
     /**
      * Request a callback when the number of clients of the service changes.
+     * Used by LazyServiceRegistrar to dynamically stop services that have no clients.
      */
     void registerClientCallback(@utf8InCpp String name, IBinder service, IClientCallback callback);
 
