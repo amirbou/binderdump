@@ -33,6 +33,9 @@ pub enum binder_return {
     BR_FAILED_REPLY = binderdump_sys::binder_driver_return_protocol_BR_FAILED_REPLY,
     BR_FROZEN_REPLY = binderdump_sys::binder_driver_return_protocol_BR_FROZEN_REPLY,
     BR_ONEWAY_SPAM_SUSPECT = binderdump_sys::binder_driver_return_protocol_BR_ONEWAY_SPAM_SUSPECT,
+    BR_TRANSACTION_PENDING_FROZEN = binderdump_sys::BR_TRANSACTION_PENDING_FROZEN,
+    BR_FROZEN_BINDER = binderdump_sys::BR_FROZEN_BINDER,
+    BR_CLEAR_FREEZE_NOTIFICATION_DONE = binderdump_sys::BR_CLEAR_FREEZE_NOTIFICATION_DONE,
 }
 
 #[allow(unused)]
@@ -109,6 +112,9 @@ pub enum BinderReturn {
     FailedReply,
     FrozenReply,
     OnewaySpamSuspect,
+    TransactionPendingFrozen,
+    FrozenBinder,
+    ClearFreezeNotificationDone,
     // currently not supported
     // AcquireResult(),
     // AttemptCookie(),
@@ -136,7 +142,10 @@ impl Bwr for BinderReturn {
             | BinderReturn::TransactionComplete
             | BinderReturn::FailedReply
             | BinderReturn::FrozenReply
-            | BinderReturn::OnewaySpamSuspect => 0,
+            | BinderReturn::OnewaySpamSuspect
+            | BinderReturn::TransactionPendingFrozen
+            | BinderReturn::FrozenBinder
+            | BinderReturn::ClearFreezeNotificationDone => 0,
         };
         4 + inner_size
     }
@@ -197,6 +206,9 @@ impl Bwr for BinderReturn {
             binder_return::BR_FAILED_REPLY => Self::FailedReply,
             binder_return::BR_FROZEN_REPLY => Self::FrozenReply,
             binder_return::BR_ONEWAY_SPAM_SUSPECT => Self::OnewaySpamSuspect,
+            binder_return::BR_TRANSACTION_PENDING_FROZEN => Self::TransactionPendingFrozen,
+            binder_return::BR_FROZEN_BINDER => Self::FrozenBinder,
+            binder_return::BR_CLEAR_FREEZE_NOTIFICATION_DONE => Self::ClearFreezeNotificationDone,
         };
         Ok(result)
     }
@@ -232,6 +244,11 @@ impl Bwr for BinderReturn {
             BinderReturn::FailedReply => binder_return::BR_FAILED_REPLY,
             BinderReturn::FrozenReply => binder_return::BR_FROZEN_REPLY,
             BinderReturn::OnewaySpamSuspect => binder_return::BR_ONEWAY_SPAM_SUSPECT,
+            BinderReturn::TransactionPendingFrozen => binder_return::BR_TRANSACTION_PENDING_FROZEN,
+            BinderReturn::FrozenBinder => binder_return::BR_FROZEN_BINDER,
+            BinderReturn::ClearFreezeNotificationDone => {
+                binder_return::BR_CLEAR_FREEZE_NOTIFICATION_DONE
+            }
         }
     }
 }
@@ -241,5 +258,31 @@ impl TryFrom<&[u8]> for BinderReturn {
 
     fn try_from(value: &[u8]) -> Result<Self, <BinderReturn as TryFrom<&[u8]>>::Error> {
         Self::from_bytes(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_br_transaction_pending_frozen() {
+        let buf = 29204u32.to_ne_bytes();
+        let r = BinderReturn::from_bytes(&buf).expect("must parse new opcode");
+        assert!(matches!(r, BinderReturn::TransactionPendingFrozen));
+    }
+
+    #[test]
+    fn parses_br_frozen_binder() {
+        let buf = 29205u32.to_ne_bytes();
+        let r = BinderReturn::from_bytes(&buf).expect("must parse new opcode");
+        assert!(matches!(r, BinderReturn::FrozenBinder));
+    }
+
+    #[test]
+    fn parses_br_clear_freeze_notification_done() {
+        let buf = 29206u32.to_ne_bytes();
+        let r = BinderReturn::from_bytes(&buf).expect("must parse new opcode");
+        assert!(matches!(r, BinderReturn::ClearFreezeNotificationDone));
     }
 }

@@ -34,6 +34,9 @@ pub enum binder_command {
     BC_DEAD_BINDER_DONE = binderdump_sys::binder_driver_command_protocol_BC_DEAD_BINDER_DONE,
     BC_TRANSACTION_SG = binderdump_sys::binder_driver_command_protocol_BC_TRANSACTION_SG,
     BC_REPLY_SG = binderdump_sys::binder_driver_command_protocol_BC_REPLY_SG,
+    BC_REQUEST_FREEZE_NOTIFICATION = binderdump_sys::BC_REQUEST_FREEZE_NOTIFICATION,
+    BC_CLEAR_FREEZE_NOTIFICATION = binderdump_sys::BC_CLEAR_FREEZE_NOTIFICATION,
+    BC_FREEZE_NOTIFICATION_DONE = binderdump_sys::BC_FREEZE_NOTIFICATION_DONE,
 }
 
 #[derive(Debug, Clone, Copy, Default, EpanProtocol, ConstOffsets)]
@@ -93,6 +96,9 @@ pub enum BinderCommand {
     RequestDeathNotification(DeathCommand),
     ClearDeathNotification(DeathCommand),
     DeadBinderDone(DeathDoneCommand),
+    RequestFreezeNotification(DeathCommand),
+    ClearFreezeNotification(DeathCommand),
+    FreezeNotificationDone(DeathDoneCommand),
 }
 
 unsafe impl Plain for RefCommand {}
@@ -124,8 +130,12 @@ impl Bwr for BinderCommand {
             | BinderCommand::EnterLooper
             | BinderCommand::ExitLooper => 0,
             BinderCommand::RequestDeathNotification(_)
-            | BinderCommand::ClearDeathNotification(_) => size_of::<DeathCommand>(),
-            BinderCommand::DeadBinderDone(_) => size_of::<DeathDoneCommand>(),
+            | BinderCommand::ClearDeathNotification(_)
+            | BinderCommand::RequestFreezeNotification(_)
+            | BinderCommand::ClearFreezeNotification(_) => size_of::<DeathCommand>(),
+            BinderCommand::DeadBinderDone(_) | BinderCommand::FreezeNotificationDone(_) => {
+                size_of::<DeathDoneCommand>()
+            }
         };
         4 + inner_size
     }
@@ -175,7 +185,9 @@ impl Bwr for BinderCommand {
             binder_command::BC_ENTER_LOOPER => Self::EnterLooper,
             binder_command::BC_EXIT_LOOPER => Self::ExitLooper,
             binder_command::BC_REQUEST_DEATH_NOTIFICATION
-            | binder_command::BC_CLEAR_DEATH_NOTIFICATION => {
+            | binder_command::BC_CLEAR_DEATH_NOTIFICATION
+            | binder_command::BC_REQUEST_FREEZE_NOTIFICATION
+            | binder_command::BC_CLEAR_FREEZE_NOTIFICATION => {
                 let mut command = DeathCommand::default();
                 command.copy_from_bytes(data)?;
                 match bc {
@@ -185,13 +197,25 @@ impl Bwr for BinderCommand {
                     binder_command::BC_CLEAR_DEATH_NOTIFICATION => {
                         Self::ClearDeathNotification(command)
                     }
+                    binder_command::BC_REQUEST_FREEZE_NOTIFICATION => {
+                        Self::RequestFreezeNotification(command)
+                    }
+                    binder_command::BC_CLEAR_FREEZE_NOTIFICATION => {
+                        Self::ClearFreezeNotification(command)
+                    }
                     _ => unreachable!(),
                 }
             }
-            binder_command::BC_DEAD_BINDER_DONE => {
+            binder_command::BC_DEAD_BINDER_DONE | binder_command::BC_FREEZE_NOTIFICATION_DONE => {
                 let mut command = DeathDoneCommand::default();
                 command.copy_from_bytes(data)?;
-                Self::DeadBinderDone(command)
+                match bc {
+                    binder_command::BC_DEAD_BINDER_DONE => Self::DeadBinderDone(command),
+                    binder_command::BC_FREEZE_NOTIFICATION_DONE => {
+                        Self::FreezeNotificationDone(command)
+                    }
+                    _ => unreachable!(),
+                }
             }
             binder_command::BC_TRANSACTION_SG | binder_command::BC_REPLY_SG => {
                 let mut command = TransactionSg::default();
@@ -237,6 +261,13 @@ impl Bwr for BinderCommand {
             }
             BinderCommand::ClearDeathNotification(_) => binder_command::BC_CLEAR_DEATH_NOTIFICATION,
             BinderCommand::DeadBinderDone(_) => binder_command::BC_DEAD_BINDER_DONE,
+            BinderCommand::RequestFreezeNotification(_) => {
+                binder_command::BC_REQUEST_FREEZE_NOTIFICATION
+            }
+            BinderCommand::ClearFreezeNotification(_) => {
+                binder_command::BC_CLEAR_FREEZE_NOTIFICATION
+            }
+            BinderCommand::FreezeNotificationDone(_) => binder_command::BC_FREEZE_NOTIFICATION_DONE,
         }
     }
 }
@@ -246,5 +277,58 @@ impl TryFrom<&[u8]> for BinderCommand {
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         Self::from_bytes(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_buf<T: Copy>(header: u32, payload: T) -> Vec<u8> {
+        let mut buf = header.to_ne_bytes().to_vec();
+        let payload_bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(&payload as *const _ as *const u8, std::mem::size_of::<T>())
+        };
+        buf.extend_from_slice(payload_bytes);
+        buf
+    }
+
+    #[test]
+    fn parses_bc_request_freeze_notification() {
+        let header: u32 = binderdump_sys::BC_REQUEST_FREEZE_NOTIFICATION;
+        let payload = DeathCommand {
+            target: 42,
+            cookie: 0xdeadbeef,
+        };
+        let buf = make_buf(header, payload);
+
+        let r = BinderCommand::from_bytes(&buf).expect("must parse new opcode");
+        match r {
+            BinderCommand::RequestFreezeNotification(_) => {}
+            _ => panic!("expected RequestFreezeNotification, got {:?}", r),
+        }
+    }
+
+    #[test]
+    fn parses_bc_clear_freeze_notification() {
+        let header: u32 = binderdump_sys::BC_CLEAR_FREEZE_NOTIFICATION;
+        let payload = DeathCommand {
+            target: 7,
+            cookie: 0xc0ffee,
+        };
+        let buf = make_buf(header, payload);
+
+        let r = BinderCommand::from_bytes(&buf).expect("must parse new opcode");
+        assert!(matches!(r, BinderCommand::ClearFreezeNotification(_)));
+    }
+
+    #[test]
+    fn parses_bc_freeze_notification_done() {
+        let header: u32 = binderdump_sys::BC_FREEZE_NOTIFICATION_DONE;
+        let payload = DeathDoneCommand { cookie: 0 };
+        let buf = make_buf(header, payload);
+
+        let r = BinderCommand::from_bytes(&buf).expect("must parse new opcode");
+        assert!(matches!(r, BinderCommand::FreezeNotificationDone(_)));
     }
 }
