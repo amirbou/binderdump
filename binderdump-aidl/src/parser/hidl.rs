@@ -453,6 +453,7 @@ pub fn parse_hidl(source: &str) -> Result<Vec<Interface>, String> {
                     params,
                     return_type,
                     oneway,
+                    code: None,
                 });
             }
             if matches!(toks.get(pos), Some(Tok::Punct('}'))) {
@@ -564,18 +565,21 @@ mod tests {
                     params: vec![],
                     return_type: None,
                     oneway: false,
+                    code: None,
                 },
                 Method {
                     name: "p2".into(),
                     params: vec![],
                     return_type: None,
                     oneway: false,
+                    code: None,
                 },
                 Method {
                     name: "p3".into(),
                     params: vec![],
                     return_type: None,
                     oneway: false,
+                    code: None,
                 },
             ],
             extends: None,
@@ -589,6 +593,7 @@ mod tests {
                 params: vec![],
                 return_type: None,
                 oneway: false,
+                code: None,
             }],
             extends: Some("p@1.0::IBase".into()),
         };
@@ -612,6 +617,7 @@ mod tests {
                 params: vec![],
                 return_type: None,
                 oneway: false,
+                code: None,
             }],
             extends: Some("missing@1.0::IGone".into()),
         };

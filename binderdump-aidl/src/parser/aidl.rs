@@ -300,12 +300,31 @@ pub fn parse_aidl(source: &str) -> Result<Vec<crate::model::Interface>, Vec<Simp
                         if !cur.eat_punct(')') {
                             return Err(vec![Simple::custom(0..0, "expected ')'")]);
                         }
-                        let _ = cur.eat_punct(';');
+                        // stable AIDL pins a transaction code: `void foo() = 17;`.
+                        // The AIDL compiler emits N as the actual code, so capture it.
+                        let mut code: Option<u32> = None;
+                        if cur.eat_punct('=') {
+                            if let Some(Token::NumLit(s)) = cur.peek() {
+                                if let Ok(n) = s.parse::<u32>() {
+                                    code = Some(n);
+                                }
+                                cur.pos += 1;
+                            }
+                            // tolerate stray tokens up to `;` (shouldn't happen but be safe)
+                            while let Some(t) = cur.advance() {
+                                if matches!(t, Token::Punct(';')) {
+                                    break;
+                                }
+                            }
+                        } else {
+                            let _ = cur.eat_punct(';');
+                        }
                         methods.push(Method {
                             name: method_name,
                             params,
                             return_type,
                             oneway,
+                            code,
                         });
                     }
                 }
@@ -559,5 +578,23 @@ mod tests {
         let src = "package a; interface I { void m(in Map<String, IBinder> x); }";
         let r = parse_aidl(src).unwrap();
         assert_eq!(r[0].methods[0].params.len(), 1);
+    }
+
+    #[test]
+    fn parses_method_with_explicit_transaction_code() {
+        let src = "package a; interface I { \
+                   void first() = 1; \
+                   void second() = 17; \
+                   }";
+        let r = parse_aidl(src).unwrap();
+        let names: Vec<_> = r[0].methods.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["first", "second"]);
+        assert_eq!(r[0].methods[0].code, Some(1));
+        assert_eq!(r[0].methods[1].code, Some(17));
+        // lookup() must honor the explicit code rather than the declaration index.
+        assert_eq!(r[0].lookup(17).map(|m| m.name.as_str()), Some("second"));
+        assert_eq!(r[0].lookup(1).map(|m| m.name.as_str()), Some("first"));
+        // index 2 (base_code + idx for "second") must NOT resolve via fallback.
+        assert!(r[0].lookup(2).is_none());
     }
 }

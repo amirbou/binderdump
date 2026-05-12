@@ -99,6 +99,7 @@ mod tests {
                     params: vec![],
                     return_type: None,
                     oneway: false,
+                    code: None,
                 })
                 .collect(),
             extends: None,
