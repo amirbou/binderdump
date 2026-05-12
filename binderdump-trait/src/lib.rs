@@ -236,7 +236,7 @@ impl<T: EpanProtocol> EpanProtocol for Vec<T> {
         let mut info = vec![FieldInfo {
             name: length_name,
             abbrev: length_abbrev,
-            ftype: FtEnum::U16,
+            ftype: FtEnum::U32,
             display: FieldDisplay::HexDec,
             strings: None,
         }];

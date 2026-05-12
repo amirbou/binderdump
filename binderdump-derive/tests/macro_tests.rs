@@ -55,7 +55,7 @@ fn test_derive() {
         FieldInfo {
             name: "field3 length".into(),
             abbrev: "test.field3_len".into(),
-            ftype: FtEnum::U16,
+            ftype: FtEnum::U32,
             display: FieldDisplay::HexDec,
             strings: None,
         },
@@ -69,7 +69,7 @@ fn test_derive() {
         FieldInfo {
             name: "field4 length".into(),
             abbrev: "test.field4_len".into(),
-            ftype: FtEnum::U16,
+            ftype: FtEnum::U32,
             display: FieldDisplay::HexDec,
             strings: None,
         },
@@ -104,7 +104,7 @@ fn test_derive() {
         FieldInfo {
             name: "field6 length".into(),
             abbrev: "test.field6_len".into(),
-            ftype: FtEnum::U16,
+            ftype: FtEnum::U32,
             display: FieldDisplay::HexDec,
             strings: None,
         },
@@ -157,7 +157,7 @@ fn test_derive() {
         FieldInfo {
             name: "field9 length".into(),
             abbrev: "test.field9_len".into(),
-            ftype: FtEnum::U16,
+            ftype: FtEnum::U32,
             display: FieldDisplay::HexDec,
             strings: None,
         },
@@ -329,7 +329,7 @@ fn test_inner_structs() {
         FieldInfo {
             name: "inner length".into(),
             abbrev: "test.inner_option.inner_len".into(),
-            ftype: FtEnum::U16,
+            ftype: FtEnum::U32,
             display: FieldDisplay::HexDec,
             strings: None,
         },
@@ -350,7 +350,7 @@ fn test_inner_structs() {
         FieldInfo {
             name: "inner length".into(),
             abbrev: "test.inner.inner_len".into(),
-            ftype: FtEnum::U16,
+            ftype: FtEnum::U32,
             display: FieldDisplay::HexDec,
             strings: None,
         },

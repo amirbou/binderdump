@@ -48,10 +48,12 @@ pub struct PacketGenerator<W: Write> {
 impl<W: Write> PacketGenerator<W> {
     pub fn new(channel: EventChannel, writer: W) -> Result<Self> {
         let capture_info = CaptureInfo::new()?;
+        let version_comment = format!("binderdump-version={}", env!("CARGO_PKG_VERSION"));
         let options = vec![
             SectionHeaderOption::OS(capture_info.get_os().to_string().into()),
             SectionHeaderOption::Hardware(capture_info.get_model().to_string().into()),
             SectionHeaderOption::UserApplication(capture_info.get_capture_app().to_string().into()),
+            SectionHeaderOption::Comment(version_comment.into()),
             SectionHeaderOption::Comment(capture_info.get_fingerprint().to_string().into()),
             SectionHeaderOption::Comment(capture_info.get_kernel_version().to_string().into()),
         ];
@@ -61,12 +63,14 @@ impl<W: Write> PacketGenerator<W> {
 
         let mut pcap_writer = PcapNgWriter::with_section_header(writer, header)?;
 
+        let idb_description = format!("binderdump-version={}", env!("CARGO_PKG_VERSION"));
         for interface in ["/dev/binder", "/dev/hwbinder", "/dev/vndbinder"] {
             let interface_block = InterfaceDescriptionBlock {
                 linktype: DataLink::WIRESHARK_UPPER_PDU,
                 snaplen: 0,
                 options: vec![
                     InterfaceDescriptionOption::IfName(interface.into()),
+                    InterfaceDescriptionOption::IfDescription(idb_description.clone().into()),
                     // seems like the pcap-file library implicitly uses nanoseconds when writing Duration to a packet block,
                     // so we tell wireshark about it
                     // this seems to be fixed pcap-file 3.0.0-rc1

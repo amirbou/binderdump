@@ -217,9 +217,9 @@ impl<R: Read> PlainDeserializer<R> {
 
     fn read_bytes(&mut self) -> Result<Vec<u8>, PlainSerializerError> {
         self.offsets_deserializer
-            .add_len(self.current_offset, std::mem::size_of::<u16>())?;
-        let len = self.reader.read_u16::<LE>()? as usize;
-        self.advance_offset::<u16>();
+            .add_len(self.current_offset, std::mem::size_of::<u32>())?;
+        let len = self.reader.read_u32::<LE>()? as usize;
+        self.advance_offset::<u32>();
 
         let mut vec = Vec::with_capacity(len);
         vec.resize(len, 0);
@@ -434,9 +434,9 @@ impl<'de, R: Read> Deserializer<'de> for &mut PlainDeserializer<R> {
         V: serde::de::Visitor<'de>,
     {
         self.offsets_deserializer
-            .add_len(self.current_offset, std::mem::size_of::<u16>())?;
-        let count = self.reader.read_u16::<LE>()?;
-        self.advance_offset::<u16>();
+            .add_len(self.current_offset, std::mem::size_of::<u32>())?;
+        let count = self.reader.read_u32::<LE>()?;
+        self.advance_offset::<u32>();
         visitor.visit_seq(PlainSeqDeserializer::new_seq(self, count as usize))
     }
 
@@ -616,7 +616,7 @@ mod test {
             seq: Vec<u8>,
         }
 
-        let test = b"\x03\x00\x00\x00\x03\x00\x01\x02\x03";
+        let test = b"\x03\x00\x00\x00\x03\x00\x00\x00\x01\x02\x03";
 
         let expected = Test {
             int: 3,
@@ -634,7 +634,7 @@ mod test {
             seq: Vec<u8>,
         }
 
-        let test = b"\x00\x00";
+        let test = b"\x00\x00\x00\x00";
 
         let expected = Test { seq: vec![] };
 
@@ -644,17 +644,17 @@ mod test {
         let expected_offets = StructOffset {
             name: "Test",
             offset: 0,
-            size: 2,
+            size: 4,
             fields: vec![
                 FieldOffset {
                     field_name: "seq_len".into(),
                     offset: 0,
-                    size: 2,
+                    size: 4,
                     inner_struct: None,
                 },
                 FieldOffset {
                     field_name: "seq".into(),
-                    offset: 2,
+                    offset: 4,
                     size: 0,
                     inner_struct: None,
                 },
@@ -730,7 +730,7 @@ mod test {
             inner2: InnerTest,
         }
 
-        let test = b"abc\x01\x00\x01\x01\x03\x00\x01\x02\x00\x06";
+        let test = b"abc\x01\x00\x00\x00\x01\x01\x03\x00\x01\x02\x00\x06";
 
         let (result, offsets) = super::from_bytes_with_offsets::<Test>(test).unwrap();
         let expected = Test {
@@ -750,7 +750,7 @@ mod test {
         let expected_offsets = StructOffset {
             name: "Test",
             offset: 0,
-            size: 13,
+            size: 15,
             fields: vec![
                 FieldOffset {
                     field_name: "array".into(),
@@ -761,47 +761,47 @@ mod test {
                 FieldOffset {
                     field_name: "bytes_len".into(),
                     offset: 3,
-                    size: 2,
+                    size: 4,
                     inner_struct: None,
                 },
                 FieldOffset {
                     field_name: "bytes".into(),
-                    offset: 5,
+                    offset: 7,
                     size: 1,
                     inner_struct: None,
                 },
                 FieldOffset {
                     field_name: "inner_is_present".into(),
-                    offset: 6,
+                    offset: 8,
                     size: 1,
                     inner_struct: None,
                 },
                 FieldOffset {
                     field_name: "inner".into(),
-                    offset: 7,
+                    offset: 9,
                     size: 3,
                     inner_struct: Some(StructOffset {
                         name: "InnerTest",
-                        offset: 7,
+                        offset: 9,
                         size: 3,
                         fields: vec![
                             FieldOffset {
                                 field_name: "num".into(),
-                                offset: 7,
+                                offset: 9,
                                 size: 2,
                                 inner_struct: None,
                             },
                             FieldOffset {
                                 field_name: "inner".into(),
-                                offset: 9,
+                                offset: 11,
                                 size: 1,
                                 inner_struct: Some(StructOffset {
                                     name: "InnerInnerTest",
-                                    offset: 9,
+                                    offset: 11,
                                     size: 1,
                                     fields: vec![FieldOffset {
                                         field_name: "num".into(),
-                                        offset: 9,
+                                        offset: 11,
                                         size: 1,
                                         inner_struct: None,
                                     }],
@@ -812,30 +812,30 @@ mod test {
                 },
                 FieldOffset {
                     field_name: "inner2".into(),
-                    offset: 10,
+                    offset: 12,
                     size: 3,
                     inner_struct: Some(StructOffset {
                         name: "InnerTest",
-                        offset: 10,
+                        offset: 12,
                         size: 3,
                         fields: vec![
                             FieldOffset {
                                 field_name: "num".into(),
-                                offset: 10,
+                                offset: 12,
                                 size: 2,
                                 inner_struct: None,
                             },
                             FieldOffset {
                                 field_name: "inner".into(),
-                                offset: 12,
+                                offset: 14,
                                 size: 1,
                                 inner_struct: Some(StructOffset {
                                     name: "InnerInnerTest",
-                                    offset: 12,
+                                    offset: 14,
                                     size: 1,
                                     fields: vec![FieldOffset {
                                         field_name: "num".into(),
-                                        offset: 12,
+                                        offset: 14,
                                         size: 1,
                                         inner_struct: None,
                                     }],
@@ -931,8 +931,8 @@ mod test {
             items: Vec<Inner>,
         }
 
-        // 2 elements: count=2 (u16) + Inner{1,2} (5 bytes) + Inner{3,4} (5 bytes) = 12 bytes.
-        let bytes = b"\x02\x00\x01\x00\x00\x00\x02\x03\x00\x00\x00\x04";
+        // 2 elements: count=2 (u32) + Inner{1,2} (5 bytes) + Inner{3,4} (5 bytes) = 14 bytes.
+        let bytes = b"\x02\x00\x00\x00\x01\x00\x00\x00\x02\x03\x00\x00\x00\x04";
         let (parsed, offsets) = from_bytes_with_offsets::<Outer>(bytes).unwrap();
         assert_eq!(
             parsed,
@@ -944,7 +944,7 @@ mod test {
         let offsets = offsets.unwrap();
         assert_eq!(offsets.name, "Outer");
         assert_eq!(offsets.offset, 0);
-        assert_eq!(offsets.size, 12);
+        assert_eq!(offsets.size, 14);
 
         // Layout: items_len pseudo (_len) + items (real, with Inner #0 attached)
         // + items sibling (with Inner #1 attached, reusing the name "items"
@@ -953,18 +953,18 @@ mod test {
 
         assert_eq!(offsets.fields[0].field_name, "items_len");
         assert_eq!(offsets.fields[0].offset, 0);
-        assert_eq!(offsets.fields[0].size, 2);
+        assert_eq!(offsets.fields[0].size, 4);
         assert!(offsets.fields[0].inner_struct.is_none());
 
         // Element 0 attaches to the original "items" field.
         assert_eq!(offsets.fields[1].field_name, "items");
-        assert_eq!(offsets.fields[1].offset, 2);
+        assert_eq!(offsets.fields[1].offset, 4);
         let inner0 = offsets.fields[1]
             .inner_struct
             .as_ref()
             .expect("first element must have inner_struct attached");
         assert_eq!(inner0.name, "Inner");
-        assert_eq!(inner0.offset, 2);
+        assert_eq!(inner0.offset, 4);
         assert_eq!(inner0.size, 5);
         assert_eq!(inner0.fields.len(), 2);
         assert_eq!(inner0.fields[0].field_name, "foo");
@@ -973,13 +973,13 @@ mod test {
         // Element 1 lands on a sibling with the same field name as element 0's
         // host so the dissector resolves the same hf/ett registrations.
         assert_eq!(offsets.fields[2].field_name, "items");
-        assert_eq!(offsets.fields[2].offset, 7);
+        assert_eq!(offsets.fields[2].offset, 9);
         let inner1 = offsets.fields[2]
             .inner_struct
             .as_ref()
             .expect("second element must have inner_struct attached");
         assert_eq!(inner1.name, "Inner");
-        assert_eq!(inner1.offset, 7);
+        assert_eq!(inner1.offset, 9);
         assert_eq!(inner1.size, 5);
     }
 
@@ -994,8 +994,8 @@ mod test {
             items: Vec<Inner>,
         }
 
-        // count=3 (u16) + 3 × u32
-        let bytes = b"\x03\x00\x01\x00\x00\x00\x02\x00\x00\x00\x03\x00\x00\x00";
+        // count=3 (u32) + 3 × u32
+        let bytes = b"\x03\x00\x00\x00\x01\x00\x00\x00\x02\x00\x00\x00\x03\x00\x00\x00";
         let (parsed, offsets) = from_bytes_with_offsets::<Outer>(bytes).unwrap();
         assert_eq!(
             parsed,
@@ -1031,7 +1031,7 @@ mod test {
             items: Vec<Inner>,
         }
 
-        let bytes = b"\x00\x00";
+        let bytes = b"\x00\x00\x00\x00";
         let (parsed, offsets) = from_bytes_with_offsets::<Outer>(bytes).unwrap();
         assert_eq!(parsed, Outer { items: vec![] });
 
