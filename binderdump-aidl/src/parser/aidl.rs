@@ -239,9 +239,12 @@ pub fn parse_aidl(source: &str) -> Result<Vec<crate::model::Interface>, Vec<Simp
                         continue;
                     }
                     Some(Token::Keyword(k))
-                        if *k == "parcelable" || *k == "enum" || *k == "interface" =>
+                        if *k == "parcelable"
+                            || *k == "union"
+                            || *k == "enum"
+                            || *k == "interface" =>
                     {
-                        // Nested parcelable / enum / interface declarations
+                        // Nested parcelable / union / enum / interface declarations
                         // inside an interface body. AIDL allows them but they
                         // don't contribute to transaction codes — skip the
                         // body (balanced `{...}` or trailing `;`).
@@ -341,8 +344,8 @@ pub fn parse_aidl(source: &str) -> Result<Vec<crate::model::Interface>, Vec<Simp
                 methods,
                 extends: None,
             });
-        } else if cur.eat_kw("parcelable") || cur.eat_kw("enum") {
-            // Skip parcelable/enum body — we don't need their fields for code resolution.
+        } else if cur.eat_kw("parcelable") || cur.eat_kw("union") || cur.eat_kw("enum") {
+            // Skip parcelable/union/enum body — we don't need their fields for code resolution.
             // Skip any `;` or balanced `{...}`.
             if cur.eat_punct(';') {
                 continue;
@@ -375,9 +378,9 @@ fn lexer() -> impl Parser<char, Vec<Token>, Error = Simple<char>> {
     let pad = ws.or(comment).repeated();
 
     let ident_or_kw = text::ident().map(|s: String| match s.as_str() {
-        "interface" | "parcelable" | "enum" | "package" | "import" | "oneway" | "in" | "out"
-        | "inout" | "const" | "extends" | "void" | "boolean" | "byte" | "char" | "short"
-        | "int" | "long" | "float" | "double" | "String" | "IBinder" | "List" | "Map" => {
+        "interface" | "parcelable" | "union" | "enum" | "package" | "import" | "oneway" | "in"
+        | "out" | "inout" | "const" | "extends" | "void" | "boolean" | "byte" | "char"
+        | "short" | "int" | "long" | "float" | "double" | "String" | "IBinder" | "List" | "Map" => {
             Token::Keyword(Box::leak(s.into_boxed_str()))
         }
         _ => Token::Ident(s),
@@ -596,5 +599,37 @@ mod tests {
         assert_eq!(r[0].lookup(1).map(|m| m.name.as_str()), Some("first"));
         // index 2 (base_code + idx for "second") must NOT resolve via fallback.
         assert!(r[0].lookup(2).is_none());
+    }
+
+    #[test]
+    fn skips_nested_union_inside_interface() {
+        // union nested in an interface body (e.g. hardware/interfaces bufferpool2)
+        let src = r#"
+            package a;
+            interface IFoo {
+                Foo[] fetch(in Foo.Info[] infos);
+                void sync();
+                parcelable Info { long id; }
+                union Result { Foo buf; int err; }
+            }
+        "#;
+        let r = parse_aidl(src).unwrap();
+        assert_eq!(r[0].methods.len(), 2);
+        assert_eq!(r[0].methods[0].name, "fetch");
+        assert_eq!(r[0].methods[1].name, "sync");
+    }
+
+    #[test]
+    fn skips_top_level_union() {
+        // top-level union declaration — no interface, returns empty vec
+        let src = r#"
+            package a;
+            union AudioChannelLayout {
+                int none = 0;
+                int layoutMask;
+            }
+        "#;
+        let r = parse_aidl(src).unwrap();
+        assert!(r.is_empty());
     }
 }
