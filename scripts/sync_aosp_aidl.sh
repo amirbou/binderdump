@@ -15,6 +15,7 @@
 #   frameworks/base/media/                       -> aidl/
 #   frameworks/native/libs/binder/aidl/          -> aidl/
 #   frameworks/native/libs/gui/aidl/             -> aidl/
+#   frameworks/native/libs/gui/android/          -> aidl/android/
 #   frameworks/native/libs/sensor/aidl/          -> aidl/
 #   frameworks/native/libs/permission/aidl/      -> aidl/
 #   frameworks/native/services/inputflinger/     -> aidl/
@@ -45,8 +46,13 @@ declare -A VERSIONS=(
     [16]="36 android16-release"
 )
 
-# Format: "<repo>:<subdir>:<ext>:<dest>"
+# Format: "<repo>:<subdir>:<ext>:<dest>[:<rel-prefix>]"
 # Empty subdir = root tarball of the repo.
+# <rel-prefix> (optional) is prepended to each copied file's stage-relative
+# path. Use it when the fetched subtree's top maps to a deeper package than
+# its source-tree root — e.g. libs/gui/android/gui/X.aidl, fetched as
+# libs/gui/android, has stage-relative path "gui/X.aidl" but its package is
+# "android.gui" so it must land at aidl_root/android/gui/X.aidl.
 PATH_TABLE=(
     "frameworks/base:core/java:aidl:aidl"
     "frameworks/base:services:aidl:aidl"
@@ -56,7 +62,8 @@ PATH_TABLE=(
     "frameworks/base:packages/SystemUI:aidl:aidl"
     "frameworks/base:libs/WindowManager:aidl:aidl"
     "frameworks/native:libs/binder/aidl:aidl:aidl"
-    "frameworks/native:libs/gui:aidl:aidl"
+    "frameworks/native:libs/gui/aidl:aidl:aidl"
+    "frameworks/native:libs/gui/android:aidl:aidl:android"
     "frameworks/native:libs/sensor/aidl:aidl:aidl"
     "frameworks/native:libs/permission/aidl:aidl:aidl"
     "frameworks/native:services/inputflinger:aidl:aidl"
@@ -96,21 +103,27 @@ fetch_subtree() {
     fi
 }
 
-# copy_matching <src-root> <dst-root> <find-name-pattern>
+# copy_matching <src-root> <dst-root> <find-name-pattern> [<rel-prefix>]
 # Copies files under src-root matching pattern into dst-root preserving
-# relative paths.
+# relative paths. If <rel-prefix> is given it is inserted between dst-root
+# and the file's stage-relative path.
 copy_matching() {
-    local src="$1" dst="$2" pattern="$3"
+    local src="$1" dst="$2" pattern="$3" prefix="${4:-}"
     [[ -d "$src" ]] || return 0
     local count=0
     while IFS= read -r -d '' f; do
         local rel="${f#"$src"/}"
-        local target="$dst/$rel"
+        local target
+        if [[ -n "$prefix" ]]; then
+            target="$dst/$prefix/$rel"
+        else
+            target="$dst/$rel"
+        fi
         mkdir -p "$(dirname "$target")"
         cp "$f" "$target"
         count=$((count + 1))
     done < <(find "$src" -type f -name "$pattern" -print0)
-    log "    copied $count $pattern"
+    log "    copied $count $pattern${prefix:+ -> $prefix/}"
 }
 
 sync_version() {
@@ -126,22 +139,22 @@ sync_version() {
     local stage="$WORK_DIR/$sdk"
     mkdir -p "$stage"
 
-    local entry repo subdir ext dest dest_root tag stage_dir
+    local entry repo subdir ext dest prefix dest_root tag stage_dir
     for entry in "${PATH_TABLE[@]}"; do
-        IFS=':' read -r repo subdir ext dest <<< "$entry"
+        IFS=':' read -r repo subdir ext dest prefix <<< "$entry"
         case "$dest" in
             aidl) dest_root="$aidl_root" ;;
             hal)  dest_root="$hal_root" ;;
             *)    log "  bad dest in PATH_TABLE: $entry"; exit 1 ;;
         esac
-        tag=$(echo "${repo}_${subdir}_${ext}" | tr '/' '_' | tr -s '_')
+        tag=$(echo "${repo}_${subdir}_${ext}_${prefix}" | tr '/' '_' | tr -s '_')
         stage_dir="$stage/$tag"
 
         if ! fetch_subtree "$repo" "$branch" "$subdir" "$stage_dir"; then
             log "  warn: fetch failed for $repo${subdir:+/$subdir} @ $branch (skipping)"
             continue
         fi
-        copy_matching "$stage_dir" "$dest_root" "*.${ext}"
+        copy_matching "$stage_dir" "$dest_root" "*.${ext}" "$prefix"
     done
 
     rm -rf "$stage"
