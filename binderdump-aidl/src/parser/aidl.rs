@@ -268,6 +268,26 @@ pub fn parse_aidl(source: &str) -> Result<Vec<crate::model::Interface>, Vec<Simp
                     }
                     _ => {
                         let oneway = cur.eat_kw("oneway");
+                        // `oneway interface IFoo { ... }` — nested interface after oneway.
+                        // Doesn't contribute transaction codes; skip its body.
+                        if oneway
+                            && matches!(cur.peek(), Some(Token::Keyword(k)) if *k == "interface")
+                        {
+                            cur.pos += 1; // eat 'interface'
+                            let _ = cur.ident(); // eat name
+                            if cur.eat_punct('{') {
+                                let mut depth = 1;
+                                while depth > 0 {
+                                    match cur.advance() {
+                                        Some(Token::Punct('{')) => depth += 1,
+                                        Some(Token::Punct('}')) => depth -= 1,
+                                        None => break,
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            continue;
+                        }
                         let return_type = cur.parse_type();
                         let method_name = cur
                             .ident()
@@ -617,6 +637,28 @@ mod tests {
         assert_eq!(r[0].methods.len(), 2);
         assert_eq!(r[0].methods[0].name, "fetch");
         assert_eq!(r[0].methods[1].name, "sync");
+    }
+
+    #[test]
+    fn skips_oneway_nested_interface() {
+        // `oneway interface ICallback { ... }` nested inside an outer interface
+        let src = r#"
+            package a;
+            interface ISoundDose {
+                void setRs2(float v);
+                void registerCallback(in IHalSoundDoseCallback cb);
+                @VintfStability
+                oneway interface IHalSoundDoseCallback {
+                    void onWarning(float v);
+                    parcelable MelRecord { float[] vals; long ts; }
+                    void onMel(in MelRecord r);
+                }
+            }
+        "#;
+        let r = parse_aidl(src).unwrap();
+        assert_eq!(r[0].methods.len(), 2);
+        assert_eq!(r[0].methods[0].name, "setRs2");
+        assert_eq!(r[0].methods[1].name, "registerCallback");
     }
 
     #[test]
