@@ -177,9 +177,13 @@ pub fn parse_aidl(source: &str) -> Result<Vec<crate::model::Interface>, Vec<Simp
                 }
                 _ => return None,
             };
-            // Trailing `[]` for array
+            // Trailing `[]` or `[N]` (fixed-size array) for array.
             let mut t = base;
             while self.eat_punct('[') {
+                // consume optional numeric size (e.g. `byte[16]`)
+                if matches!(self.peek(), Some(Token::NumLit(_))) {
+                    self.pos += 1;
+                }
                 if !self.eat_punct(']') {
                     return None;
                 }
@@ -637,6 +641,16 @@ mod tests {
         assert_eq!(r[0].methods.len(), 2);
         assert_eq!(r[0].methods[0].name, "fetch");
         assert_eq!(r[0].methods[1].name, "sync");
+    }
+
+    #[test]
+    fn parses_fixed_size_array_return_type() {
+        // `byte[16]` return type (used in e.g. IContextHubCallback.getUuid)
+        let src = "package a; interface I { byte[16] getUuid(); String getName(); }";
+        let r = parse_aidl(src).unwrap();
+        assert_eq!(r[0].methods.len(), 2);
+        assert_eq!(r[0].methods[0].name, "getUuid");
+        assert_eq!(r[0].methods[1].name, "getName");
     }
 
     #[test]
