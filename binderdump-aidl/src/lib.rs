@@ -7,6 +7,7 @@
 pub mod aosp_layout;
 pub mod decode;
 pub mod model;
+pub mod native_interfaces;
 pub mod parser;
 pub mod registry;
 pub mod token;
