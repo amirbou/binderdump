@@ -18,6 +18,7 @@ use binderdump_structs::{
     event_layer::{EventProtocol, EventType},
     link_layer,
 };
+use log::warn;
 use pcap_file::{
     pcapng::{
         blocks::{
@@ -173,11 +174,18 @@ impl<W: Write> PacketGenerator<W> {
                     // TransactionProtocol layer so the dissector shows them
                     // alongside the resolved/reassembled fields, not buried
                     // under the Commands array.
-                    if let Some(cmd_data) = bwr_event
-                        .first_transaction_command_data()
-                        .context("failed to inspect bwr commands")?
-                    {
-                        txn_builder = txn_builder.command_data(cmd_data);
+                    match bwr_event.first_transaction_command_data() {
+                        Ok(Some(cmd_data)) => {
+                            txn_builder = txn_builder.command_data(cmd_data);
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            // Unknown BC_/BR_ opcode in the buffer. Most likely a kernel
+                            // version added a new command that our enum doesn't model.
+                            // The cmd_data plumbing is informational; the rest of the
+                            // packet is still good.
+                            warn!("first_transaction_command_data: {:#}", e);
+                        }
                     }
                     bwr_builder = bwr_builder
                         .bwr_event(bwr_event)
@@ -188,20 +196,30 @@ impl<W: Write> PacketGenerator<W> {
                     builder = builder.event_type(EventType::FinishedIoctl);
                 }
                 BinderEventData::BinderTransaction(txn) => {
+                    // Kernel-native reply: 0 = transaction, 1 = reply. Both
+                    // sender and receiver bundles must agree on this so the
+                    // dissector's skip rule covers both directions.
+                    //
+                    // Sender bundle gets the raw txn (to_proc/to_thread =
+                    // kernel-resolved destination). Receiver bundle gets a
+                    // copy with to_proc/to_thread overridden to the current
+                    // (receiver-side) pid/tid, since the receiver IS the
+                    // destination and the BinderTransactionReceived event
+                    // carries only the debug_id.
                     let recv_txn = Transaction {
                         debug_id: txn.debug_id,
                         in_reply_to_debug_id: txn.in_reply_to_debug_id,
                         target_node: txn.target_node,
                         to_proc: pid,
                         to_thread: tid,
-                        reply: (!(txn.reply != 0)) as i32,
+                        reply: txn.reply,
                         code: txn.code,
                         flags: txn.flags,
                     };
-                    if let Some(txn) = self.ongoing_txn.insert(txn.debug_id, recv_txn) {
+                    if let Some(prev) = self.ongoing_txn.insert(txn.debug_id, recv_txn) {
                         return Err(anyhow::anyhow!(format!(
                             "Transaction {} is already ongoing",
-                            txn.debug_id
+                            prev.debug_id
                         )));
                     }
                     txn_builder = txn_builder.transaction(txn, &mut self.process_cache)?
@@ -212,10 +230,16 @@ impl<W: Write> PacketGenerator<W> {
                             txn_builder = txn_builder.transaction(txn, &mut self.process_cache)?
                         }
                         None => {
-                            return Err(anyhow::anyhow!(format!(
-                                "Transaction {} is not ongoing",
+                            // The matching `binder_transaction` was never observed by the
+                            // BPF program. Most common cause: capture started after the
+                            // sender's ioctl was already in flight, or the ring buffer
+                            // dropped the event under load. Log and continue — the packet
+                            // still carries the bwr + ioctl payload, which is useful even
+                            // without the sender-side metadata.
+                            warn!(
+                                "transaction {} not in ongoing map (sender event missed)",
                                 txn_id
-                            )))
+                            );
                         }
                     }
                 }

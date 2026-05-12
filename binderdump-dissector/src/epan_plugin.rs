@@ -442,6 +442,10 @@ fn handle_transaction_code(
     // tag the reply as some unrelated method-1 of whatever interface the
     // payload happens to start with.
     //
+    // `Transaction.reply` is the kernel-native flag: 0 = transaction
+    // (BC_/BR_TRANSACTION), 1 = reply (BC_/BR_REPLY). Both sender and
+    // receiver bundles set it consistently per packets.rs.
+    //
     // TODO - correlate reply -> originating BC_TRANSACTION via debug_id /
     // in_reply_to_debug_id and display "reply - <method used in the
     // transaction>" so users can see which call this reply belongs to.
