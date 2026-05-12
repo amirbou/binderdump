@@ -1,6 +1,6 @@
 // Glue between the binderdump-aidl Registry and the dissector. Reads the
 // transaction payload, peels the interface descriptor, looks up the method,
-// and tags how the resolution happened (builtin / overlay / special / etc.)
+// and tags how the resolution happened (aosp / overlay / special / etc.)
 // for the `binder.transaction.method_source` field.
 
 use binderdump_aidl::token::{parse_aidl_token, parse_hidl_token};
@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 pub struct ResolvedTransaction {
     pub interface: Option<String>,
     pub method_name: Option<String>,
-    // one of: "builtin", "overlay", "special", "unknown_iface", "unknown_code", "no_token"
+    // one of: "aosp", "overlay", "special", "unknown_iface", "unknown_code", "no_token"
     pub method_source: &'static str,
     pub overlay_path: Option<String>,
 }
@@ -52,8 +52,8 @@ pub fn resolve(
     match reg.resolve(android_sdk, fqn, code) {
         Lookup::Hit { method, source } => {
             let (src_label, overlay_path) = match source {
-                Source::Builtin => ("builtin", None),
                 Source::Overlay(p) => ("overlay", Some(p.display().to_string())),
+                Source::Lazy => ("aosp", None),
             };
             ResolvedTransaction {
                 interface: interface.clone(),
@@ -78,16 +78,29 @@ pub fn resolve(
     }
 }
 
-// populated once at plugin load (init_registry); falls back to builtin-only
+// populated once at plugin load (init_registry); falls back to empty registry
 // when callers (tests, Wireshark builds without prefs) skip init.
 static REGISTRY: OnceLock<Registry> = OnceLock::new();
 
 pub fn registry() -> &'static Registry {
-    REGISTRY.get_or_init(Registry::with_builtin)
+    REGISTRY.get_or_init(Registry::empty)
 }
 
-pub fn init_registry(overlay_dir: &std::path::Path) {
-    let mut reg = Registry::with_builtin();
+pub fn init_registry(aosp_dir: &std::path::Path, overlay_dir: &std::path::Path) {
+    let mut reg = Registry::with_aosp_dir(aosp_dir.to_path_buf());
+
+    if aosp_dir.exists() {
+        eprintln!(
+            "binderdump: AOSP corpus dir = {} (lazy)",
+            aosp_dir.display()
+        );
+    } else {
+        eprintln!(
+            "binderdump: AOSP corpus dir {} does not exist; resolution will rely solely on overlays",
+            aosp_dir.display()
+        );
+    }
+
     if overlay_dir.exists() {
         eprintln!(
             "binderdump: scanning AIDL overlay dir {}",
@@ -113,7 +126,6 @@ pub fn init_registry(overlay_dir: &std::path::Path) {
             overlay_dir.display()
         );
     }
-    // If REGISTRY was already populated (e.g. by a previous registry() call
-    // in tests), set() is a no-op.
+
     let _ = REGISTRY.set(reg);
 }

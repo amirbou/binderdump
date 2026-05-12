@@ -4,6 +4,7 @@
 // writeInterfaceToken byte streams libbinder/libhidl emit so the dissector
 // can map (interface, code) back to a method name.
 
+pub mod aosp_layout;
 pub mod decode;
 pub mod model;
 pub mod parser;

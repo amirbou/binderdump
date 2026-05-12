@@ -80,7 +80,10 @@ impl Protocol {
     }
 
     fn register_prefs(&self) {
-        unsafe { register_aidl_overlay_pref(self.handle) };
+        unsafe {
+            register_aidl_overlay_pref(self.handle);
+            register_aosp_dir_pref(self.handle);
+        }
     }
 
     fn register_dissector(&mut self) {
@@ -498,9 +501,19 @@ pub extern "C" fn register_handoff() {
     };
 
     // Wireshark has finished reading user prefs by the time handoff runs, so
-    // OVERLAY_DIR now points at either the default or the user's override.
-    // Build the AIDL/HIDL Registry from it.
-    let dir = unsafe {
+    // OVERLAY_DIR / AOSP_DIR now point at either the defaults or the user's
+    // overrides. Build the AIDL/HIDL Registry from both.
+    let aosp = unsafe {
+        if AOSP_DIR.is_null() {
+            default_aosp_dir()
+        } else {
+            CStr::from_ptr(AOSP_DIR)
+                .to_str()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| default_aosp_dir())
+        }
+    };
+    let overlay = unsafe {
         if OVERLAY_DIR.is_null() {
             default_overlay_dir()
         } else {
@@ -510,7 +523,7 @@ pub extern "C" fn register_handoff() {
                 .unwrap_or_else(|_| default_overlay_dir())
         }
     };
-    aidl_resolve::init_registry(&dir);
+    aidl_resolve::init_registry(&aosp, &overlay);
 }
 
 /// Storage for the `aidl_overlay_dir` Wireshark preference. Wireshark reads
@@ -549,4 +562,34 @@ unsafe fn register_aidl_overlay_pref(proto_id: c_int) {
     OVERLAY_DIR = default as *const _;
 
     epan::prefs_register_directory_preference(module, name, title, descr, &raw mut OVERLAY_DIR);
+}
+
+static mut AOSP_DIR: *const std::os::raw::c_char = std::ptr::null();
+
+fn default_aosp_dir() -> std::path::PathBuf {
+    dirs::config_dir()
+        .map(|c| c.join("wireshark").join("binderdump").join("aosp"))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+unsafe fn register_aosp_dir_pref(proto_id: c_int) {
+    let module = epan::prefs_register_protocol(proto_id, None);
+    if module.is_null() {
+        return;
+    }
+    let name = CString::new("aosp_corpus_dir").unwrap().into_raw();
+    let title = CString::new("AOSP AIDL/HIDL corpus directory")
+        .unwrap()
+        .into_raw();
+    let descr = CString::new(
+        "Directory containing android-<sdk>/{aidl,hal}/ subtrees of AOSP definitions, loaded lazily.",
+    )
+    .unwrap()
+    .into_raw();
+    let default = CString::new(default_aosp_dir().to_string_lossy().as_ref())
+        .unwrap()
+        .into_raw();
+    AOSP_DIR = default as *const _;
+
+    epan::prefs_register_directory_preference(module, name, title, descr, &raw mut AOSP_DIR);
 }
