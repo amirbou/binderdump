@@ -20,10 +20,6 @@ import android.hardware.ISensorPrivacyListener;
 
 /** @hide */
 interface ISensorPrivacyManager {
-    // Since these transactions are also called from native code, these must be kept in sync with
-    // the ones in
-    //   frameworks/native/libs/sensorprivacy/aidl/android/hardware/ISensorPrivacyManager.aidl
-    // =============== Beginning of transactions used on native side as well ======================
     boolean supportsSensorToggle(int toggleType, int sensor);
 
     void addSensorPrivacyListener(in ISensorPrivacyListener listener);
@@ -46,31 +42,14 @@ interface ISensorPrivacyManager {
 
     void setToggleSensorPrivacyForProfileGroup(int userId, int source, int sensor, boolean enable);
 
-    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(android.Manifest.permission.OBSERVE_SENSOR_PRIVACY)")
     List<String> getCameraPrivacyAllowlist();
 
-    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(android.Manifest.permission.OBSERVE_SENSOR_PRIVACY)")
     int getToggleSensorPrivacyState(int toggleType, int sensor);
 
-    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(android.Manifest.permission.MANAGE_SENSOR_PRIVACY)")
     void setToggleSensorPrivacyState(int userId, int source, int sensor, int state);
 
-    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(android.Manifest.permission.MANAGE_SENSOR_PRIVACY)")
     void setToggleSensorPrivacyStateForProfileGroup(int userId, int source, int sensor, int  state);
 
-    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(android.Manifest.permission.OBSERVE_SENSOR_PRIVACY)")
     boolean isCameraPrivacyEnabled(String packageName);
 
-    /** @hide */
-    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(android.Manifest.permission.MANAGE_SENSOR_PRIVACY)")
-    void setCameraPrivacyAllowlist(in List<String> allowlist);
-
-    // =============== End of transactions used on native side as well ============================
-
-    void suppressToggleSensorPrivacyReminders(int userId, int sensor, IBinder token,
-            boolean suppress);
-
-    boolean requiresAuthentication();
-
-    void showSensorUseDialog(int sensor);
 }

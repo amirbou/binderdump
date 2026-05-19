@@ -7,26 +7,29 @@
 #   binderdump-aidl/data/aosp/android-<sdk>/aidl/<source-relative-path>
 #   binderdump-aidl/data/aosp/android-<sdk>/hal/<source-relative-path>
 #
-# Source mapping (matches data/aosp/README.md):
-#   frameworks/base/core/java/                   -> aidl/
-#   frameworks/base/services/                    -> aidl/
-#   frameworks/base/telephony/                   -> aidl/
-#   frameworks/base/wifi/                        -> aidl/
-#   frameworks/base/media/                       -> aidl/
-#   frameworks/native/libs/binder/aidl/          -> aidl/
-#   frameworks/native/libs/gui/aidl/             -> aidl/
-#   frameworks/native/libs/gui/android/          -> aidl/android/
-#   frameworks/native/libs/sensor/aidl/          -> aidl/
-#   frameworks/native/libs/permission/aidl/      -> aidl/
-#   frameworks/native/services/inputflinger/     -> aidl/
-#   frameworks/native/services/surfaceflinger/   -> aidl/
-#   frameworks/native/services/sensorservice/    -> aidl/
-#   frameworks/av/                               -> aidl/
-#   hardware/interfaces/                         -> aidl/
-#   hardware/interfaces/                         -> hal/
-#   system/hardware/interfaces/                  -> aidl/
-#   system/libhidl/                              -> aidl/
-#   system/sepolicy/                             -> aidl/
+# Source mapping (see PATH_TABLE below for the authoritative list):
+#   frameworks/base/{core/java,services,telephony,wifi,media,telecomm,
+#                    location,packages/*,libs/WindowManager,apex,
+#                    keystore,graphics,omapi,mms,native,cmds/*,nfc-non-updatable}
+#   frameworks/native/{libs/*,services/{inputflinger,surfaceflinger,
+#                      sensorservice},cmds/{installd,dumpstate}/binder,aidl}
+#   frameworks/av/                          (repo root)
+#   frameworks/hardware/interfaces/         (repo root — IStats etc.)
+#   frameworks/libs/modules-utils/java      (AndroidFuture, ParceledListSlice)
+#   frameworks/opt/{net/voip,telephony}/src
+#   packages/modules/*                      (mainline — Bluetooth, Wifi,
+#                                            Connectivity, Nfc, Uwb,
+#                                            Permission, NetworkStack,
+#                                            DnsResolver, Virtualization,
+#                                            AdServices, Bluetooth, etc.)
+#   hardware/interfaces/                    (aidl + hal)
+#   hardware/google/{av,gchips,interfaces,pixel}  (Pixel HALs)
+#   hardware/nxp/nfc                        (Pixel NFC)
+#   system/{apex,connectivity/wificond,core,extras,gsid,hardware/interfaces,
+#           libhidl,logging,memory/mmd,netd,security,sepolicy,update_engine,
+#           vold}
+#   art/{artd,dexopt_chroot_setup}/binder   (ART mainline)
+#   external/libtextclassifier/java/src     (TextClassifier model downloader)
 #
 # Usage:
 #   scripts/sync_aosp_aidl.sh             # all configured versions
@@ -54,6 +57,7 @@ declare -A VERSIONS=(
 # libs/gui/android, has stage-relative path "gui/X.aidl" but its package is
 # "android.gui" so it must land at aidl_root/android/gui/X.aidl.
 PATH_TABLE=(
+    # frameworks/base
     "frameworks/base:core/java:aidl:aidl"
     "frameworks/base:services:aidl:aidl"
     "frameworks/base:telephony:aidl:aidl"
@@ -61,22 +65,139 @@ PATH_TABLE=(
     "frameworks/base:media:aidl:aidl"
     "frameworks/base:packages/SystemUI:aidl:aidl"
     "frameworks/base:libs/WindowManager:aidl:aidl"
+    "frameworks/base:telecomm:aidl:aidl"
+    "frameworks/base:location:aidl:aidl"
+    "frameworks/base:packages/NeuralNetworks:aidl:aidl"
+    "frameworks/base:apex:aidl:aidl"
+    "frameworks/base:omapi/aidl/android:aidl:aidl:android"
+    "frameworks/base:packages/SettingsLib:aidl:aidl"
+    "frameworks/base:graphics:aidl:aidl"
+    "frameworks/base:keystore:aidl:aidl"
+    "frameworks/base:cmds/idmap2:aidl:aidl"
+    "frameworks/base:packages/Vcn:aidl:aidl"
+    "frameworks/base:nfc-non-updatable:aidl:aidl"
+    "frameworks/base:packages/services:aidl:aidl"
+    "frameworks/base:packages/PrintSpooler:aidl:aidl"
+    "frameworks/base:cmds/uinput:aidl:aidl"
+    "frameworks/base:mms:aidl:aidl"
+    "frameworks/base:native/android/aidl:aidl:aidl"
+
+    # frameworks/native
     "frameworks/native:libs/binder/aidl:aidl:aidl"
     "frameworks/native:libs/gui/aidl:aidl:aidl"
     "frameworks/native:libs/gui/android:aidl:aidl:android"
     "frameworks/native:libs/sensor/aidl:aidl:aidl"
     "frameworks/native:libs/permission/aidl:aidl:aidl"
+    "frameworks/native:libs/input:aidl:aidl"
+    "frameworks/native:libs/bufferstreams/aidl:aidl:aidl"
+    "frameworks/native:libs/incidentcompanion/binder:aidl:aidl"
+    "frameworks/native:libs/sensorprivacy/aidl:aidl:aidl"
     "frameworks/native:services/inputflinger:aidl:aidl"
     "frameworks/native:services/surfaceflinger:aidl:aidl"
     "frameworks/native:services/sensorservice:aidl:aidl"
+    "frameworks/native:cmds/installd/binder:aidl:aidl"
+    "frameworks/native:cmds/dumpstate/binder:aidl:aidl"
+    "frameworks/native:aidl:aidl:aidl"
+
+    # frameworks/{av, hardware, libs/*, opt/*}
     "frameworks/av::aidl:aidl"
-    "frameworks/proto_logging::aidl:aidl"
+    "frameworks/hardware/interfaces::aidl:aidl"
+    "frameworks/libs/modules-utils:java:aidl:aidl"
+    "frameworks/opt/net/voip:src:aidl:aidl"
+    "frameworks/opt/telephony:src/java:aidl:aidl"
+
+    # packages/modules (mainline)
+    "packages/modules/AdServices:adservices/framework:aidl:aidl"
+    "packages/modules/AdServices:sdksandbox/framework:aidl:aidl"
+    "packages/modules/AdServices:sdksandbox/SdkSandbox:aidl:aidl"
+    "packages/modules/AppSearch:framework:aidl:aidl"
+    "packages/modules/AppSearch:apk/aidl:aidl:aidl"
+    "packages/modules/Bluetooth:android/app/aidl:aidl:aidl"
+    "packages/modules/Bluetooth:common/bluetooth/constants:aidl:aidl"
+    "packages/modules/Bluetooth:offload/leaudio/aidl:aidl:aidl"
+    "packages/modules/Bluetooth:service/aidl:aidl:aidl"
+    "packages/modules/CaptivePortalLogin:src:aidl:aidl"
+    "packages/modules/CellBroadcastService:src:aidl:aidl"
+    "packages/modules/ConfigInfrastructure:framework:aidl:aidl"
+    "packages/modules/Connectivity:framework:aidl:aidl"
+    "packages/modules/Connectivity:framework-t:aidl:aidl"
+    "packages/modules/Connectivity:service:aidl:aidl"
+    "packages/modules/Connectivity:Tethering/common/TetheringLib/src:aidl:aidl"
+    "packages/modules/Connectivity:nearby/framework:aidl:aidl"
+    "packages/modules/Connectivity:networksecurity/framework/src:aidl:aidl"
+    "packages/modules/Connectivity:remoteauth/framework:aidl:aidl"
+    "packages/modules/Connectivity:staticlibs/device:aidl:aidl"
+    "packages/modules/Connectivity:staticlibs/netd:aidl:aidl"
+    "packages/modules/Connectivity:thread/framework:aidl:aidl"
+    "packages/modules/CrashRecovery:framework:aidl:aidl"
+    "packages/modules/DeviceLock:framework:aidl:aidl"
+    "packages/modules/DeviceLock:DeviceLockController/src/com/android/devicelockcontroller:aidl:aidl"
+    "packages/modules/DnsResolver:aidl_api/dnsresolver_aidl_interface:aidl:aidl"
+    "packages/modules/DnsResolver:binder/android/net:aidl:aidl"
+    "packages/modules/HealthFitness:framework:aidl:aidl"
+    "packages/modules/ImsMedia:framework:aidl:aidl"
+    "packages/modules/IntentResolver:java/aidl:aidl:aidl"
+    "packages/modules/Media:apex/aidl:aidl:aidl"
+    "packages/modules/NetworkStack:common/networkstackclient:aidl:aidl"
+    "packages/modules/Nfc:framework:aidl:aidl"
+    "packages/modules/OnDevicePersonalization:framework:aidl:aidl"
+    "packages/modules/OnDevicePersonalization:federatedcompute/src:aidl:aidl"
+    "packages/modules/OnDevicePersonalization:pluginlib/src:aidl:aidl"
+    "packages/modules/Permission:framework:aidl:aidl"
+    "packages/modules/Permission:framework-s:aidl:aidl"
+    "packages/modules/Profiling:aidl:aidl:aidl"
+    "packages/modules/RemoteKeyProvisioning:app/aidl:aidl:aidl"
+    "packages/modules/Scheduling:framework:aidl:aidl"
+    "packages/modules/StatsD:aidl:aidl:aidl"
+    "packages/modules/Uwb:framework:aidl:aidl"
+    "packages/modules/Uwb:androidx_backend:aidl:aidl"
+    "packages/modules/Uwb:ranging/framework:aidl:aidl"
+    "packages/modules/Virtualization:android:aidl:aidl"
+    "packages/modules/Virtualization:guest/microdroid_manager/aidl:aidl:aidl"
+    "packages/modules/Virtualization:libs:aidl:aidl"
+    "packages/modules/Virtualization:microfuchsia/microfuchsiad/aidl:aidl:aidl"
+    "packages/modules/Wifi:framework:aidl:aidl"
+    "packages/modules/Wifi:aidl/mainline_supplicant:aidl:aidl"
+
+    # hardware/interfaces (HIDL + AIDL combined repo)
     "hardware/interfaces::aidl:aidl"
     "hardware/interfaces::hal:hal"
+
+    # hardware/google/* (Pixel HALs)
+    "hardware/google/av:media/eco/aidl:aidl:aidl"
+    "hardware/google/gchips:gralloc4/interfaces/aidl:aidl:aidl"
+    "hardware/google/interfaces::aidl:aidl"
+    "hardware/google/pixel:perfstatsd/binder:aidl:aidl"
+    "hardware/google/pixel:powerstats/aidl:aidl:aidl"
+    "hardware/nxp/nfc:intf/nxpnfc/aidl:aidl:aidl"
+
+    # system/*
+    "system/apex:apexd/aidl:aidl:aidl"
+    "system/connectivity/wificond:aidl:aidl:aidl"
+    "system/core:gatekeeperd/binder:aidl:aidl"
+    "system/core:storaged/binder:aidl:aidl"
+    "system/core:trusty/stats/aidl:aidl:aidl"
+    "system/extras:partition_tools/aidl:aidl:aidl"
+    "system/extras:profcollectd/binder:aidl:aidl"
+    "system/gsid:aidl:aidl:aidl"
     "system/hardware/interfaces::aidl:aidl"
     "system/libhidl::aidl:aidl"
-    "system/sepolicy::aidl:aidl"
+    "system/logging:logd/binder:aidl:aidl"
+    "system/memory/mmd:aidl:aidl:aidl"
     "system/netd::aidl:aidl"
+    "system/security:identity/binder:aidl:aidl"
+    "system/security:keystore2/aidl:aidl:aidl"
+    "system/sepolicy::aidl:aidl"
+    "system/update_engine:binder_bindings:aidl:aidl"
+    "system/update_engine:stable:aidl:aidl"
+    "system/vold:binder:aidl:aidl"
+
+    # art (mainline)
+    "art:artd/binder:aidl:aidl"
+    "art:dexopt_chroot_setup/binder:aidl:aidl"
+
+    # external/*
+    "external/libtextclassifier:java/src:aidl:aidl"
 )
 
 WORK_DIR="$(mktemp -d -t binderdump-aosp-sync.XXXXXX)"
