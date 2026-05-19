@@ -60,6 +60,7 @@ pub fn resolve(
             let (src_label, overlay_path) = match source {
                 Source::Overlay(p) => ("overlay", Some(p.display().to_string())),
                 Source::Lazy => ("aosp", None),
+                Source::Native => ("native", None),
             };
             ResolvedTransaction {
                 interface: interface.clone(),
@@ -105,6 +106,16 @@ pub fn registry() -> &'static Registry {
 
 pub fn init_registry(aosp_dir: &std::path::Path, overlay_dir: &std::path::Path) {
     let mut reg = Registry::with_aosp_dir(aosp_dir.to_path_buf());
+
+    if let Some(native_dir) = aosp_dir.parent().map(|p| p.join("native")) {
+        if native_dir.exists() {
+            eprintln!(
+                "binderdump: loading synthetic native AIDL corpus from {}",
+                native_dir.display()
+            );
+            reg = reg.with_native_dir(&native_dir);
+        }
+    }
 
     if aosp_dir.exists() {
         eprintln!(

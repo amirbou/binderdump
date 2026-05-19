@@ -115,7 +115,7 @@ mod tests {
         overlay
             .interfaces
             .insert("a.b.IFoo".into(), iface("a.b.IFoo", &["start", "stop"]));
-        let reg = Registry::from_parts(vec![overlay], None);
+        let reg = Registry::from_parts(vec![overlay], None, HashMap::new());
         let l = reg.resolve(34, "a.b.IFoo", 1);
         match l {
             Lookup::Hit { method, source } => {
@@ -136,7 +136,7 @@ mod tests {
         overlay
             .interfaces
             .insert("a.b.IFoo".into(), iface("a.b.IFoo", &[]));
-        let reg = Registry::from_parts(vec![overlay], None);
+        let reg = Registry::from_parts(vec![overlay], None, HashMap::new());
         match reg.resolve(34, "a.b.IFoo", 0x5f504e47) {
             Lookup::SpecialCode(SpecialTxn::Ping) => {}
             other => panic!("expected SpecialCode(Ping), got {:?}", other),
@@ -161,7 +161,7 @@ mod tests {
         overlay
             .interfaces
             .insert("a.b.IFoo".into(), iface("a.b.IFoo", &["only"]));
-        let reg = Registry::from_parts(vec![overlay], None);
+        let reg = Registry::from_parts(vec![overlay], None, HashMap::new());
         assert!(matches!(
             reg.resolve(34, "a.b.IFoo", 99),
             Lookup::UnknownCode { .. }
@@ -286,6 +286,279 @@ mod tests {
             other => panic!("expected Hit, got {:?}", other),
         }
     }
+
+    #[test]
+    fn native_layer_resolves_after_aosp_miss() {
+        use std::io::Write;
+        let tmp = TempDir::new();
+        let native_dir = tmp.path().join("native");
+        std::fs::create_dir_all(native_dir.join("android-34/aidl/android/utils")).unwrap();
+        let mut f =
+            std::fs::File::create(native_dir.join("android-34/aidl/android/utils/IMemory.aidl"))
+                .unwrap();
+        writeln!(
+            f,
+            "package android.utils; interface IMemory {{ void getMemory() = 1; }}"
+        )
+        .unwrap();
+
+        let reg = Registry::empty().with_native_dir(&native_dir);
+        match reg.resolve(34, "android.utils.IMemory", 1) {
+            Lookup::Hit { method, source } => {
+                assert_eq!(method.name, "getMemory");
+                assert!(matches!(source, Source::Native));
+            }
+            other => panic!("expected Native hit, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bundled_native_corpus_resolves_gui_family() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let native_dir = repo_root.join("data/native");
+        let reg = Registry::empty().with_native_dir(&native_dir);
+        for sdk in [33u32, 34u32, 35u32, 36u32] {
+            for (fqn, code, expected) in [
+                // code 1 = ON_DISCONNECT (onFrameAvailable is code 2)
+                ("android.gui.IConsumerListener", 1u32, "onDisconnect"),
+                ("android.gui.IGraphicBufferConsumer", 1, "acquireBuffer"),
+                (
+                    "android.gui.ITransactionComposerListener",
+                    1,
+                    "onTransactionCompleted",
+                ),
+                ("android.gui.SensorEventConnection", 1, "getSensorChannel"),
+                ("android.gui.SensorServer", 1, "getSensorList"),
+            ] {
+                match reg.resolve(sdk, fqn, code) {
+                    Lookup::Hit { method, .. } => {
+                        assert_eq!(method.name, expected, "sdk={sdk} fqn={fqn}")
+                    }
+                    other => panic!("expected hit for sdk={sdk} fqn={fqn}, got {:?}", other),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bundled_native_corpus_resolves_imemory() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let native_dir = repo_root.join("data/native");
+        let reg = Registry::empty().with_native_dir(&native_dir);
+        for sdk in [33u32, 34u32, 35u32, 36u32] {
+            match reg.resolve(sdk, "android.utils.IMemory", 1) {
+                Lookup::Hit { method, source } => {
+                    assert_eq!(method.name, "getMemory", "sdk={sdk}");
+                    assert!(matches!(source, Source::Native));
+                }
+                other => panic!(
+                    "expected Native hit for IMemory at sdk={sdk}, got {:?}",
+                    other
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn bundled_native_corpus_resolves_media_family() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let native_dir = repo_root.join("data/native");
+        let reg = Registry::empty().with_native_dir(&native_dir);
+        // code-1 method names verified stable across android-33..36 from .aidl sources.
+        for sdk in [33u32, 34u32, 35u32, 36u32] {
+            for (fqn, code, expected) in [
+                ("android.media.IDataSource", 1u32, "getIMemory"),
+                ("android.media.IMediaCodecList", 1, "create"),
+                ("android.media.IMediaExtractor", 1, "countTracks"),
+                ("android.media.IMediaLogService", 1, "registerWriter"),
+                ("android.media.IMediaMetadataRetriever", 1, "disconnect"),
+                ("android.media.IMediaPlayer", 1, "disconnect"),
+                ("android.media.IMediaPlayerClient", 1, "notify"),
+                ("android.media.IMediaPlayerService", 1, "create"),
+                ("android.media.IMediaRecorder", 1, "release"),
+                ("android.media.IMediaRecorderClient", 1, "notify"),
+                ("android.media.IMediaSource", 1, "start"),
+                ("android.media.IRemoteDisplay", 1, "dispose"),
+                (
+                    "android.media.IRemoteDisplayClient",
+                    1,
+                    "onDisplayConnected",
+                ),
+            ] {
+                match reg.resolve(sdk, fqn, code) {
+                    Lookup::Hit { method, .. } => {
+                        assert_eq!(method.name, expected, "sdk={sdk} fqn={fqn}");
+                    }
+                    other => panic!("expected hit for sdk={sdk} fqn={fqn}, got {:?}", other),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bundled_native_corpus_resolves_hardware_family() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let native_dir = repo_root.join("data/native");
+        let reg = Registry::empty().with_native_dir(&native_dir);
+        for sdk in [33u32, 34u32, 35u32, 36u32] {
+            for fqn in [
+                "android.hardware.ICameraRecordingProxy",
+                // ICameraRecordingProxyListener: deleted post-android-11; shipped to all
+                // SDKs (like ISurfaceComposer) for vendor binary compat.
+                "android.hardware.ICameraRecordingProxyListener",
+                "android.hardware.IStreamSource",
+            ] {
+                assert!(
+                    matches!(reg.resolve(sdk, fqn, 1), Lookup::Hit { .. }),
+                    "no Hit at code 1 for sdk={sdk} fqn={fqn}",
+                );
+            }
+            // IStreamListener codes start at 5 (shared enum with IStreamSource in same TU)
+            assert!(
+                matches!(
+                    reg.resolve(sdk, "android.hardware.IStreamListener", 5),
+                    Lookup::Hit { .. }
+                ),
+                "no Hit at code 5 for sdk={sdk} android.hardware.IStreamListener",
+            );
+            // IOMXObserver::onMessages is code 20 (shared enum with IOMXNode in IOMX.cpp)
+            assert!(
+                matches!(
+                    reg.resolve(sdk, "android.hardware.IOMXObserver", 20),
+                    Lookup::Hit { .. }
+                ),
+                "no Hit at code 20 for sdk={sdk} android.hardware.IOMXObserver",
+            );
+        }
+    }
+
+    #[test]
+    fn bundled_native_corpus_resolves_drm_and_misc() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let native_dir = repo_root.join("data/native");
+        let reg = Registry::empty().with_native_dir(&native_dir);
+        for sdk in [33u32, 34u32, 35u32, 36u32] {
+            assert!(
+                matches!(
+                    reg.resolve(sdk, "drm.IDrmServiceListener", 1),
+                    Lookup::Hit { .. }
+                ),
+                "no Hit for sdk={sdk} drm.IDrmServiceListener",
+            );
+            assert!(
+                matches!(
+                    reg.resolve(sdk, "com.android.car.procfsinspector.IProcfsInspector", 1),
+                    Lookup::Hit { .. }
+                ),
+                "no Hit for sdk={sdk} IProcfsInspector",
+            );
+            assert!(
+                matches!(
+                    reg.resolve(sdk, "android.graphicsenv.IGpuService", 1),
+                    Lookup::Hit { .. }
+                ),
+                "no Hit for sdk={sdk} IGpuService",
+            );
+            // IDrmManagerService has 32 entries — assert at least 10
+            let drm_count = (1..=50)
+                .filter(|c| {
+                    matches!(
+                        reg.resolve(sdk, "drm.IDrmManagerService", *c),
+                        Lookup::Hit { .. }
+                    )
+                })
+                .count();
+            assert!(
+                drm_count >= 10,
+                "sdk={sdk} IDrmManagerService only has {drm_count} method entries",
+            );
+        }
+    }
+
+    #[test]
+    fn every_native_fqn_resolves_via_corpus() {
+        // per-(sdk, fqn) exemptions. add with a brief reason when an interface
+        // has no .aidl in data/native/ for that sdk level.
+        const NO_SYNTHETIC_AIDL: &[(u32, &str)] = &[];
+
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let native_dir = repo_root.join("data/native");
+        let reg = Registry::empty().with_native_dir(&native_dir);
+
+        for fqn in crate::native_interfaces::all() {
+            for sdk in [33u32, 34u32, 35u32, 36u32] {
+                if NO_SYNTHETIC_AIDL.contains(&(sdk, fqn)) {
+                    continue;
+                }
+                // Probe a reasonable code range — 64 covers every interface in the
+                // corpus (largest is ISurfaceComposer at 63 entries). Require at
+                // least one Hit to prove the AIDL has callable methods, not just
+                // an empty interface body.
+                let has_hit = (1..=64u32)
+                    .any(|code| matches!(reg.resolve(sdk, fqn, code), Lookup::Hit { .. }));
+                assert!(
+                    has_hit,
+                    "FQN {fqn} at sdk={sdk}: no Lookup::Hit in code range 1..=64. \
+                     Either the synthetic AIDL is missing methods, or the codes are out of range.",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_layer_does_not_shadow_aosp() {
+        use std::io::Write;
+        let tmp = TempDir::new();
+
+        // AOSP-side fixture
+        let aosp_dir = tmp.path().join("aosp");
+        let pkg = aosp_dir.join("android-34/aidl/x/y");
+        std::fs::create_dir_all(&pkg).unwrap();
+        let mut f = std::fs::File::create(pkg.join("IShared.aidl")).unwrap();
+        writeln!(
+            f,
+            "package x.y; interface IShared {{ void aosp_method() = 1; }}"
+        )
+        .unwrap();
+
+        // Native-side fixture with the SAME fqn but different method
+        let native_dir = tmp.path().join("native");
+        std::fs::create_dir_all(native_dir.join("android-34/aidl/x/y")).unwrap();
+        let mut g =
+            std::fs::File::create(native_dir.join("android-34/aidl/x/y/IShared.aidl")).unwrap();
+        writeln!(
+            g,
+            "package x.y; interface IShared {{ void native_method() = 1; }}"
+        )
+        .unwrap();
+
+        let reg = Registry::with_aosp_dir(aosp_dir).with_native_dir(&native_dir);
+        match reg.resolve(34, "x.y.IShared", 1) {
+            Lookup::Hit { method, source } => {
+                assert_eq!(method.name, "aosp_method");
+                assert!(matches!(source, Source::Lazy));
+            }
+            other => panic!("expected AOSP Lazy hit, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bundled_native_corpus_resolves_isurfacecomposer_legacy() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let native_dir = repo_root.join("data/native");
+        let reg = Registry::empty().with_native_dir(&native_dir);
+        for sdk in [33u32, 34u32, 35u32, 36u32] {
+            match reg.resolve(sdk, "android.ui.ISurfaceComposer", 1) {
+                Lookup::Hit { method, .. } => {
+                    assert_eq!(method.name, "bootFinished", "sdk={sdk}");
+                }
+                other => panic!(
+                    "expected hit for android.ui.ISurfaceComposer at sdk={sdk}, got {:?}",
+                    other
+                ),
+            }
+        }
+    }
 }
 
 use crate::model::{Interface, Method, OverlayLayer};
@@ -310,11 +583,19 @@ pub enum Lookup<'a> {
 pub enum Source<'a> {
     Overlay(&'a Path),
     Lazy,
+    /// Hit from the bundled synthetic `data/native/` corpus that ships
+    /// AIDL stand-ins for hand-written C++ binder interfaces.
+    Native,
 }
 
 pub struct Registry {
     overlays: Vec<OverlayLayer>,
     aosp_root: Option<PathBuf>,
+    /// Synthetic native AIDL corpus, keyed by Android SDK level. The
+    /// underlying C++ enums drift across releases (methods appended,
+    /// occasionally renumbered) so the corpus mirrors the AOSP layout
+    /// at one `Vec<OverlayLayer>` per `android-<sdk>/aidl/` subdir.
+    native_layers: HashMap<u32, Vec<OverlayLayer>>,
     /// Cache for lazy loads. `None` value caches negative lookups so we
     /// don't re-stat / re-parse missing files. Box::leak'd so the
     /// `&'static Interface` borrow can outlive the RwLockReadGuard at
@@ -328,20 +609,77 @@ pub struct Registry {
 
 impl Registry {
     pub fn empty() -> Self {
-        Self::from_parts(vec![], None)
+        Self::from_parts(vec![], None, HashMap::new())
     }
 
-    pub fn from_parts(overlays: Vec<OverlayLayer>, aosp_root: Option<PathBuf>) -> Self {
+    pub fn from_parts(
+        overlays: Vec<OverlayLayer>,
+        aosp_root: Option<PathBuf>,
+        native_layers: HashMap<u32, Vec<OverlayLayer>>,
+    ) -> Self {
         Self {
             overlays,
             aosp_root,
+            native_layers,
             lazy_cache: RwLock::new(HashMap::new()),
             fqn_index: RwLock::new(HashMap::new()),
         }
     }
 
     pub fn with_aosp_dir(root: PathBuf) -> Self {
-        Self::from_parts(vec![], Some(root))
+        Self::from_parts(vec![], Some(root), HashMap::new())
+    }
+
+    /// Walk `native_dir` looking for `android-<sdk>/aidl/` subtrees. Each
+    /// such subtree becomes a `Vec<OverlayLayer>` keyed by its sdk number.
+    /// SDKs without a matching subdir simply get no native layers.
+    pub fn with_native_dir(mut self, native_dir: &Path) -> Self {
+        let entries = match std::fs::read_dir(native_dir) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!(
+                    "binderdump-aidl: cannot read native corpus dir {}: {}",
+                    native_dir.display(),
+                    e
+                );
+                return self;
+            }
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name_str) = name.to_str() else {
+                continue;
+            };
+            let Some(sdk_str) = name_str.strip_prefix("android-") else {
+                continue;
+            };
+            let Ok(sdk) = sdk_str.parse::<u32>() else {
+                continue;
+            };
+            let aidl_subdir = entry.path().join("aidl");
+            match Self::load_overlay_dir(&aidl_subdir) {
+                Ok(layers) if !layers.is_empty() => {
+                    self.native_layers.insert(sdk, layers);
+                }
+                Ok(_) => {
+                    // aidl/ exists but has no parseable .aidl files — skip silently;
+                    // an empty per-SDK dir is a valid intermediate state during backfill.
+                }
+                Err(e) => {
+                    eprintln!(
+                        "binderdump-aidl: cannot load native AIDL for sdk={}: {}",
+                        sdk, e
+                    );
+                }
+            }
+        }
+        if self.native_layers.is_empty() {
+            eprintln!(
+                "binderdump-aidl: native corpus dir {} contained no android-<sdk>/aidl/ subdirs",
+                native_dir.display()
+            );
+        }
+        self
     }
 
     pub fn resolve(&self, android_sdk: u32, fqn: &str, code: u32) -> Lookup<'_> {
@@ -362,10 +700,30 @@ impl Registry {
             }
         }
 
-        // fall through to lazy backend, if any
+        // Then AOSP lazy backend, if any. Only fall through to native layers
+        // if AOSP has nothing for this fqn — an AOSP hit (Hit or UnknownCode)
+        // must terminate so native synthetic AIDL never shadows real AOSP AIDL.
         if self.aosp_root.is_some() {
             let leaked = self.lazy_resolve_recursive(android_sdk, fqn);
-            return self.materialize_lazy(leaked, code);
+            if leaked.is_some() {
+                return self.materialize_lazy(leaked, code);
+            }
+        }
+
+        // Native synthetic corpus as last resort before UnknownInterface.
+        // Per-SDK: only the layers for this android_sdk are eligible.
+        if let Some(layers) = self.native_layers.get(&android_sdk) {
+            for layer in layers.iter() {
+                if let Some(iface) = layer.interfaces.get(fqn) {
+                    return match iface.lookup(code) {
+                        Some(m) => Lookup::Hit {
+                            method: m,
+                            source: Source::Native,
+                        },
+                        None => Lookup::UnknownCode { interface: iface },
+                    };
+                }
+            }
         }
         Lookup::UnknownInterface
     }
