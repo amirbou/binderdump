@@ -40,14 +40,16 @@ pub fn parse_aidl_token(bytes: &[u8], android_sdk: u32) -> Option<String> {
     String::from_utf16(&units).ok()
 }
 
+// libhwbinder's Parcel::writeInterfaceToken calls writeCString, which writes the
+// null-terminated bytes 4-byte aligned. No length prefix on the wire.
 pub fn parse_hidl_token(bytes: &[u8]) -> Option<String> {
-    let len = read_i32_le(bytes, 0)?;
-    if len < 0 {
+    let end = bytes.iter().position(|&b| b == 0)?;
+    if end == 0 {
         return None;
     }
-    let n = len as usize;
-    let s = bytes.get(4..4 + n)?;
-    std::str::from_utf8(s).ok().map(|s| s.to_string())
+    std::str::from_utf8(&bytes[..end])
+        .ok()
+        .map(|s| s.to_string())
 }
 
 fn read_u32_le(buf: &[u8], off: usize) -> Option<u32> {
@@ -120,10 +122,8 @@ mod tests {
 
     fn build_hidl_token(descriptor: &str) -> Vec<u8> {
         let mut v = Vec::new();
-        let bytes = descriptor.as_bytes();
-        v.extend_from_slice(&(bytes.len() as i32).to_le_bytes()); // byte_count (excluding null)
-        v.extend_from_slice(bytes);
-        v.push(0); // null
+        v.extend_from_slice(descriptor.as_bytes());
+        v.push(0);
         while v.len() % 4 != 0 {
             v.push(0);
         }
@@ -142,5 +142,22 @@ mod tests {
     #[test]
     fn hidl_truncated_returns_none() {
         assert!(parse_hidl_token(&[0u8; 2]).is_none());
+    }
+
+    // Real bytes captured from a SurfaceFlinger -> composer HAL transaction
+    // on /dev/hwbinder. Wire format has no length prefix.
+    #[test]
+    fn hidl_real_capture_bytes() {
+        let bytes: &[u8] = b"android.hardware.graphics.composer@2.1::IComposerClient\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00";
+        assert_eq!(
+            parse_hidl_token(bytes),
+            Some("android.hardware.graphics.composer@2.1::IComposerClient".into())
+        );
+    }
+
+    #[test]
+    fn hidl_no_null_returns_none() {
+        let bytes = b"android.hardware.audio@7.0::IDevice";
+        assert!(parse_hidl_token(bytes).is_none());
     }
 }
