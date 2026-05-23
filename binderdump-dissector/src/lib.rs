@@ -1,9 +1,11 @@
 mod aidl_resolve;
 mod binderdump;
+mod col_info;
 mod dissect_flat_objects;
 mod dissect_offsets;
 mod epan_plugin;
 mod header_fields_manager;
+mod txn_link;
 pub mod version_check;
 
 use binderdump_epan_sys::epan;

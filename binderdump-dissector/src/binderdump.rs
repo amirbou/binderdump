@@ -85,7 +85,6 @@ fn dissect_br_data(
     };
 
     let mut pos = 0;
-    let mut returns_str = String::new();
     let br_dissect = BwrDissect {
         event,
         manager,
@@ -95,7 +94,6 @@ fn dissect_br_data(
 
     while pos < data.len() {
         let result = binder_return::BinderReturn::from_bytes(&data[pos..])?;
-        returns_str.push_str(result.get_header().to_str());
         unsafe {
             let br_tree = epan::proto_tree_add_subtree(
                 returns_tree,
@@ -167,9 +165,6 @@ fn dissect_br_data(
         }
 
         pos += result.size();
-        if pos < data.len() {
-            returns_str.push_str(", ");
-        }
     }
     if pos != data.len() {
         return Err(anyhow::anyhow!(
@@ -179,14 +174,6 @@ fn dissect_br_data(
         ));
     }
 
-    let returns_cstr = CString::new(returns_str)?;
-    unsafe {
-        epan::col_add_str(
-            (*pinfo).cinfo,
-            epan::COL_INFO as c_int,
-            returns_cstr.as_ptr(),
-        )
-    };
     Ok(())
 }
 
@@ -217,8 +204,6 @@ fn dissect_bc_data(
     };
 
     let mut pos = 0;
-    let mut commands_str = String::new();
-
     let bc_dissect = BwrDissect {
         event,
         manager,
@@ -228,7 +213,6 @@ fn dissect_bc_data(
 
     while pos < data.len() {
         let result = binder_command::BinderCommand::from_bytes(&data[pos..])?;
-        commands_str.push_str(result.get_header().to_str());
         unsafe {
             let bc_tree = epan::proto_tree_add_subtree(
                 commands_tree,
@@ -313,9 +297,6 @@ fn dissect_bc_data(
         }
 
         pos += result.size();
-        if pos < data.len() {
-            commands_str.push_str(", ");
-        }
     }
     if pos != data.len() {
         return Err(anyhow::anyhow!(
@@ -325,14 +306,6 @@ fn dissect_bc_data(
         ));
     }
 
-    let commands_cstr = CString::new(commands_str)?;
-    unsafe {
-        epan::col_add_str(
-            (*pinfo).cinfo,
-            epan::COL_INFO as c_int,
-            commands_cstr.as_ptr(),
-        )
-    };
     Ok(())
 }
 
@@ -352,6 +325,31 @@ pub fn dissect_bwr_data(
         true => dissect_bc_data(event, ett, manager, &bwr.data, offset, tvb, pinfo, tree),
         false => dissect_br_data(event, ett, manager, &bwr.data, offset, tvb, pinfo, tree),
     }
+}
+
+pub fn collect_command_names(is_write: bool, data: &[u8]) -> Vec<&'static str> {
+    let mut names = Vec::new();
+    let mut pos = 0;
+    while pos < data.len() {
+        if is_write {
+            match binder_command::BinderCommand::from_bytes(&data[pos..]) {
+                Ok(cmd) => {
+                    names.push(cmd.get_header().to_str());
+                    pos += cmd.size();
+                }
+                Err(_) => break,
+            }
+        } else {
+            match binder_return::BinderReturn::from_bytes(&data[pos..]) {
+                Ok(ret) => {
+                    names.push(ret.get_header().to_str());
+                    pos += ret.size();
+                }
+                Err(_) => break,
+            }
+        }
+    }
+    names
 }
 
 pub trait AddBinderTypes {
@@ -404,5 +402,28 @@ impl AddBinderTypes for ProtocolBuilder {
                 "TransactionSg",
                 br_prefix!("transaction_sg"),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collect_command_names_empty() {
+        let names = collect_command_names(true, &[]);
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn collect_command_names_bc_free_buffer() {
+        // BC_FREE_BUFFER opcode + 8-byte buffer pointer payload.
+        let bc_free =
+            binderdump_structs::binder_types::binder_command::binder_command::BC_FREE_BUFFER as u32;
+        let mut data = Vec::new();
+        data.extend_from_slice(&bc_free.to_le_bytes());
+        data.extend_from_slice(&0u64.to_le_bytes());
+        let names = collect_command_names(true, &data);
+        assert_eq!(names, vec!["BC_FREE_BUFFER"]);
     }
 }

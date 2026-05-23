@@ -343,3 +343,70 @@ fn matching_version_fixture_dissects_cleanly() {
         stderr,
     );
 }
+
+#[test]
+fn col_info_shows_request_arrow_for_at_least_one_frame() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let out = tshark(&[
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "_ws.col.Info",
+    ]);
+    assert!(
+        out.lines().any(|l| l.contains('\u{2192}')),
+        "expected at least one frame with a \u{2192} (request arrow) in COL_INFO\nfull output:\n{}",
+        out
+    );
+}
+
+#[test]
+fn col_info_shows_reply_marker_for_at_least_one_frame() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let out = tshark(&[
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "_ws.col.Info",
+    ]);
+    assert!(
+        out.lines().any(|l| l.contains("\u{2190} reply")),
+        "expected at least one frame with '\u{2190} reply' in COL_INFO\nfull output:\n{}",
+        out
+    );
+}
+
+#[test]
+fn at_least_one_frame_has_a_frame_link() {
+    // tshark dissects in a single pass, so only the BR frame sees its BC partner
+    // (BC is recorded first, BR looks it up). Accept either direction populated.
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let out = tshark(&[
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "binderdump.ioctl_data.bwr.transaction.bc_frame",
+        "-e",
+        "binderdump.ioctl_data.bwr.transaction.br_frame",
+        "-E",
+        "separator=,",
+    ]);
+    let any_link = out.lines().any(|l| {
+        let parts: Vec<&str> = l.split(',').collect();
+        parts.len() == 2 && (!parts[0].is_empty() || !parts[1].is_empty())
+    });
+    assert!(
+        any_link,
+        "expected at least one frame with bc_frame or br_frame populated\nfull output:\n{}",
+        out
+    );
+}
