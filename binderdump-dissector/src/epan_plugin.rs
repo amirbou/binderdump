@@ -8,7 +8,11 @@ use core::slice;
 use std::collections::HashMap;
 use std::ffi::{c_int, c_void, CStr, CString};
 use std::ptr::null_mut;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
+
+use crate::binderdump::collect_command_names;
+use crate::col_info::{self, ColInputs, Direction};
+use crate::txn_link::TxnLinkTable;
 
 use crate::aidl_resolve;
 use crate::binderdump::dissect_bwr_data;
@@ -30,6 +34,7 @@ pub struct Protocol {
     handle: c_int,
     exported_pdu_tap: c_int,
     dissector: Dissector,
+    txn_link: Mutex<Option<TxnLinkTable>>,
 }
 
 impl Protocol {
@@ -58,6 +63,7 @@ impl Protocol {
                 )
                 .unwrap(),
             },
+            txn_link: Mutex::new(None),
         };
 
         proto.register_proto();
@@ -102,6 +108,77 @@ impl Protocol {
 
     fn register_subtrees(&mut self) {
         self.dissector.field_manager.register_subtrees();
+    }
+
+    fn ensure_table(&self) -> std::sync::MutexGuard<'_, Option<TxnLinkTable>> {
+        let mut guard = self.txn_link.lock().unwrap();
+        let need_new = match guard.as_ref() {
+            None => true,
+            Some(t) => unsafe { t.current_scope() != epan::wmem_file_scope() },
+        };
+        if need_new {
+            *guard = Some(TxnLinkTable::new());
+        }
+        guard
+    }
+
+    fn record_and_render_frame_link(
+        &self,
+        event: &binderdump_structs::event_layer::EventProtocol,
+        pinfo: *mut epan::packet_info,
+        tvb: *mut epan::tvbuff_t,
+        tree_item: *mut epan::proto_node,
+    ) {
+        let Some(bwr) = event.ioctl_data.as_ref().and_then(|i| i.bwr.as_ref()) else {
+            return;
+        };
+        let Some(txn) = bwr.transaction.as_ref() else {
+            return;
+        };
+        let debug_id = txn.debug_id;
+        if debug_id == 0 {
+            return;
+        }
+
+        let direction = if bwr.is_write() {
+            Direction::Bc
+        } else {
+            Direction::Br
+        };
+        let frame_num = unsafe { (*(*pinfo).fd).num };
+        let visited = unsafe { (*(*pinfo).fd).visited() != 0 };
+
+        let guard = self.ensure_table();
+        let Some(table) = guard.as_ref() else { return };
+
+        if !visited {
+            match direction {
+                Direction::Bc => table.record_bc(debug_id, frame_num),
+                Direction::Br => table.record_br(debug_id, frame_num),
+            }
+        }
+
+        let Some(link) = table.lookup(debug_id) else {
+            return;
+        };
+        let bc_hf = self
+            .dissector
+            .field_manager
+            .get_handle("binderdump.ioctl_data.bwr.transaction.bc_frame")
+            .unwrap_or(-1);
+        let br_hf = self
+            .dissector
+            .field_manager
+            .get_handle("binderdump.ioctl_data.bwr.transaction.br_frame")
+            .unwrap_or(-1);
+        unsafe {
+            if direction == Direction::Br && link.bc_frame != 0 && bc_hf >= 0 {
+                epan::proto_tree_add_uint(tree_item, bc_hf, tvb, 0, 0, link.bc_frame);
+            }
+            if direction == Direction::Bc && link.br_frame != 0 && br_hf >= 0 {
+                epan::proto_tree_add_uint(tree_item, br_hf, tvb, 0, 0, link.br_frame);
+            }
+        }
     }
 
     fn add_exported_pdu(&self, tvb: *mut epan::tvbuff_t, pinfo: *mut epan::packet_info) {
@@ -187,11 +264,15 @@ impl Protocol {
                 "{}:{}:{}",
                 event.pid,
                 event.tid,
-                String::from_utf8(event.cmdline)?
+                String::from_utf8(event.cmdline.clone())?
             );
             let csource = CString::new(source)?;
             let mut ctarget = None;
             let mut switch_src_dst = false;
+
+            self.record_and_render_frame_link(&event, pinfo, tvb, tree_item);
+
+            let col_string = build_col_string(&event);
 
             if let Some(ioctl) = event.ioctl_data {
                 if let Some(bwr) = ioctl.bwr {
@@ -223,6 +304,12 @@ impl Protocol {
                 None => c"KERNEL".into(),
             };
             epan::col_add_str((*pinfo).cinfo, dst_col as c_int, ctarget.as_ptr());
+
+            if !col_string.is_empty() {
+                let cstr = std::ffi::CString::new(col_string)
+                    .unwrap_or_else(|_| std::ffi::CString::default());
+                epan::col_add_str((*pinfo).cinfo, epan::COL_INFO as c_int, cstr.as_ptr());
+            }
 
             Ok(epan::tvb_captured_length(tvb) as c_int)
         }
@@ -402,6 +489,20 @@ pub extern "C" fn register_protoinfo() {
                 abbrev: "binderdump.ioctl_data.bwr.transaction.method_source".into(),
                 ftype: FtEnum::String,
                 display: FieldDisplay::StrAsciis,
+                strings: None,
+            })
+            .add_extra_field(FieldInfo {
+                name: "BC Frame".into(),
+                abbrev: "binderdump.ioctl_data.bwr.transaction.bc_frame".into(),
+                ftype: FtEnum::FrameNum,
+                display: FieldDisplay::None,
+                strings: None,
+            })
+            .add_extra_field(FieldInfo {
+                name: "BR Frame".into(),
+                abbrev: "binderdump.ioctl_data.bwr.transaction.br_frame".into(),
+                ftype: FtEnum::FrameNum,
+                display: FieldDisplay::None,
                 strings: None,
             })
             .add_bc_types()
@@ -638,4 +739,57 @@ unsafe fn register_aosp_dir_pref(proto_id: c_int) {
     AOSP_DIR = default as *const _;
 
     epan::prefs_register_directory_preference(module, name, title, descr, &raw mut AOSP_DIR);
+}
+
+fn build_col_string(event: &binderdump_structs::event_layer::EventProtocol) -> String {
+    let Some(ioctl) = event.ioctl_data.as_ref() else {
+        return String::new();
+    };
+    let Some(bwr) = ioctl.bwr.as_ref() else {
+        return String::new();
+    };
+
+    let direction = if bwr.is_write() {
+        Direction::Bc
+    } else {
+        Direction::Br
+    };
+    let raw_names = collect_command_names(bwr.is_write(), &bwr.data);
+    let raw_refs: Vec<&str> = raw_names.iter().copied().collect();
+
+    let (has_transaction, is_reply, iface, method, code) = match bwr.transaction.as_ref() {
+        Some(txn) => {
+            let is_reply = txn.reply != 0;
+            if is_reply {
+                (true, true, None, None, 0)
+            } else {
+                let r = crate::aidl_resolve::resolve(
+                    crate::aidl_resolve::registry(),
+                    event.binder_interface(),
+                    txn.code,
+                    event.android_sdk(),
+                    &txn.data,
+                );
+                (
+                    true,
+                    false,
+                    r.interface.clone(),
+                    r.method_name.clone(),
+                    txn.code,
+                )
+            }
+        }
+        None => (false, false, None, None, 0),
+    };
+
+    let inputs = ColInputs {
+        direction,
+        is_reply,
+        iface: iface.as_deref(),
+        method: method.as_deref(),
+        code,
+        raw_commands: &raw_refs,
+        has_transaction,
+    };
+    col_info::format(&inputs)
 }

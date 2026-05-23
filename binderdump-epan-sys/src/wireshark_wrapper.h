@@ -5,4 +5,6 @@
 #include <epan/prefs.h>
 #include <epan/proto.h>
 #include <epan/tap.h>
+#include <epan/wmem_scopes.h>
 #include <gmodule.h>
+#include <wsutil/wmem/wmem_map.h>
