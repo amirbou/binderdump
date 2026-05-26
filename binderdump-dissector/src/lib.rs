@@ -5,6 +5,7 @@ mod dissect_flat_objects;
 mod dissect_offsets;
 mod epan_plugin;
 mod epan_utils;
+pub mod follow_stream;
 mod header_fields_manager;
 pub mod reply_correlation;
 pub mod reply_postdissector;

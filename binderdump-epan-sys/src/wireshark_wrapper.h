@@ -1,6 +1,7 @@
 #include <epan/epan.h>
 #include <epan/expert.h>
 #include <epan/exported_pdu.h>
+#include <epan/follow.h>
 #include <epan/packet.h>
 #include <epan/prefs.h>
 #include <epan/proto.h>

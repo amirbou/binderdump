@@ -5,7 +5,6 @@ pub enum Direction {
 }
 
 pub struct ColInputs<'a> {
-    pub direction: Direction,
     pub is_reply: bool,
     pub iface: Option<&'a str>,
     pub method: Option<&'a str>,
@@ -34,7 +33,6 @@ mod tests {
 
     fn base<'a>(raw: &'a [&'a str]) -> ColInputs<'a> {
         ColInputs {
-            direction: Direction::Bc,
             is_reply: false,
             iface: None,
             method: None,
@@ -69,11 +67,6 @@ mod tests {
         code: u32,
     ) -> ColInputs<'a> {
         ColInputs {
-            direction: if is_reply {
-                Direction::Br
-            } else {
-                Direction::Bc
-            },
             is_reply,
             iface,
             method,

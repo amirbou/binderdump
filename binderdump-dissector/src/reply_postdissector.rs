@@ -15,6 +15,7 @@ static mut HF_RESPONSE_TO: c_int = -1;
 static mut HF_RESPONSE_TIME: c_int = -1;
 static mut HF_REQUEST_INTERFACE: c_int = -1;
 static mut HF_REQUEST_METHOD: c_int = -1;
+static mut HF_TRANSACTION_STREAM_ID: c_int = -1;
 static mut ETT_BINDERDUMP_REPLY: c_int = -1;
 
 static mut EI_ORPHAN_REPLY: epan::expert_field = epan::expert_field { ei: -1, hf: -1 };
@@ -34,7 +35,7 @@ pub fn register() {
 
     // these strings are embedded in c"..." literals so they live for the
     // process lifetime — safe to hand raw pointers to Wireshark.
-    static mut HF_INFO: [epan::hf_register_info; 5] = unsafe { std::mem::zeroed() };
+    static mut HF_INFO: [epan::hf_register_info; 6] = unsafe { std::mem::zeroed() };
 
     unsafe {
         // FRAMENUM_TYPE: smuggle the request/response role through the
@@ -77,6 +78,14 @@ pub fn register() {
             c"binderdump_reply.request_method",
             epan::ftenum::FT_STRING,
             epan::field_display_e::BASE_NONE as c_int,
+            std::ptr::null(),
+        );
+        HF_INFO[5] = make_hf_register_info(
+            &raw mut HF_TRANSACTION_STREAM_ID,
+            c"Transaction stream ID",
+            c"binderdump_reply.transaction_stream_id",
+            epan::ftenum::FT_UINT32,
+            epan::field_display_e::BASE_DEC as c_int,
             std::ptr::null(),
         );
 
@@ -130,9 +139,8 @@ unsafe extern "C" fn dissect(
 
     let frame = (*(*pinfo).fd).num;
 
-    let meta = match crate::reply_correlation::lookup_frame(frame) {
-        Some(m) => m,
-        None => return 0,
+    let Some(meta) = crate::reply_correlation::lookup_frame(frame) else {
+        return 0;
     };
 
     if meta.debug_id == 0 && meta.in_reply_to_debug_id == 0 {
@@ -149,54 +157,79 @@ unsafe extern "C" fn dissect(
     let subtree = epan::proto_item_add_subtree(root, ETT_BINDERDUMP_REPLY);
 
     if meta.reply == 0 {
-        // this is a request — look up whether a reply was seen and add response_in
-        if let Some(txn) = crate::reply_correlation::lookup_txn(meta.debug_id) {
-            if txn.rep_frame != 0 {
-                add_generated_uint(subtree, HF_RESPONSE_IN, tvb, txn.rep_frame);
-            }
-        }
+        dissect_request(subtree, tvb, &meta);
     } else {
-        // this is a reply — link back to the request
-        let key = meta.in_reply_to_debug_id;
-        let txn = crate::reply_correlation::lookup_txn(key);
-        if key != 0 && txn.is_none() {
-            // capture started mid-flight or the request frame was lost — flag
-            // it so users can see why no link is present.
-            epan::expert_add_info(pinfo, root, &raw mut EI_ORPHAN_REPLY);
-        }
-        if let Some(txn) = txn {
-            if txn.req_frame != 0 {
-                add_generated_uint(subtree, HF_RESPONSE_TO, tvb, txn.req_frame);
-            }
+        dissect_reply(subtree, tvb, pinfo, root, &meta);
+    }
 
-            // response time: delta = reply_ts - req_ts
-            if let Some(req_ts) = txn.req_time {
-                let rep_ts = (*(*pinfo).fd).abs_ts;
-                let mut delta = epan::nstime_t { secs: 0, nsecs: 0 };
-                epan::nstime_delta(&mut delta, &rep_ts, &req_ts);
-                add_generated_time(subtree, HF_RESPONSE_TIME, tvb, &delta);
-            }
-
-            if let Some(iface) = txn.interface.as_deref() {
-                add_generated_string(subtree, HF_REQUEST_INTERFACE, tvb, iface);
-            }
-            if let Some(method) = txn.method_name.as_deref() {
-                add_generated_string(subtree, HF_REQUEST_METHOD, tvb, method);
-            }
-
-            // Overwrite the bare "← reply" set by the main dissector with the
-            // enriched form so users see what call this reply belongs to.
-            if let Some(method) = txn.method_name.as_deref() {
-                let label = match txn.interface.as_deref() {
-                    Some(iface) => format!("\u{2190} reply to {}.{}()", iface, method),
-                    None => format!("\u{2190} reply to {}", method),
-                };
-                if let Ok(cs) = CString::new(label) {
-                    epan::col_add_str((*pinfo).cinfo, epan::COL_INFO as c_int, cs.as_ptr());
-                }
-            }
-        }
+    if let Some(idx) = crate::reply_correlation::stream_index_for_frame(frame) {
+        add_generated_uint(subtree, HF_TRANSACTION_STREAM_ID, tvb, idx);
     }
 
     epan::tvb_captured_length(tvb) as c_int
+}
+
+unsafe fn dissect_request(
+    subtree: *mut epan::proto_tree,
+    tvb: *mut epan::tvbuff_t,
+    meta: &crate::reply_correlation::FrameMeta,
+) {
+    let Some(txn) = crate::reply_correlation::lookup_txn(meta.debug_id) else {
+        return;
+    };
+    if txn.rep_frame == 0 {
+        return;
+    }
+    add_generated_uint(subtree, HF_RESPONSE_IN, tvb, txn.rep_frame);
+}
+
+unsafe fn dissect_reply(
+    subtree: *mut epan::proto_tree,
+    tvb: *mut epan::tvbuff_t,
+    pinfo: *mut epan::packet_info,
+    root: *mut epan::proto_item,
+    meta: &crate::reply_correlation::FrameMeta,
+) {
+    let key = meta.in_reply_to_debug_id;
+    let txn = crate::reply_correlation::lookup_txn(key);
+    if key != 0 && txn.is_none() {
+        // capture started mid-flight or the request frame was lost — flag
+        // it so users can see why no link is present.
+        epan::expert_add_info(pinfo, root, &raw mut EI_ORPHAN_REPLY);
+    }
+    let Some(txn) = txn else { return };
+
+    if txn.req_frame != 0 {
+        add_generated_uint(subtree, HF_RESPONSE_TO, tvb, txn.req_frame);
+    }
+
+    if let Some(req_ts) = txn.req_time {
+        let rep_ts = (*(*pinfo).fd).abs_ts;
+        let mut delta = epan::nstime_t { secs: 0, nsecs: 0 };
+        epan::nstime_delta(&mut delta, &rep_ts, &req_ts);
+        add_generated_time(subtree, HF_RESPONSE_TIME, tvb, &delta);
+    }
+
+    if let Some(iface) = txn.interface.as_deref() {
+        add_generated_string(subtree, HF_REQUEST_INTERFACE, tvb, iface);
+    }
+    if let Some(method) = txn.method_name.as_deref() {
+        add_generated_string(subtree, HF_REQUEST_METHOD, tvb, method);
+    }
+
+    // Overwrite the bare "← reply" set by the main dissector with the
+    // enriched form so users see what call this reply belongs to.
+    if let Some(label) = reply_col_info(txn.interface.as_deref(), txn.method_name.as_deref()) {
+        if let Ok(cs) = CString::new(label) {
+            epan::col_add_str((*pinfo).cinfo, epan::COL_INFO as c_int, cs.as_ptr());
+        }
+    }
+}
+
+fn reply_col_info(iface: Option<&str>, method: Option<&str>) -> Option<String> {
+    let method = method?;
+    Some(match iface {
+        Some(i) => format!("\u{2190} reply to {}.{}()", i, method),
+        None => format!("\u{2190} reply to {}", method),
+    })
 }

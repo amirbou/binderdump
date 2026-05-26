@@ -439,6 +439,7 @@ static G_PROTOCOL: OnceLock<Protocol> = OnceLock::new();
 
 unsafe extern "C" fn binderdump_init_routine() {
     crate::reply_correlation::clear();
+    crate::follow_stream::clear();
 }
 
 const PROTOCOL_NAME: &'static CStr = c"Android Binderdump";
@@ -521,7 +522,20 @@ pub extern "C" fn register_protoinfo() {
             .add_br_types()
             .build()
     });
+    let proto_id = G_PROTOCOL.get().expect("registered").handle;
+    // register_tap must be called in proto_register (not register_handoff) so
+    // that find_tap_id("binderdump") succeeds when tshark sets up the -z follow
+    // listener, which happens after epan_init but the tap lookup runs before
+    // any packet is read.
+    let tap_id = unsafe { epan::register_tap(c"binderdump".as_ptr()) };
+    crate::follow_stream::store_tap_id(tap_id);
+    crate::follow_stream::register(proto_id);
     crate::reply_postdissector::register();
+}
+
+fn comm_to_string(buf: &[u8]) -> String {
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    std::str::from_utf8(&buf[..end]).unwrap_or("").to_string()
 }
 
 fn add_string_item(
@@ -538,23 +552,6 @@ fn add_string_item(
     let cs = CString::new(value).unwrap_or_else(|_| CString::new("<invalid>").unwrap());
     unsafe {
         epan::proto_tree_add_string(tree, hf, tvb, offset.try_into()?, length, cs.as_ptr());
-    }
-    Ok(())
-}
-
-fn add_boolean_item(
-    tree: *mut epan::proto_node,
-    hf: c_int,
-    tvb: *mut epan::tvbuff,
-    offset: usize,
-    length: i32,
-    value: bool,
-) -> anyhow::Result<()> {
-    if hf < 0 {
-        return Ok(());
-    }
-    unsafe {
-        epan::proto_tree_add_boolean(tree, hf, tvb, offset.try_into()?, length, value as u64);
     }
     Ok(())
 }
@@ -627,9 +624,36 @@ fn handle_transaction_code(
             txn.debug_id,
             txn.in_reply_to_debug_id,
             txn.reply,
+            base.pid,
             r.interface.clone(),
             r.method_name.clone(),
         );
+
+        let td = crate::follow_stream::TapData {
+            debug_id: txn.debug_id,
+            in_reply_to_debug_id: txn.in_reply_to_debug_id,
+            reply: txn.reply,
+            code: txn.code,
+            flags: txn.flags,
+            interface: r.interface.clone(),
+            method: r.method_name.clone(),
+            src_pid: base.pid,
+            src_cmdline: comm_to_string(&base.cmdline),
+            dst_pid: txn.to_proc,
+            dst_cmdline: comm_to_string(&txn.target_cmdline),
+            data: txn.data.clone(),
+            abs_ts,
+        };
+        crate::follow_stream::insert(frame, td);
+    }
+
+    // queue to the binderdump tap every pass (cheap when no listener is
+    // attached). the callback looks up TapData from the pool by frame number,
+    // so the data pointer is only used as a non-NULL marker.
+    if let Some(tap_id) = crate::follow_stream::tap_id() {
+        unsafe {
+            epan::tap_queue_packet(tap_id, pinfo, crate::follow_stream::frame_marker());
+        }
     }
 
     if txn.reply != 0 {
@@ -772,11 +796,6 @@ fn build_col_string(event: &binderdump_structs::event_layer::EventProtocol) -> S
         return String::new();
     };
 
-    let direction = if bwr.is_write() {
-        Direction::Bc
-    } else {
-        Direction::Br
-    };
     let raw_names = collect_command_names(bwr.is_write(), &bwr.data);
     let raw_refs: Vec<&str> = raw_names.iter().copied().collect();
 
@@ -806,7 +825,6 @@ fn build_col_string(event: &binderdump_structs::event_layer::EventProtocol) -> S
     };
 
     let inputs = ColInputs {
-        direction,
         is_reply,
         iface: iface.as_deref(),
         method: method.as_deref(),

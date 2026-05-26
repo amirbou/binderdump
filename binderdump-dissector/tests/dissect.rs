@@ -278,6 +278,46 @@ fn dissector_recognizes_special_transaction() {
 }
 
 #[test]
+fn follow_handler_registered() {
+    ensure_dissector_loaded();
+
+    // 1. -G plugins must list binderdump (cdylib loaded).
+    let plugins = tshark(&["-G", "plugins"]);
+    assert!(
+        plugins
+            .lines()
+            .any(|l| l.to_lowercase().contains("binderdump")),
+        "tshark -G plugins missing binderdump:\n{}",
+        plugins
+    );
+
+    // 2. -z follow,binderdump,0 must not be rejected as "invalid". a valid
+    // (but empty) follow query for a non-existent stream id is fine. tshark
+    // rejects unknown follow tap names with an "invalid -z argument" error
+    // on stderr.
+    let output = std::process::Command::new("tshark")
+        .args([
+            "-r",
+            fixture_path().to_str().unwrap(),
+            "-z",
+            "follow,binderdump,0",
+        ])
+        .output()
+        .expect("failed to spawn tshark");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.to_lowercase().contains("invalid -z argument")
+            && !stderr
+                .to_lowercase()
+                .contains("invalid argument for option"),
+        "tshark rejected '-z follow,binderdump,0' — follow handler likely not \
+         registered. stderr:\n{}",
+        stderr
+    );
+}
+
+#[test]
 fn dissector_resolves_method_on_br_transaction() {
     // BC_/BR_TRANSACTIONs should resolve their method names. The fixture
     // contains transactions for android.os.IServiceManager. Assert that
@@ -470,5 +510,136 @@ fn at_least_one_frame_has_a_frame_link() {
         any_link,
         "expected at least one frame with bc_frame or br_frame populated\nfull output:\n{}",
         out
+    );
+}
+
+#[test]
+fn follow_stream_produces_text() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+
+    // probe for a transaction_stream_id whose follow output contains a hex-dump
+    // line (some trivial calls have zero-byte payloads and produce no hex section).
+    //
+    // tshark 3.6 requires a display mode in -z follow,<proto>,<mode>,<id>.
+    // in "ascii" mode, non-ASCII bytes (including the UTF-8 → arrow) are
+    // replaced by '.', so the frame marker line appears as "... frame N".
+    let probe = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "binderdump_reply.transaction_stream_id",
+        "-Y",
+        "binderdump_reply.transaction_stream_id",
+    ]);
+    let stream_index: u32 = probe
+        .lines()
+        .filter_map(|l| l.trim().parse::<u32>().ok())
+        .find(|&n| {
+            let out = tshark(&[
+                "-2",
+                "-r",
+                fixture.to_str().unwrap(),
+                "-z",
+                &format!("follow,binderdump,ascii,{}", n),
+            ]);
+            out.contains("0000  ")
+        })
+        .expect("no transaction_stream_id had a hex-dump rendered");
+
+    let follow = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-z",
+        &format!("follow,binderdump,ascii,{}", stream_index),
+    ]);
+
+    // tshark ascii mode renders the UTF-8 → (e2 86 92) as three '.' chars;
+    // "... frame N" is the actual tshark 3.6 ascii-mode rendering of our
+    // "→ frame N" record header.
+    assert!(
+        follow.contains("... frame"),
+        "follow output missing request frame marker (expected '... frame' from \
+         ascii-mode rendering of \u{2192} frame):\n{}",
+        follow
+    );
+    assert!(
+        follow.contains("0000  "),
+        "follow output missing hex-dump line marker:\n{}",
+        follow
+    );
+}
+
+#[test]
+fn transaction_stream_id_starts_at_zero() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let out = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "binderdump_reply.transaction_stream_id",
+    ]);
+    let has_zero = out.lines().any(|l| l.trim() == "0");
+    assert!(
+        has_zero,
+        "expected at least one frame with transaction_stream_id == 0"
+    );
+}
+
+#[test]
+fn transaction_stream_id_is_dense() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let out = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "binderdump_reply.transaction_stream_id",
+    ]);
+    let mut indices: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    for line in out.lines() {
+        if let Ok(n) = line.trim().parse::<u32>() {
+            indices.insert(n);
+        }
+    }
+    let max = *indices.iter().last().expect("no stream ids in fixture");
+    for k in 0..=max {
+        assert!(
+            indices.contains(&k),
+            "missing stream_id {} (max seen {}); set: {:?}",
+            k,
+            max,
+            indices
+        );
+    }
+}
+
+#[test]
+fn follow_via_stream_id_zero() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let follow = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-z",
+        "follow,binderdump,ascii,0",
+    ]);
+    let body = follow.lines().filter(|l| !l.trim().is_empty()).count();
+    assert!(
+        body > 0,
+        "follow,binderdump,ascii,0 produced empty output:\n{}",
+        follow
     );
 }
