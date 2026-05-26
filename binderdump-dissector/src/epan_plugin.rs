@@ -847,6 +847,11 @@ fn build_col_string(event: &binderdump_structs::event_layer::EventProtocol) -> S
         None => (false, false, None, None, 0),
     };
 
+    let is_oneway = match bwr.transaction.as_ref() {
+        Some(txn) => !is_reply && (txn.flags & 0x01) != 0,
+        None => false,
+    };
+
     let inputs = ColInputs {
         is_reply,
         iface: iface.as_deref(),
@@ -854,6 +859,7 @@ fn build_col_string(event: &binderdump_structs::event_layer::EventProtocol) -> S
         code,
         raw_commands: &raw_refs,
         has_transaction,
+        is_oneway,
     };
     col_info::format(&inputs)
 }

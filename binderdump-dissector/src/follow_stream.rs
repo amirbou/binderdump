@@ -7,6 +7,8 @@ use std::sync::{Mutex, OnceLock};
 
 pub use crate::dissect_flat_objects::parse_offset_summaries;
 
+const TF_ONE_WAY: u32 = 1;
+
 #[derive(Debug, Clone)]
 pub struct TapData {
     pub debug_id: i32,
@@ -225,7 +227,12 @@ pub fn format_record(td: &TapData, frame: u32, t_rel_secs: f64) -> String {
             (Some(iface), None) => format!("{}::{}", iface, td.code),
             (None, _) => format!("<unknown interface>::{}", td.code),
         };
-        out.push_str(&format!("  call:      {}\n", base_call));
+        let call_line = if (td.flags & TF_ONE_WAY) != 0 {
+            format!("  call:      {} (oneway)\n", base_call)
+        } else {
+            format!("  call:      {}\n", base_call)
+        };
+        out.push_str(&call_line);
         out.push_str(&format!("  flags:     0x{:x}\n", td.flags));
     } else {
         out.push_str("  reply\n");
@@ -898,5 +905,49 @@ mod tests {
         };
         let out = format_record(&td, 1, 0.0);
         assert!(!out.contains("offsets:"));
+    }
+
+    #[test]
+    fn format_record_request_oneway_marker() {
+        let td = TapData {
+            debug_id: 42,
+            in_reply_to_debug_id: 0,
+            reply: 0,
+            code: 5,
+            flags: 0x11, // TF_ONE_WAY | TF_ACCEPT_FDS
+            interface: Some("a.b.IFoo".into()),
+            method: Some("notify".into()),
+            src_pid: 1,
+            src_cmdline: "".into(),
+            dst_pid: 2,
+            dst_cmdline: "".into(),
+            data: vec![],
+            abs_ts: epan::nstime_t { secs: 0, nsecs: 0 },
+            offsets: vec![],
+        };
+        let out = format_record(&td, 1, 0.0);
+        assert!(out.contains("call:      a.b.IFoo.notify() (oneway)"));
+    }
+
+    #[test]
+    fn format_record_request_no_oneway_when_flag_unset() {
+        let td = TapData {
+            debug_id: 42,
+            in_reply_to_debug_id: 0,
+            reply: 0,
+            code: 5,
+            flags: 0x10, // TF_ACCEPT_FDS only
+            interface: Some("a.b.IFoo".into()),
+            method: Some("notify".into()),
+            src_pid: 1,
+            src_cmdline: "".into(),
+            dst_pid: 2,
+            dst_cmdline: "".into(),
+            data: vec![],
+            abs_ts: epan::nstime_t { secs: 0, nsecs: 0 },
+            offsets: vec![],
+        };
+        let out = format_record(&td, 1, 0.0);
+        assert!(!out.contains("(oneway)"));
     }
 }
