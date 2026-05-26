@@ -619,6 +619,94 @@ fn follow_stream_includes_br_reply() {
 }
 
 #[test]
+fn follow_stream_filter_via_stream_id_matches_free_buffer_frames() {
+    // Display filter via transaction_stream_id must select FREE_BUFFER frames
+    // in addition to the BC/BR transaction halves.
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+
+    let probe = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "binderdump_reply.transaction_stream_id",
+        "-Y",
+        "binderdump_reply.transaction_stream_id",
+    ]);
+    let stream_index: u32 = probe
+        .lines()
+        .filter_map(|l| l.trim().parse::<u32>().ok())
+        .next()
+        .expect("fixture has no transaction_stream_id assigned");
+
+    let filter = format!("binderdump_reply.transaction_stream_id == {}", stream_index);
+    let out = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "frame.number",
+        "-Y",
+        &filter,
+    ]);
+    let count = out.lines().filter(|l| !l.trim().is_empty()).count();
+    assert!(
+        count >= 3,
+        "expected >= 3 frames matched by stream_id filter, got {}.\nfull output:\n{}",
+        count,
+        out
+    );
+}
+
+#[test]
+fn follow_stream_offsets_summary_appears() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+
+    // find the first request frame with a non-empty offsets array and extract
+    // its transaction_stream_id (the index the follow handler keys on).
+    // offsets_len (FT_UINT32) is used as the filter because the offsets field
+    // itself is FT_BYTES and tshark emits an empty column even when bytes are present.
+    let probe = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "binderdump_reply.transaction_stream_id",
+        "-Y",
+        "binderdump.ioctl_data.bwr.transaction.reply == 0 \
+         && binderdump.ioctl_data.bwr.transaction.offsets_len > 0",
+    ]);
+    let stream_index: u32 = probe
+        .lines()
+        .filter_map(|l| l.trim().parse::<u32>().ok())
+        .next()
+        .expect("fixture has no request with non-empty offsets array");
+
+    let follow = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-z",
+        &format!("follow,binderdump,ascii,{}", stream_index),
+    ]);
+
+    assert!(
+        follow.contains("offsets:"),
+        "follow output for stream {} missing 'offsets:' block.\nfull output:\n{}",
+        stream_index,
+        follow
+    );
+}
+
+#[test]
 fn transaction_stream_id_starts_at_zero() {
     ensure_dissector_loaded();
     let fixture = fixture_path();

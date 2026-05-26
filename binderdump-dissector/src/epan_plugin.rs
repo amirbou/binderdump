@@ -665,6 +665,7 @@ fn handle_transaction_code(
             dst_cmdline: comm_to_string(&txn.target_cmdline),
             data: txn.data.clone(),
             abs_ts,
+            offsets: crate::follow_stream::parse_offset_summaries(txn)?,
         };
         crate::follow_stream::insert(frame, td);
     }

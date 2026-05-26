@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context};
 use binderdump_epan_sys::epan;
 use binderdump_structs::binder_serde::FieldOffset;
 use binderdump_structs::binder_types::binder_type;
-use binderdump_structs::bwr_layer::PtrPayload;
+use binderdump_structs::bwr_layer::{PtrPayload, TransactionProtocol};
 use binderdump_structs::event_layer::EventProtocol;
 use std::ffi::{c_int, CString};
 use std::ptr::null_mut;
@@ -135,14 +135,68 @@ fn collect_refs(manager: &HeaderFieldsManager<EventProtocol>) -> anyhow::Result<
     })
 }
 
-#[derive(Debug, Clone, Copy)]
-enum ParsedEntry {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParsedEntry {
     Binder,
     Handle,
     Fd,
     Ptr,
     Fda,
     Unknown,
+}
+
+/// One step of walking `txn.offsets`: the entry's index within the offsets
+/// array, the byte position it points to inside `txn.data`, the raw type
+/// id read from those bytes, and the classified variant.
+pub struct FlatObjectEntry {
+    pub idx: usize,
+    pub pos: usize,
+    pub type_id: u32,
+    pub parsed: ParsedEntry,
+}
+
+pub struct FlatObjectsIter<'a> {
+    data: &'a [u8],
+    offsets: &'a [u8],
+    cursor: usize,
+    idx: usize,
+}
+
+impl<'a> Iterator for FlatObjectsIter<'a> {
+    type Item = FlatObjectEntry;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.cursor + ENTRY_SIZE > self.offsets.len() {
+            return None;
+        }
+        let bytes = self.offsets.get(self.cursor..self.cursor + ENTRY_SIZE)?;
+        self.cursor += ENTRY_SIZE;
+        let pos = u64::from_le_bytes(bytes.try_into().ok()?) as usize;
+        let type_id = read_u32(self.data, pos)?;
+        let parsed = classify(type_id);
+        let idx = self.idx;
+        self.idx += 1;
+        Some(FlatObjectEntry {
+            idx,
+            pos,
+            type_id,
+            parsed,
+        })
+    }
+}
+
+/// Yields one `FlatObjectEntry` per offsets-array entry in `txn.offsets`,
+/// stopping early on bounds-check failure. Shared between the main
+/// dissector (which renders each entry into the proto tree) and the
+/// Follow Stream view (which extracts decoded field values via
+/// `parse_offset_summaries`).
+pub fn iter_flat_objects<'a>(data: &'a [u8], offsets: &'a [u8]) -> FlatObjectsIter<'a> {
+    FlatObjectsIter {
+        data,
+        offsets,
+        cursor: 0,
+        idx: 0,
+    }
 }
 
 fn classify(type_: u32) -> ParsedEntry {
@@ -177,12 +231,6 @@ fn variant_size(entry: ParsedEntry) -> usize {
         ParsedEntry::Fda => SIZE_FLAT_FDA,
         ParsedEntry::Unknown => 0,
     }
-}
-
-fn read_entry(offsets: &[u8], idx: usize) -> Option<usize> {
-    let start = idx * ENTRY_SIZE;
-    let bytes = offsets.get(start..start + ENTRY_SIZE)?;
-    Some(u64::from_le_bytes(bytes.try_into().ok()?) as usize)
 }
 
 fn read_u32(data: &[u8], off: usize) -> Option<u32> {
@@ -275,19 +323,27 @@ pub fn dissect_offsets_array(
         )
     };
 
-    for i in 0..entry_count {
-        let entry = read_entry(&txn.offsets, i)
-            .ok_or_else(|| anyhow!("failed to read offsets entry {}", i))?;
-        let type_ = read_u32(&txn.data, entry)
-            .ok_or_else(|| anyhow!("offsets[{}] = {} out of range in data", i, entry))?;
-        let parsed = classify(type_);
+    let mut walked = 0usize;
+    for FlatObjectEntry {
+        idx,
+        pos: entry,
+        type_id,
+        parsed,
+    } in iter_flat_objects(&txn.data, &txn.offsets)
+    {
+        walked += 1;
+        if matches!(parsed, ParsedEntry::Unknown) {
+            return Err(anyhow!(
+                "unknown flat_binder_object type 0x{:x} at offsets[{}] pos {}",
+                type_id,
+                idx,
+                entry
+            ));
+        }
         let object_size = variant_size(parsed);
         let abs_off = data_tvb_off + entry;
 
-        let label = match parsed {
-            ParsedEntry::Unknown => format!("offsets[{}] UNKNOWN(0x{:x})", i, type_),
-            _ => format!("offsets[{}] {}", i, variant_label(type_)),
-        };
+        let label = format!("offsets[{}] {}", idx, variant_label(type_id));
         let label_c = CString::new(label)?;
 
         let entry_tree = unsafe {
@@ -328,7 +384,7 @@ pub fn dissect_offsets_array(
                 let payload_idx = txn
                     .ptr_payloads
                     .iter()
-                    .position(|p| p.offset_index as usize == i);
+                    .position(|p| p.offset_index as usize == idx);
                 let payload_data_pos = payload_idx.map(|k| (k, payload_tvb[k].1));
                 render_flat_ptr(
                     tvb,
@@ -351,8 +407,16 @@ pub fn dissect_offsets_array(
                     &payload_tvb,
                 )?;
             }
-            ParsedEntry::Unknown => {}
+            ParsedEntry::Unknown => unreachable!("filtered above"),
         }
+    }
+
+    if walked != entry_count {
+        return Err(anyhow!(
+            "offsets walk produced {} entries, expected {}",
+            walked,
+            entry_count
+        ));
     }
 
     Ok(())
@@ -615,26 +679,159 @@ fn render_flat_fda(
     Ok(())
 }
 
-// Pure-logic parser exposed for host-side unit tests.
-#[allow(dead_code)]
-pub fn parse_offset_entries(data: &[u8], offsets: &[u8]) -> Vec<(usize, u32)> {
+/// Fully decoded view of one flat_binder_object / binder_buffer_object found
+/// by walking `TransactionProtocol.offsets`. Shared between the main
+/// dissector (which renders proto-tree entries via tvb add_item, keyed on
+/// `kind` for the variant size) and the Follow Stream view (which renders
+/// the same info as a text summary).
+#[derive(Debug, Clone)]
+pub struct OffsetSummary {
+    pub idx: u32,
+    pub offset_in_buffer: u64,
+    pub kind: OffsetKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum OffsetKind {
+    Binder {
+        weak: bool,
+        ptr: u64,
+        cookie: u64,
+    },
+    Handle {
+        weak: bool,
+        handle: u32,
+        cookie: u64,
+    },
+    Fd {
+        fd: i32,
+    },
+    FdArray {
+        num_fds: u64,
+        parent: u64,
+    },
+    Ptr {
+        size: u64,
+        buffer_addr: u64,
+        parent: u64,
+        payload: Option<Vec<u8>>,
+    },
+}
+
+/// Walk `txn.offsets` (8-byte-per-entry array of byte offsets into
+/// `txn.data`) and parse each flat_binder_object / binder_buffer_object it
+/// points at. PTR entries get their captured payload attached by matching
+/// on `offset_index`. Uses the shared `iter_flat_objects` walker so this
+/// path and the main dissector path stay in lock-step. Errors on an
+/// unrecognised type id or a truncated object — refusing to silently drop
+/// bad data so the post-dissector + the Follow Stream view agree.
+pub fn parse_offset_summaries(txn: &TransactionProtocol) -> anyhow::Result<Vec<OffsetSummary>> {
     let mut out = Vec::new();
-    let mut idx = 0;
-    while idx + ENTRY_SIZE <= offsets.len() {
-        let entry = u64::from_le_bytes(offsets[idx..idx + 8].try_into().unwrap()) as usize;
-        idx += ENTRY_SIZE;
-        if entry + 4 > data.len() {
-            break;
-        }
-        let type_ = u32::from_le_bytes(data[entry..entry + 4].try_into().unwrap());
-        out.push((entry, type_));
+    for FlatObjectEntry {
+        idx,
+        pos,
+        type_id,
+        parsed,
+    } in iter_flat_objects(&txn.data, &txn.offsets)
+    {
+        let kind = decode_kind(&txn.data, pos, type_id, parsed, idx, &txn.ptr_payloads)?;
+        out.push(OffsetSummary {
+            idx: idx as u32,
+            offset_in_buffer: pos as u64,
+            kind,
+        });
     }
-    out
+    Ok(out)
+}
+
+fn decode_kind(
+    data: &[u8],
+    pos: usize,
+    type_id: u32,
+    parsed: ParsedEntry,
+    entry_idx: usize,
+    ptr_payloads: &[PtrPayload],
+) -> anyhow::Result<OffsetKind> {
+    let need = |size: usize| -> anyhow::Result<()> {
+        if pos + size > data.len() {
+            return Err(anyhow!(
+                "flat_binder_object at pos {} truncated (need {} bytes, have {})",
+                pos,
+                size,
+                data.len().saturating_sub(pos)
+            ));
+        }
+        Ok(())
+    };
+    Ok(match parsed {
+        ParsedEntry::Binder => {
+            need(SIZE_FLAT_BINDER)?;
+            let ptr = read_u64(data, pos + 8).unwrap_or(0);
+            let cookie = read_u64(data, pos + 16).unwrap_or(0);
+            OffsetKind::Binder {
+                weak: type_id == T_WEAK_BINDER,
+                ptr,
+                cookie,
+            }
+        }
+        ParsedEntry::Handle => {
+            need(SIZE_FLAT_BINDER)?;
+            let handle = read_u32(data, pos + 8).unwrap_or(0);
+            let cookie = read_u64(data, pos + 16).unwrap_or(0);
+            OffsetKind::Handle {
+                weak: type_id == T_WEAK_HANDLE,
+                handle,
+                cookie,
+            }
+        }
+        ParsedEntry::Fd => {
+            need(SIZE_FLAT_FD)?;
+            let fd = read_u32(data, pos + 8).unwrap_or(0) as i32;
+            OffsetKind::Fd { fd }
+        }
+        ParsedEntry::Fda => {
+            need(SIZE_FLAT_FDA)?;
+            let num_fds = read_u64(data, pos + 8).unwrap_or(0);
+            let parent = read_u64(data, pos + 16).unwrap_or(0);
+            OffsetKind::FdArray { num_fds, parent }
+        }
+        ParsedEntry::Ptr => {
+            need(SIZE_FLAT_PTR)?;
+            let buffer_addr = read_u64(data, pos + 8).unwrap_or(0);
+            let size = read_u64(data, pos + 16).unwrap_or(0);
+            let parent = read_u64(data, pos + 24).unwrap_or(0);
+            let payload = ptr_payloads
+                .iter()
+                .find(|p| p.offset_index as usize == entry_idx)
+                .map(|p| p.data.clone());
+            OffsetKind::Ptr {
+                size,
+                buffer_addr,
+                parent,
+                payload,
+            }
+        }
+        ParsedEntry::Unknown => {
+            return Err(anyhow!(
+                "unknown flat_binder_object type 0x{:x} at pos {}",
+                type_id,
+                pos
+            ));
+        }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Pure-logic walker wrapper used by the tests below. Yields just the
+    // (pos, type_id) pairs the older tests assert against.
+    fn parse_offset_entries(data: &[u8], offsets: &[u8]) -> Vec<(usize, u32)> {
+        iter_flat_objects(data, offsets)
+            .map(|e| (e.pos, e.type_id))
+            .collect()
+    }
 
     fn write_offsets(entries: &[u64]) -> Vec<u8> {
         let mut v = Vec::new();

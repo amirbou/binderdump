@@ -11,6 +11,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 binderdump-structs = { path = "../binderdump-structs" }
+binderdump-sys = { path = "../binderdump-sys" }
 binderdump-trait = { path = "../binderdump-trait" }
 binderdump-epan-sys = { path = "../binderdump-epan-sys" }
 binderdump-aidl = { path = "../binderdump-aidl" }

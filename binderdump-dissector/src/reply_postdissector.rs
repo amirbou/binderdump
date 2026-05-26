@@ -141,13 +141,14 @@ unsafe extern "C" fn dissect(
 
     let meta = crate::reply_correlation::lookup_frame(frame);
     let complete_for = crate::txn_complete_tracker::lookup_frame(frame);
+    let free_for = crate::txn_complete_tracker::lookup_free(frame);
 
     // bail if neither source has anything for this frame
     let meta_useful = meta
         .as_ref()
         .map(|m| m.debug_id != 0 || m.in_reply_to_debug_id != 0)
         .unwrap_or(false);
-    if !meta_useful && complete_for.is_none() {
+    if !meta_useful && complete_for.is_none() && free_for.is_none() {
         return 0;
     }
 
@@ -169,7 +170,8 @@ unsafe extern "C" fn dissect(
     }
 
     let stream_index = crate::reply_correlation::stream_index_for_frame(frame)
-        .or_else(|| complete_for.and_then(crate::reply_correlation::stream_index_for_any_debug_id));
+        .or_else(|| complete_for.and_then(crate::reply_correlation::stream_index_for_any_debug_id))
+        .or_else(|| free_for.and_then(crate::reply_correlation::stream_index_for_any_debug_id));
 
     if let Some(idx) = stream_index {
         add_generated_uint(subtree, HF_TRANSACTION_STREAM_ID, tvb, idx);

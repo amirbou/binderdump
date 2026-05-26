@@ -215,6 +215,7 @@ dependencies = [
  "binderdump-aidl",
  "binderdump-epan-sys",
  "binderdump-structs",
+ "binderdump-sys",
  "binderdump-trait",
  "bitmask",
  "dirs",

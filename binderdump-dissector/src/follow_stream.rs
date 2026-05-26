@@ -1,8 +1,11 @@
+use crate::dissect_flat_objects::{OffsetKind, OffsetSummary};
 use binderdump_epan_sys::epan;
 use std::collections::HashMap;
 use std::ffi::c_int;
 use std::os::raw::{c_char, c_void};
 use std::sync::{Mutex, OnceLock};
+
+pub use crate::dissect_flat_objects::parse_offset_summaries;
 
 #[derive(Debug, Clone)]
 pub struct TapData {
@@ -19,6 +22,7 @@ pub struct TapData {
     pub dst_cmdline: String,
     pub data: Vec<u8>,
     pub abs_ts: epan::nstime_t,
+    pub offsets: Vec<OffsetSummary>,
 }
 
 static POOL: OnceLock<Mutex<HashMap<u32, TapData>>> = OnceLock::new();
@@ -120,6 +124,64 @@ pub fn format_hex_dump(bytes: &[u8], indent: &str) -> String {
     out
 }
 
+pub fn format_offsets(offsets: &[OffsetSummary]) -> String {
+    if offsets.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    out.push_str(&format!(
+        "  offsets:   {} bytes, {} objects\n",
+        offsets.len() * 8,
+        offsets.len()
+    ));
+    for s in offsets {
+        match &s.kind {
+            OffsetKind::Binder { weak, ptr, cookie } => {
+                let tag = if *weak { "WEAK_BINDER" } else { "BINDER" };
+                out.push_str(&format!(
+                    "    [{}] {:7} ptr=0x{:x} cookie=0x{:x}\n",
+                    s.idx, tag, ptr, cookie
+                ));
+            }
+            OffsetKind::Handle {
+                weak,
+                handle,
+                cookie,
+            } => {
+                let tag = if *weak { "WEAK_HANDLE" } else { "HANDLE" };
+                out.push_str(&format!(
+                    "    [{}] {:7} handle={} cookie=0x{:x}\n",
+                    s.idx, tag, handle, cookie
+                ));
+            }
+            OffsetKind::Fd { fd } => {
+                out.push_str(&format!("    [{}] {:7} fd={}\n", s.idx, "FD", fd));
+            }
+            OffsetKind::FdArray { num_fds, parent } => {
+                out.push_str(&format!(
+                    "    [{}] {:7} num_fds={} parent={}\n",
+                    s.idx, "FDA", num_fds, parent
+                ));
+            }
+            OffsetKind::Ptr {
+                size,
+                buffer_addr,
+                payload,
+                ..
+            } => {
+                out.push_str(&format!(
+                    "    [{}] {:7} size={} buffer_addr=0x{:x}\n",
+                    s.idx, "PTR", size, buffer_addr
+                ));
+                if let Some(bytes) = payload {
+                    out.push_str(&format_hex_dump(bytes, "        "));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// determines the binary "side" (client=false / server=true) for a Follow
 /// Stream record. when req_pid is known (non-zero), color by party: the
 /// original BC_TRANSACTION sender is "client", everything else is "server".
@@ -170,6 +232,7 @@ pub fn format_record(td: &TapData, frame: u32, t_rel_secs: f64) -> String {
     }
     out.push_str(&format!("  data:      {} bytes\n", td.data.len()));
     out.push_str(&format_hex_dump(&td.data, "  "));
+    out.push_str(&format_offsets(&td.offsets));
     out
 }
 
@@ -342,6 +405,7 @@ mod tests {
             dst_cmdline: "p2".into(),
             data: vec![],
             abs_ts: epan::nstime_t { secs: 0, nsecs: 0 },
+            offsets: vec![],
         }
     }
 
@@ -473,6 +537,7 @@ mod tests {
             dst_cmdline: "com.example.app".into(),
             data: vec![0x41, 0x42],
             abs_ts: ts(0, 0),
+            offsets: vec![],
         };
         let out = format_record(&td, 23, 0.0);
         assert!(out.contains("\u{2192} frame 23"));
@@ -501,6 +566,7 @@ mod tests {
             dst_cmdline: "system_server".into(),
             data: vec![0x0c, 0x00, 0x00, 0x00],
             abs_ts: ts(0, 1_247_000),
+            offsets: vec![],
         };
         let out = format_record(&td, 26, 0.001247);
         assert!(out.contains("\u{2190} frame 26"));
@@ -527,6 +593,7 @@ mod tests {
             dst_cmdline: "".into(),
             data: vec![],
             abs_ts: ts(0, 0),
+            offsets: vec![],
         };
         let out = format_record(&td, 1, 0.0);
         assert!(out.contains("call:      <unknown interface>::99"));
@@ -551,6 +618,7 @@ mod tests {
             dst_cmdline: "".into(),
             data: vec![],
             abs_ts: ts(0, 0),
+            offsets: vec![],
         };
         let out = format_record(&td, 1, 0.000024);
         assert!(out.contains("t=+0.000024s"), "actual: {}", out);
@@ -571,6 +639,7 @@ mod tests {
             dst_cmdline: "".into(),
             data: vec![],
             abs_ts: epan::nstime_t { secs: 0, nsecs: 0 },
+            offsets: vec![],
         }
     }
 
@@ -605,10 +674,229 @@ mod tests {
             dst_cmdline: "".into(),
             data: vec![],
             abs_ts: epan::nstime_t { secs: 0, nsecs: 0 },
+            offsets: vec![],
         };
         let out = format_record(&td, 1, 0.0);
         assert!(out.contains("call:      a.b.IFoo::99"));
         // Verify NOT a method-call form (no '.' or '(' after the iface name).
         assert!(!out.contains("a.b.IFoo("));
+    }
+
+    use binderdump_structs::bwr_layer::{PtrPayload, TransactionProtocol};
+
+    fn synth_handle_object(handle: u32, cookie: u64) -> Vec<u8> {
+        // flat_binder_object: type(u32) + flags(u32) + union(8) + cookie(u64) = 24 bytes.
+        let mut v = Vec::with_capacity(24);
+        v.extend((binderdump_sys::BINDER_TYPE_HANDLE as u32).to_le_bytes());
+        v.extend(0u32.to_le_bytes());
+        v.extend((handle as u64).to_le_bytes()); // union: handle zero-extended
+        v.extend(cookie.to_le_bytes());
+        v
+    }
+
+    fn synth_fd_object(fd: i32) -> Vec<u8> {
+        let mut v = Vec::with_capacity(24);
+        v.extend((binderdump_sys::BINDER_TYPE_FD as u32).to_le_bytes());
+        v.extend(0u32.to_le_bytes());
+        v.extend((fd as u32 as u64).to_le_bytes());
+        v.extend(0u64.to_le_bytes());
+        v
+    }
+
+    fn synth_ptr_object(size: u64, buffer_addr: u64) -> Vec<u8> {
+        // binder_buffer_object: type + flags + buffer(u64) + length(u64) + parent(u64) + parent_offset(u64) = 40 bytes.
+        let mut v = Vec::with_capacity(40);
+        v.extend((binderdump_sys::BINDER_TYPE_PTR as u32).to_le_bytes());
+        v.extend(0u32.to_le_bytes());
+        v.extend(buffer_addr.to_le_bytes());
+        v.extend(size.to_le_bytes());
+        v.extend(0u64.to_le_bytes());
+        v.extend(0u64.to_le_bytes());
+        v
+    }
+
+    fn txn_with(
+        data: Vec<u8>,
+        offsets: Vec<u64>,
+        ptr_payloads: Vec<PtrPayload>,
+    ) -> TransactionProtocol {
+        let offsets_bytes: Vec<u8> = offsets.iter().flat_map(|o| o.to_le_bytes()).collect();
+        let mut txn = TransactionProtocol::default();
+        txn.data = data;
+        txn.offsets = offsets_bytes;
+        txn.ptr_payloads = ptr_payloads;
+        txn
+    }
+
+    #[test]
+    fn parse_offset_summaries_handle() {
+        let obj = synth_handle_object(5, 0);
+        let txn = txn_with(obj, vec![0], vec![]);
+        let s = parse_offset_summaries(&txn).expect("ok");
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].idx, 0);
+        match &s[0].kind {
+            OffsetKind::Handle { weak, handle, .. } => {
+                assert_eq!(*weak, false);
+                assert_eq!(*handle, 5);
+            }
+            other => panic!("unexpected kind: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_offset_summaries_fd() {
+        let obj = synth_fd_object(7);
+        let txn = txn_with(obj, vec![0], vec![]);
+        let s = parse_offset_summaries(&txn).expect("ok");
+        assert_eq!(s.len(), 1);
+        match &s[0].kind {
+            OffsetKind::Fd { fd } => assert_eq!(*fd, 7),
+            other => panic!("unexpected kind: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_offset_summaries_ptr_attaches_payload() {
+        let obj = synth_ptr_object(44, 0x7f000000);
+        let txn = txn_with(
+            obj,
+            vec![0],
+            vec![PtrPayload {
+                offset_index: 0,
+                buffer_addr: 0x7f000000,
+                total_size: 44,
+                data: vec![1, 2, 3, 4],
+            }],
+        );
+        let s = parse_offset_summaries(&txn).expect("ok");
+        assert_eq!(s.len(), 1);
+        match &s[0].kind {
+            OffsetKind::Ptr {
+                size,
+                buffer_addr,
+                payload,
+                ..
+            } => {
+                assert_eq!(*size, 44);
+                assert_eq!(*buffer_addr, 0x7f000000);
+                assert_eq!(payload.as_deref(), Some([1u8, 2, 3, 4].as_slice()));
+            }
+            other => panic!("unexpected kind: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_offset_summaries_unknown_type_errors() {
+        let mut obj = Vec::with_capacity(24);
+        obj.extend(0xdeadbeef_u32.to_le_bytes());
+        obj.extend(vec![0u8; 20]);
+        let txn = txn_with(obj, vec![0], vec![]);
+        let err = parse_offset_summaries(&txn).expect_err("expected error");
+        let msg = format!("{}", err);
+        assert!(msg.contains("0xdeadbeef"), "msg: {}", msg);
+    }
+
+    #[test]
+    fn parse_offset_summaries_offset_past_data_stops() {
+        let obj = synth_handle_object(5, 0);
+        let txn = txn_with(obj, vec![100], vec![]);
+        let s = parse_offset_summaries(&txn).expect("ok");
+        // iter_flat_objects silently stops when an offsets entry points past
+        // data — only the per-entry type id / size is treated as a hard error.
+        assert_eq!(s.len(), 0);
+    }
+
+    #[test]
+    fn format_offsets_handle_one_line() {
+        let s = vec![OffsetSummary {
+            idx: 0,
+            offset_in_buffer: 0,
+            kind: OffsetKind::Handle {
+                weak: false,
+                handle: 5,
+                cookie: 0,
+            },
+        }];
+        let out = format_offsets(&s);
+        assert!(out.contains("offsets:   8 bytes, 1 objects"));
+        assert!(out.contains("[0] HANDLE  handle=5 cookie=0x0"));
+        assert!(!out.contains("0000  "));
+    }
+
+    #[test]
+    fn format_offsets_ptr_renders_inner_hex() {
+        let s = vec![OffsetSummary {
+            idx: 0,
+            offset_in_buffer: 0,
+            kind: OffsetKind::Ptr {
+                size: 4,
+                buffer_addr: 0x7fab,
+                parent: 0,
+                payload: Some(vec![0x41, 0x42, 0x43, 0x44]),
+            },
+        }];
+        let out = format_offsets(&s);
+        assert!(out.contains("[0] PTR     size=4 buffer_addr=0x7fab"));
+        assert!(out.contains("0000  4142 4344"));
+    }
+
+    #[test]
+    fn format_offsets_empty_returns_empty() {
+        assert_eq!(format_offsets(&[]), String::new());
+    }
+
+    #[test]
+    fn format_record_includes_offsets_block_when_nonempty() {
+        let mut td = TapData {
+            debug_id: 42,
+            in_reply_to_debug_id: 0,
+            reply: 0,
+            code: 33,
+            flags: 0,
+            interface: Some("a.b.IFoo".into()),
+            method: Some("bar".into()),
+            src_pid: 1,
+            src_cmdline: "p1".into(),
+            dst_pid: 2,
+            dst_cmdline: "p2".into(),
+            data: vec![],
+            abs_ts: epan::nstime_t { secs: 0, nsecs: 0 },
+            offsets: vec![],
+        };
+        td.offsets.push(OffsetSummary {
+            idx: 0,
+            offset_in_buffer: 0,
+            kind: OffsetKind::Handle {
+                weak: false,
+                handle: 5,
+                cookie: 0,
+            },
+        });
+        let out = format_record(&td, 1, 0.0);
+        assert!(out.contains("offsets:"));
+        assert!(out.contains("[0] HANDLE  handle=5"));
+    }
+
+    #[test]
+    fn format_record_omits_offsets_block_when_empty() {
+        let td = TapData {
+            debug_id: 42,
+            in_reply_to_debug_id: 0,
+            reply: 0,
+            code: 0,
+            flags: 0,
+            interface: None,
+            method: None,
+            src_pid: 0,
+            src_cmdline: "".into(),
+            dst_pid: 0,
+            dst_cmdline: "".into(),
+            data: vec![],
+            abs_ts: epan::nstime_t { secs: 0, nsecs: 0 },
+            offsets: vec![],
+        };
+        let out = format_record(&td, 1, 0.0);
+        assert!(!out.contains("offsets:"));
     }
 }
