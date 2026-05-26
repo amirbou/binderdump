@@ -575,6 +575,50 @@ fn follow_stream_produces_text() {
 }
 
 #[test]
+fn follow_stream_includes_br_reply() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+
+    // find a stream that contains a BC_REPLY (reply == 1) by probing for
+    // transaction_stream_id on reply frames and picking the first hit.
+    let probe = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "binderdump_reply.transaction_stream_id",
+        "-Y",
+        "binderdump.ioctl_data.bwr.transaction.reply == 1 \
+         && binderdump_reply.transaction_stream_id",
+    ]);
+    let stream_index: u32 = probe
+        .lines()
+        .filter_map(|l| l.trim().parse::<u32>().ok())
+        .next()
+        .expect("fixture has no BC_REPLY frame with a transaction_stream_id");
+
+    let follow = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-z",
+        &format!("follow,binderdump,ascii,{}", stream_index),
+    ]);
+
+    // count `frame N` markers in the follow output; a complete exchange
+    // (BC_TXN + BR_TXN + BC_REPLY + ...) must contribute >= 3 records.
+    let frame_lines: Vec<&str> = follow.lines().filter(|l| l.contains(" frame ")).collect();
+    assert!(
+        frame_lines.len() >= 3,
+        "expected >= 3 frame records (BC_TXN + BR_TXN + BC_REPLY + ...), got {}.\nfull output:\n{}",
+        frame_lines.len(),
+        follow
+    );
+}
+
+#[test]
 fn transaction_stream_id_starts_at_zero() {
     ensure_dissector_loaded();
     let fixture = fixture_path();

@@ -139,11 +139,15 @@ unsafe extern "C" fn dissect(
 
     let frame = (*(*pinfo).fd).num;
 
-    let Some(meta) = crate::reply_correlation::lookup_frame(frame) else {
-        return 0;
-    };
+    let meta = crate::reply_correlation::lookup_frame(frame);
+    let complete_for = crate::txn_complete_tracker::lookup_frame(frame);
 
-    if meta.debug_id == 0 && meta.in_reply_to_debug_id == 0 {
+    // bail if neither source has anything for this frame
+    let meta_useful = meta
+        .as_ref()
+        .map(|m| m.debug_id != 0 || m.in_reply_to_debug_id != 0)
+        .unwrap_or(false);
+    if !meta_useful && complete_for.is_none() {
         return 0;
     }
 
@@ -156,13 +160,18 @@ unsafe extern "C" fn dissect(
     epan::binderdump_proto_item_set_generated(root);
     let subtree = epan::proto_item_add_subtree(root, ETT_BINDERDUMP_REPLY);
 
-    if meta.reply == 0 {
-        dissect_request(subtree, tvb, &meta);
-    } else {
-        dissect_reply(subtree, tvb, pinfo, root, &meta);
+    if let Some(meta) = meta {
+        if meta.reply == 0 {
+            dissect_request(subtree, tvb, &meta);
+        } else {
+            dissect_reply(subtree, tvb, pinfo, root, &meta);
+        }
     }
 
-    if let Some(idx) = crate::reply_correlation::stream_index_for_frame(frame) {
+    let stream_index = crate::reply_correlation::stream_index_for_frame(frame)
+        .or_else(|| complete_for.and_then(crate::reply_correlation::stream_index_for_any_debug_id));
+
+    if let Some(idx) = stream_index {
         add_generated_uint(subtree, HF_TRANSACTION_STREAM_ID, tvb, idx);
     }
 

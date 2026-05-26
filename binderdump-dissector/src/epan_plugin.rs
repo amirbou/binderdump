@@ -268,6 +268,27 @@ impl Protocol {
                 tree_item,
             )?;
 
+            // first pass only: walk the BWR data buffer to feed
+            // txn_complete_tracker so BR_TRANSACTION_COMPLETE frames can be
+            // attributed to the BC that they ACK.
+            let visited = (*(*pinfo).fd).visited() != 0;
+            if !visited {
+                if let Some(ioctl) = event.ioctl_data.as_ref() {
+                    if let Some(bwr) = ioctl.bwr.as_ref() {
+                        let frame = (*(*pinfo).fd).num;
+                        let txn_debug_id = bwr.transaction.as_ref().map(|t| t.debug_id);
+                        crate::txn_complete_tracker::process_bwr_data(
+                            frame,
+                            event.pid,
+                            event.tid,
+                            bwr.is_write(),
+                            &bwr.data,
+                            txn_debug_id,
+                        );
+                    }
+                }
+            }
+
             let source = format!(
                 "{}:{}:{}",
                 event.pid,
@@ -440,6 +461,7 @@ static G_PROTOCOL: OnceLock<Protocol> = OnceLock::new();
 unsafe extern "C" fn binderdump_init_routine() {
     crate::reply_correlation::clear();
     crate::follow_stream::clear();
+    crate::txn_complete_tracker::clear();
 }
 
 const PROTOCOL_NAME: &'static CStr = c"Android Binderdump";

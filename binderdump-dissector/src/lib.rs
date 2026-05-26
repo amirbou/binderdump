@@ -9,6 +9,7 @@ pub mod follow_stream;
 mod header_fields_manager;
 pub mod reply_correlation;
 pub mod reply_postdissector;
+pub mod txn_complete_tracker;
 mod txn_link;
 pub mod version_check;
 
