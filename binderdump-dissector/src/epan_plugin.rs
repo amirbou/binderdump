@@ -437,6 +437,10 @@ unsafe impl Sync for DissectorHandle {}
 
 static G_PROTOCOL: OnceLock<Protocol> = OnceLock::new();
 
+unsafe extern "C" fn binderdump_init_routine() {
+    crate::reply_correlation::clear();
+}
+
 const PROTOCOL_NAME: &'static CStr = c"Android Binderdump";
 const PROTOCOL_SHORT_NAME: &'static CStr = c"Binderdump";
 const PROTOCOL_FILTER: &'static CStr = c"binderdump";
@@ -517,6 +521,7 @@ pub extern "C" fn register_protoinfo() {
             .add_br_types()
             .build()
     });
+    crate::reply_postdissector::register();
 }
 
 fn add_string_item(
@@ -561,7 +566,7 @@ fn handle_transaction_code(
     base: &EventProtocol,
     offset: FieldOffset,
     tvb: *mut epan::tvbuff,
-    _pinfo: *mut epan::packet_info,
+    pinfo: *mut epan::packet_info,
     tree: *mut epan::proto_node,
 ) -> anyhow::Result<()> {
     // 1. Render the transaction code field as the default handler would.
@@ -587,35 +592,49 @@ fn handle_transaction_code(
         return Ok(());
     };
 
-    // Reply transactions don't carry a writeInterfaceToken or a method code:
-    // the kernel sets `code` to 0 (or to a status value) and the data buffer
-    // holds the reply payload from the original method. Resolving here would
-    // tag the reply as some unrelated method-1 of whatever interface the
-    // payload happens to start with.
-    //
-    // `Transaction.reply` is the kernel-native flag: 0 = transaction
-    // (BC_/BR_TRANSACTION), 1 = reply (BC_/BR_REPLY). Both sender and
-    // receiver bundles set it consistently per packets.rs.
-    //
-    // TODO - correlate reply -> originating BC_TRANSACTION via debug_id /
-    // in_reply_to_debug_id and display "reply - <method used in the
-    // transaction>" so users can see which call this reply belongs to.
+    // 3. Resolve interface + method via the AIDL/HIDL registry.
+    //    replies don't carry a writeInterfaceToken so we skip resolution for
+    //    them; they receive an empty result.
+    let r = if txn.reply == 0 {
+        let code = txn.code;
+        let data_buf: &[u8] = &txn.data;
+        let registry = aidl_resolve::registry();
+        aidl_resolve::resolve(
+            registry,
+            base.binder_interface(),
+            code,
+            base.android_sdk(),
+            data_buf,
+        )
+    } else {
+        aidl_resolve::ResolvedTransaction {
+            interface: None,
+            method_name: None,
+            method_source: "",
+            overlay_path: None,
+        }
+    };
+
+    // record per-frame metadata for the reply_correlation post-dissector on
+    // first pass only.
+    let visited = unsafe { (*(*pinfo).fd).visited() != 0 };
+    if !visited {
+        let frame = unsafe { (*(*pinfo).fd).num };
+        let abs_ts = unsafe { (*(*pinfo).fd).abs_ts };
+        crate::reply_correlation::record_frame(
+            frame,
+            abs_ts,
+            txn.debug_id,
+            txn.in_reply_to_debug_id,
+            txn.reply,
+            r.interface.clone(),
+            r.method_name.clone(),
+        );
+    }
+
     if txn.reply != 0 {
         return Ok(());
     }
-
-    let code = txn.code;
-    let data_buf: &[u8] = &txn.data;
-
-    // 3. Resolve interface + method via the AIDL/HIDL registry.
-    let registry = aidl_resolve::registry();
-    let r = aidl_resolve::resolve(
-        registry,
-        base.binder_interface(),
-        code,
-        base.android_sdk(),
-        data_buf,
-    );
 
     // 4. Add interface / method_name / method_source fields. Anchor them at
     //    the same tvb offset as the code field with length 0 so they appear
@@ -645,6 +664,10 @@ fn handle_transaction_code(
 }
 
 pub extern "C" fn register_handoff() {
+    unsafe {
+        epan::register_init_routine(Some(binderdump_init_routine));
+    }
+
     let table = CString::new("wtap_encap").unwrap();
 
     unsafe {
@@ -679,6 +702,7 @@ pub extern "C" fn register_handoff() {
         }
     };
     aidl_resolve::init_registry(&aosp, &overlay);
+    crate::reply_postdissector::register_handoff();
 }
 
 /// Storage for the `aidl_overlay_dir` Wireshark preference. Wireshark reads

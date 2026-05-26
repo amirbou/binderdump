@@ -32,20 +32,33 @@ fn include_lib(
     mut builder: bindgen::Builder,
     lib_name: &str,
     install_pkg: &str,
-) -> bindgen::Builder {
+) -> (bindgen::Builder, pkg_config::Library) {
     let lib = pkg_config::probe_library(lib_name).expect(&format!(
         "Couldn't find {} library please install it (try `sudo apt install {}`)",
         lib_name, install_pkg
     ));
-    for path in lib.include_paths {
+    for path in &lib.include_paths {
         builder = builder.clang_arg(format!("-I{}", path.to_string_lossy()))
     }
-    builder
+    (builder, lib)
 }
 
 fn main() {
     let mut builder = bindgen::Builder::default();
-    builder = include_lib(builder, "wireshark", "libwireshark-dev");
-    builder = include_lib(builder, "glib-2.0", "libglib2.0-dev");
+    let (b, wireshark_lib) = include_lib(builder, "wireshark", "libwireshark-dev");
+    builder = b;
+    let (b, glib_lib) = include_lib(builder, "glib-2.0", "libglib2.0-dev");
+    builder = b;
     bind_wireshark(builder);
+
+    // compile the non-inline shim so bindgen can see it as a regular symbol
+    let mut cc_build = cc::Build::new();
+    cc_build.file("src/wireshark_shims.c");
+    for inc in &wireshark_lib.include_paths {
+        cc_build.include(inc);
+    }
+    for inc in &glib_lib.include_paths {
+        cc_build.include(inc);
+    }
+    cc_build.compile("wireshark_shims");
 }

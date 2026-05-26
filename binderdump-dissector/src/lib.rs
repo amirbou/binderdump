@@ -4,7 +4,10 @@ mod col_info;
 mod dissect_flat_objects;
 mod dissect_offsets;
 mod epan_plugin;
+mod epan_utils;
 mod header_fields_manager;
+pub mod reply_correlation;
+pub mod reply_postdissector;
 mod txn_link;
 pub mod version_check;
 

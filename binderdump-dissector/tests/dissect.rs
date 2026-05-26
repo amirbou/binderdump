@@ -383,6 +383,68 @@ fn col_info_shows_reply_marker_for_at_least_one_frame() {
 }
 
 #[test]
+fn response_in_field_present_on_requests() {
+    // `-2` forces two-pass dissection so requests can see their later replies.
+    // Without it the reply-correlation cache is empty when the request frame
+    // is first dissected, so response_in never gets attached.
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let out = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "frame.number",
+        "-e",
+        "binderdump_reply.response_in",
+        "-Y",
+        "binderdump_reply.response_in",
+    ]);
+    assert!(
+        out.lines().any(|l| !l.trim().is_empty()),
+        "expected at least one request frame with a response_in cross-ref\nfull output:\n{}",
+        out
+    );
+}
+
+#[test]
+fn response_to_and_request_method_present_on_replies() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let out = tshark(&[
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "binderdump_reply.response_to",
+        "-e",
+        "binderdump_reply.response_time",
+        "-e",
+        "binderdump_reply.request_method",
+        "-Y",
+        "binderdump_reply.response_to",
+    ]);
+    let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert!(
+        !lines.is_empty(),
+        "expected at least one reply frame with response_to\nfull output:\n{}",
+        out
+    );
+    let any_with_method = lines.iter().any(|l| {
+        let parts: Vec<&str> = l.split('\t').collect();
+        parts.get(2).map(|s| !s.is_empty()).unwrap_or(false)
+    });
+    assert!(
+        any_with_method,
+        "expected at least one reply to carry request_method\nfull output:\n{}",
+        out
+    );
+}
+
+#[test]
 fn at_least_one_frame_has_a_frame_link() {
     // tshark dissects in a single pass, so only the BR frame sees its BC partner
     // (BC is recorded first, BR looks it up). Accept either direction populated.

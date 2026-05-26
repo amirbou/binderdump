@@ -1,4 +1,5 @@
 #include <epan/epan.h>
+#include <epan/expert.h>
 #include <epan/exported_pdu.h>
 #include <epan/packet.h>
 #include <epan/prefs.h>
@@ -8,3 +9,5 @@
 #include <gmodule.h>
 #include <wiretap/wtap.h>
 #include <wsutil/wmem/wmem_map.h>
+
+#include "wireshark_shims.h"
