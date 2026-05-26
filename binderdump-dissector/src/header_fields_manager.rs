@@ -219,8 +219,11 @@ fn translate_field_display(display: FieldDisplay) -> field_display_e {
         FieldDisplay::DecHex => field_display_e::BASE_DEC_HEX,
         FieldDisplay::HexDec => field_display_e::BASE_HEX_DEC,
         FieldDisplay::Custom => field_display_e::BASE_CUSTOM,
-        FieldDisplay::StrAsciis => field_display_e::STR_ASCII,
-        FieldDisplay::StrUnicode => field_display_e::STR_UNICODE,
+        // STR_ASCII / STR_UNICODE variants were removed from field_display_e in
+        // Wireshark 4.x; FT_STRING fields don't carry an explicit display now.
+        // BASE_NONE is the upstream convention for string fields.
+        FieldDisplay::StrAsciis => field_display_e::BASE_NONE,
+        FieldDisplay::StrUnicode => field_display_e::BASE_NONE,
         FieldDisplay::SepDot => field_display_e::SEP_DOT,
         FieldDisplay::SepDash => field_display_e::SEP_DASH,
         FieldDisplay::SepColon => field_display_e::SEP_COLON,

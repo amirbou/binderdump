@@ -36,11 +36,11 @@ mod exported_symbols {
 
     #[no_mangle]
     #[used]
-    pub static plugin_want_major: c_int = epan::VERSION_MAJOR as c_int;
+    pub static plugin_want_major: c_int = epan::WIRESHARK_VERSION_MAJOR as c_int;
 
     #[no_mangle]
     #[used]
-    pub static plugin_want_minor: c_int = epan::VERSION_MINOR as c_int;
+    pub static plugin_want_minor: c_int = epan::WIRESHARK_VERSION_MINOR as c_int;
 
     #[no_mangle]
     pub extern "C" fn plugin_register() {

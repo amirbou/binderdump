@@ -87,9 +87,15 @@ impl Protocol {
     }
 
     fn register_prefs(&self) {
+        // Wireshark 4.x rejects a second prefs_register_protocol() call for the
+        // same proto_id, so register the module once and add both prefs to it.
         unsafe {
-            register_aidl_overlay_pref(self.handle);
-            register_aosp_dir_pref(self.handle);
+            let module = epan::prefs_register_protocol(self.handle, None);
+            if module.is_null() {
+                return;
+            }
+            register_aidl_overlay_pref(module);
+            register_aosp_dir_pref(module);
         }
     }
 
@@ -183,7 +189,7 @@ impl Protocol {
 
     fn add_exported_pdu(&self, tvb: *mut epan::tvbuff_t, pinfo: *mut epan::packet_info) {
         unsafe {
-            if epan::have_tap_listener(self.exported_pdu_tap) != 0 {
+            if epan::have_tap_listener(self.exported_pdu_tap) {
                 let exp_pdu_data = epan::export_pdu_create_tags(
                     pinfo,
                     self.filter.as_ptr(),
@@ -223,7 +229,9 @@ impl Protocol {
             // binderdump version doesn't match the one we were built against,
             // since wire-format compat across versions isn't promised.
             let interface_id = (*(*pinfo).rec).rec_header.packet_header.interface_id;
-            let descr_ptr = epan::epan_get_interface_description((*pinfo).epan, interface_id);
+            let section_number = (*(*pinfo).rec).section_number;
+            let descr_ptr =
+                epan::epan_get_interface_description((*pinfo).epan, interface_id, section_number);
             if !descr_ptr.is_null() {
                 let descr = CStr::from_ptr(descr_ptr);
                 if let Ok(s) = descr.to_str() {
@@ -541,7 +549,7 @@ fn add_boolean_item(
         return Ok(());
     }
     unsafe {
-        epan::proto_tree_add_boolean(tree, hf, tvb, offset.try_into()?, length, value as u32);
+        epan::proto_tree_add_boolean(tree, hf, tvb, offset.try_into()?, length, value as u64);
     }
     Ok(())
 }
@@ -685,12 +693,7 @@ fn default_overlay_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
-unsafe fn register_aidl_overlay_pref(proto_id: c_int) {
-    let module = epan::prefs_register_protocol(proto_id, None);
-    if module.is_null() {
-        return;
-    }
-
+unsafe fn register_aidl_overlay_pref(module: *mut epan::module_t) {
     // Leak the strings: Wireshark stores the raw pointers and dereferences
     // them later, so they must outlive the call. They live for the lifetime
     // of the plugin / process.
@@ -719,11 +722,7 @@ fn default_aosp_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
-unsafe fn register_aosp_dir_pref(proto_id: c_int) {
-    let module = epan::prefs_register_protocol(proto_id, None);
-    if module.is_null() {
-        return;
-    }
+unsafe fn register_aosp_dir_pref(module: *mut epan::module_t) {
     let name = CString::new("aosp_corpus_dir").unwrap().into_raw();
     let title = CString::new("AOSP AIDL/HIDL corpus directory")
         .unwrap()
