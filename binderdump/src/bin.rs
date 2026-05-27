@@ -5,7 +5,7 @@ use anyhow::Result;
 use binderdump::capture::events::{BinderEventData, BinderEventWriteRead};
 use binderdump::capture::process_cache::ProcessCache;
 use binderdump::capture::ringbuf::create_events_channel;
-use binderdump::capture::tracepoints::{attach_tracepoints, ReplyCorrelationMode};
+use binderdump::capture::tracepoints::{attach_tracepoints, ReplyCorrelationMode, ReplyOffsets};
 use binderdump::pcapng::packets;
 use binderdump_structs::binder_types::{
     binder_command::BinderCommand, binder_return::BinderReturn,
@@ -28,6 +28,17 @@ struct Args {
     /// backport, out-of-tree binder).
     #[arg(long = "no-reply-correlation", conflicts_with = "reply_offsets")]
     no_reply_correlation: bool,
+
+    /// Manually specify binder struct offsets, bypassing CO-RE. Format:
+    /// 'to_thread=N,transaction_stack=N,debug_id=N'. Values accept
+    /// decimal or 0x-prefixed hex. Use when kernel BTF is missing or
+    /// describes a different struct layout than the running kernel's.
+    #[arg(
+        long = "reply-offsets",
+        value_name = "OFFSETS",
+        conflicts_with = "no_reply_correlation"
+    )]
+    reply_offsets: Option<ReplyOffsets>,
 }
 
 fn do_write(bwr: &BinderEventWriteRead) -> Result<()> {
@@ -147,6 +158,8 @@ pub fn main() -> Result<()> {
     let duration = args.duration_secs.map(Duration::from_secs);
     let mode = if args.no_reply_correlation {
         ReplyCorrelationMode::Disabled
+    } else if let Some(o) = args.reply_offsets {
+        o.into()
     } else {
         ReplyCorrelationMode::Auto
     };
