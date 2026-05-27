@@ -278,6 +278,46 @@ fn dissector_recognizes_special_transaction() {
 }
 
 #[test]
+fn follow_handler_registered() {
+    ensure_dissector_loaded();
+
+    // 1. -G plugins must list binderdump (cdylib loaded).
+    let plugins = tshark(&["-G", "plugins"]);
+    assert!(
+        plugins
+            .lines()
+            .any(|l| l.to_lowercase().contains("binderdump")),
+        "tshark -G plugins missing binderdump:\n{}",
+        plugins
+    );
+
+    // 2. -z follow,binderdump,0 must not be rejected as "invalid". a valid
+    // (but empty) follow query for a non-existent stream id is fine. tshark
+    // rejects unknown follow tap names with an "invalid -z argument" error
+    // on stderr.
+    let output = std::process::Command::new("tshark")
+        .args([
+            "-r",
+            fixture_path().to_str().unwrap(),
+            "-z",
+            "follow,binderdump,0",
+        ])
+        .output()
+        .expect("failed to spawn tshark");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.to_lowercase().contains("invalid -z argument")
+            && !stderr
+                .to_lowercase()
+                .contains("invalid argument for option"),
+        "tshark rejected '-z follow,binderdump,0' — follow handler likely not \
+         registered. stderr:\n{}",
+        stderr
+    );
+}
+
+#[test]
 fn dissector_resolves_method_on_br_transaction() {
     // BC_/BR_TRANSACTIONs should resolve their method names. The fixture
     // contains transactions for android.os.IServiceManager. Assert that
@@ -383,6 +423,68 @@ fn col_info_shows_reply_marker_for_at_least_one_frame() {
 }
 
 #[test]
+fn response_in_field_present_on_requests() {
+    // `-2` forces two-pass dissection so requests can see their later replies.
+    // Without it the reply-correlation cache is empty when the request frame
+    // is first dissected, so response_in never gets attached.
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let out = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "frame.number",
+        "-e",
+        "binderdump_reply.response_in",
+        "-Y",
+        "binderdump_reply.response_in",
+    ]);
+    assert!(
+        out.lines().any(|l| !l.trim().is_empty()),
+        "expected at least one request frame with a response_in cross-ref\nfull output:\n{}",
+        out
+    );
+}
+
+#[test]
+fn response_to_and_request_method_present_on_replies() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let out = tshark(&[
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "binderdump_reply.response_to",
+        "-e",
+        "binderdump_reply.response_time",
+        "-e",
+        "binderdump_reply.request_method",
+        "-Y",
+        "binderdump_reply.response_to",
+    ]);
+    let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert!(
+        !lines.is_empty(),
+        "expected at least one reply frame with response_to\nfull output:\n{}",
+        out
+    );
+    let any_with_method = lines.iter().any(|l| {
+        let parts: Vec<&str> = l.split('\t').collect();
+        parts.get(2).map(|s| !s.is_empty()).unwrap_or(false)
+    });
+    assert!(
+        any_with_method,
+        "expected at least one reply to carry request_method\nfull output:\n{}",
+        out
+    );
+}
+
+#[test]
 fn at_least_one_frame_has_a_frame_link() {
     // tshark dissects in a single pass, so only the BR frame sees its BC partner
     // (BC is recorded first, BR looks it up). Accept either direction populated.
@@ -408,5 +510,268 @@ fn at_least_one_frame_has_a_frame_link() {
         any_link,
         "expected at least one frame with bc_frame or br_frame populated\nfull output:\n{}",
         out
+    );
+}
+
+#[test]
+fn follow_stream_produces_text() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+
+    // probe for a transaction_stream_id whose follow output contains a hex-dump
+    // line (some trivial calls have zero-byte payloads and produce no hex section).
+    //
+    // tshark 3.6 requires a display mode in -z follow,<proto>,<mode>,<id>.
+    // in "ascii" mode, non-ASCII bytes (including the UTF-8 → arrow) are
+    // replaced by '.', so the frame marker line appears as "... frame N".
+    let probe = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "binderdump_reply.transaction_stream_id",
+        "-Y",
+        "binderdump_reply.transaction_stream_id",
+    ]);
+    let stream_index: u32 = probe
+        .lines()
+        .filter_map(|l| l.trim().parse::<u32>().ok())
+        .find(|&n| {
+            let out = tshark(&[
+                "-2",
+                "-r",
+                fixture.to_str().unwrap(),
+                "-z",
+                &format!("follow,binderdump,ascii,{}", n),
+            ]);
+            out.contains("0000  ")
+        })
+        .expect("no transaction_stream_id had a hex-dump rendered");
+
+    let follow = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-z",
+        &format!("follow,binderdump,ascii,{}", stream_index),
+    ]);
+
+    // tshark ascii mode renders the UTF-8 → (e2 86 92) as three '.' chars;
+    // "... frame N" is the actual tshark 3.6 ascii-mode rendering of our
+    // "→ frame N" record header.
+    assert!(
+        follow.contains("... frame"),
+        "follow output missing request frame marker (expected '... frame' from \
+         ascii-mode rendering of \u{2192} frame):\n{}",
+        follow
+    );
+    assert!(
+        follow.contains("0000  "),
+        "follow output missing hex-dump line marker:\n{}",
+        follow
+    );
+}
+
+#[test]
+fn follow_stream_includes_br_reply() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+
+    // find a stream that contains a BC_REPLY (reply == 1) by probing for
+    // transaction_stream_id on reply frames and picking the first hit.
+    let probe = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "binderdump_reply.transaction_stream_id",
+        "-Y",
+        "binderdump.ioctl_data.bwr.transaction.reply == 1 \
+         && binderdump_reply.transaction_stream_id",
+    ]);
+    let stream_index: u32 = probe
+        .lines()
+        .filter_map(|l| l.trim().parse::<u32>().ok())
+        .next()
+        .expect("fixture has no BC_REPLY frame with a transaction_stream_id");
+
+    let follow = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-z",
+        &format!("follow,binderdump,ascii,{}", stream_index),
+    ]);
+
+    // count `frame N` markers in the follow output; a complete exchange
+    // (BC_TXN + BR_TXN + BC_REPLY + ...) must contribute >= 3 records.
+    let frame_lines: Vec<&str> = follow.lines().filter(|l| l.contains(" frame ")).collect();
+    assert!(
+        frame_lines.len() >= 3,
+        "expected >= 3 frame records (BC_TXN + BR_TXN + BC_REPLY + ...), got {}.\nfull output:\n{}",
+        frame_lines.len(),
+        follow
+    );
+}
+
+#[test]
+fn follow_stream_filter_via_stream_id_matches_free_buffer_frames() {
+    // Display filter via transaction_stream_id must select FREE_BUFFER frames
+    // in addition to the BC/BR transaction halves.
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+
+    let probe = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "binderdump_reply.transaction_stream_id",
+        "-Y",
+        "binderdump_reply.transaction_stream_id",
+    ]);
+    let stream_index: u32 = probe
+        .lines()
+        .filter_map(|l| l.trim().parse::<u32>().ok())
+        .next()
+        .expect("fixture has no transaction_stream_id assigned");
+
+    let filter = format!("binderdump_reply.transaction_stream_id == {}", stream_index);
+    let out = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "frame.number",
+        "-Y",
+        &filter,
+    ]);
+    let count = out.lines().filter(|l| !l.trim().is_empty()).count();
+    assert!(
+        count >= 3,
+        "expected >= 3 frames matched by stream_id filter, got {}.\nfull output:\n{}",
+        count,
+        out
+    );
+}
+
+#[test]
+fn follow_stream_offsets_summary_appears() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+
+    // find the first request frame with a non-empty offsets array and extract
+    // its transaction_stream_id (the index the follow handler keys on).
+    // offsets_len (FT_UINT32) is used as the filter because the offsets field
+    // itself is FT_BYTES and tshark emits an empty column even when bytes are present.
+    let probe = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "binderdump_reply.transaction_stream_id",
+        "-Y",
+        "binderdump.ioctl_data.bwr.transaction.reply == 0 \
+         && binderdump.ioctl_data.bwr.transaction.offsets_len > 0",
+    ]);
+    let stream_index: u32 = probe
+        .lines()
+        .filter_map(|l| l.trim().parse::<u32>().ok())
+        .next()
+        .expect("fixture has no request with non-empty offsets array");
+
+    let follow = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-z",
+        &format!("follow,binderdump,ascii,{}", stream_index),
+    ]);
+
+    assert!(
+        follow.contains("offsets:"),
+        "follow output for stream {} missing 'offsets:' block.\nfull output:\n{}",
+        stream_index,
+        follow
+    );
+}
+
+#[test]
+fn transaction_stream_id_starts_at_zero() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let out = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "binderdump_reply.transaction_stream_id",
+    ]);
+    let has_zero = out.lines().any(|l| l.trim() == "0");
+    assert!(
+        has_zero,
+        "expected at least one frame with transaction_stream_id == 0"
+    );
+}
+
+#[test]
+fn transaction_stream_id_is_dense() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let out = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "binderdump_reply.transaction_stream_id",
+    ]);
+    let mut indices: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    for line in out.lines() {
+        if let Ok(n) = line.trim().parse::<u32>() {
+            indices.insert(n);
+        }
+    }
+    let max = *indices.iter().last().expect("no stream ids in fixture");
+    for k in 0..=max {
+        assert!(
+            indices.contains(&k),
+            "missing stream_id {} (max seen {}); set: {:?}",
+            k,
+            max,
+            indices
+        );
+    }
+}
+
+#[test]
+fn follow_via_stream_id_zero() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let follow = tshark(&[
+        "-2",
+        "-r",
+        fixture.to_str().unwrap(),
+        "-z",
+        "follow,binderdump,ascii,0",
+    ]);
+    let body = follow.lines().filter(|l| !l.trim().is_empty()).count();
+    assert!(
+        body > 0,
+        "follow,binderdump,ascii,0 produced empty output:\n{}",
+        follow
     );
 }

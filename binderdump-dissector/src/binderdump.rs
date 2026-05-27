@@ -7,7 +7,7 @@ use binderdump_structs::binder_types::bwr_trait::Bwr;
 use binderdump_structs::event_layer::EventProtocol;
 use binderdump_trait::ConstOffsets;
 use binderdump_trait::EpanProtocolEnum;
-use std::ffi::{c_int, CString};
+use std::ffi::c_int;
 use std::ptr::null_mut;
 
 use crate::dissect_offsets;

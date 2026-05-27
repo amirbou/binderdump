@@ -4,7 +4,12 @@ mod col_info;
 mod dissect_flat_objects;
 mod dissect_offsets;
 mod epan_plugin;
+mod epan_utils;
+pub mod follow_stream;
 mod header_fields_manager;
+pub mod reply_correlation;
+pub mod reply_postdissector;
+pub mod txn_complete_tracker;
 mod txn_link;
 pub mod version_check;
 
@@ -36,11 +41,11 @@ mod exported_symbols {
 
     #[no_mangle]
     #[used]
-    pub static plugin_want_major: c_int = epan::VERSION_MAJOR as c_int;
+    pub static plugin_want_major: c_int = epan::WIRESHARK_VERSION_MAJOR as c_int;
 
     #[no_mangle]
     #[used]
-    pub static plugin_want_minor: c_int = epan::VERSION_MINOR as c_int;
+    pub static plugin_want_minor: c_int = epan::WIRESHARK_VERSION_MINOR as c_int;
 
     #[no_mangle]
     pub extern "C" fn plugin_register() {

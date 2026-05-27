@@ -87,9 +87,15 @@ impl Protocol {
     }
 
     fn register_prefs(&self) {
+        // Wireshark 4.x rejects a second prefs_register_protocol() call for the
+        // same proto_id, so register the module once and add both prefs to it.
         unsafe {
-            register_aidl_overlay_pref(self.handle);
-            register_aosp_dir_pref(self.handle);
+            let module = epan::prefs_register_protocol(self.handle, None);
+            if module.is_null() {
+                return;
+            }
+            register_aidl_overlay_pref(module);
+            register_aosp_dir_pref(module);
         }
     }
 
@@ -183,7 +189,7 @@ impl Protocol {
 
     fn add_exported_pdu(&self, tvb: *mut epan::tvbuff_t, pinfo: *mut epan::packet_info) {
         unsafe {
-            if epan::have_tap_listener(self.exported_pdu_tap) != 0 {
+            if epan::have_tap_listener(self.exported_pdu_tap) {
                 let exp_pdu_data = epan::export_pdu_create_tags(
                     pinfo,
                     self.filter.as_ptr(),
@@ -223,7 +229,9 @@ impl Protocol {
             // binderdump version doesn't match the one we were built against,
             // since wire-format compat across versions isn't promised.
             let interface_id = (*(*pinfo).rec).rec_header.packet_header.interface_id;
-            let descr_ptr = epan::epan_get_interface_description((*pinfo).epan, interface_id);
+            let section_number = (*(*pinfo).rec).section_number;
+            let descr_ptr =
+                epan::epan_get_interface_description((*pinfo).epan, interface_id, section_number);
             if !descr_ptr.is_null() {
                 let descr = CStr::from_ptr(descr_ptr);
                 if let Ok(s) = descr.to_str() {
@@ -259,6 +267,27 @@ impl Protocol {
                 pinfo,
                 tree_item,
             )?;
+
+            // first pass only: walk the BWR data buffer to feed
+            // txn_complete_tracker so BR_TRANSACTION_COMPLETE frames can be
+            // attributed to the BC that they ACK.
+            let visited = (*(*pinfo).fd).visited() != 0;
+            if !visited {
+                if let Some(ioctl) = event.ioctl_data.as_ref() {
+                    if let Some(bwr) = ioctl.bwr.as_ref() {
+                        let frame = (*(*pinfo).fd).num;
+                        let txn_debug_id = bwr.transaction.as_ref().map(|t| t.debug_id);
+                        crate::txn_complete_tracker::process_bwr_data(
+                            frame,
+                            event.pid,
+                            event.tid,
+                            bwr.is_write(),
+                            &bwr.data,
+                            txn_debug_id,
+                        );
+                    }
+                }
+            }
 
             let source = format!(
                 "{}:{}:{}",
@@ -429,6 +458,12 @@ unsafe impl Sync for DissectorHandle {}
 
 static G_PROTOCOL: OnceLock<Protocol> = OnceLock::new();
 
+unsafe extern "C" fn binderdump_init_routine() {
+    crate::reply_correlation::clear();
+    crate::follow_stream::clear();
+    crate::txn_complete_tracker::clear();
+}
+
 const PROTOCOL_NAME: &'static CStr = c"Android Binderdump";
 const PROTOCOL_SHORT_NAME: &'static CStr = c"Binderdump";
 const PROTOCOL_FILTER: &'static CStr = c"binderdump";
@@ -509,6 +544,20 @@ pub extern "C" fn register_protoinfo() {
             .add_br_types()
             .build()
     });
+    let proto_id = G_PROTOCOL.get().expect("registered").handle;
+    // register_tap must be called in proto_register (not register_handoff) so
+    // that find_tap_id("binderdump") succeeds when tshark sets up the -z follow
+    // listener, which happens after epan_init but the tap lookup runs before
+    // any packet is read.
+    let tap_id = unsafe { epan::register_tap(c"binderdump".as_ptr()) };
+    crate::follow_stream::store_tap_id(tap_id);
+    crate::follow_stream::register(proto_id);
+    crate::reply_postdissector::register();
+}
+
+fn comm_to_string(buf: &[u8]) -> String {
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    std::str::from_utf8(&buf[..end]).unwrap_or("").to_string()
 }
 
 fn add_string_item(
@@ -529,23 +578,6 @@ fn add_string_item(
     Ok(())
 }
 
-fn add_boolean_item(
-    tree: *mut epan::proto_node,
-    hf: c_int,
-    tvb: *mut epan::tvbuff,
-    offset: usize,
-    length: i32,
-    value: bool,
-) -> anyhow::Result<()> {
-    if hf < 0 {
-        return Ok(());
-    }
-    unsafe {
-        epan::proto_tree_add_boolean(tree, hf, tvb, offset.try_into()?, length, value as u32);
-    }
-    Ok(())
-}
-
 fn handle_transaction_code(
     hf: c_int,
     _ett: c_int,
@@ -553,7 +585,7 @@ fn handle_transaction_code(
     base: &EventProtocol,
     offset: FieldOffset,
     tvb: *mut epan::tvbuff,
-    _pinfo: *mut epan::packet_info,
+    pinfo: *mut epan::packet_info,
     tree: *mut epan::proto_node,
 ) -> anyhow::Result<()> {
     // 1. Render the transaction code field as the default handler would.
@@ -579,35 +611,77 @@ fn handle_transaction_code(
         return Ok(());
     };
 
-    // Reply transactions don't carry a writeInterfaceToken or a method code:
-    // the kernel sets `code` to 0 (or to a status value) and the data buffer
-    // holds the reply payload from the original method. Resolving here would
-    // tag the reply as some unrelated method-1 of whatever interface the
-    // payload happens to start with.
-    //
-    // `Transaction.reply` is the kernel-native flag: 0 = transaction
-    // (BC_/BR_TRANSACTION), 1 = reply (BC_/BR_REPLY). Both sender and
-    // receiver bundles set it consistently per packets.rs.
-    //
-    // TODO - correlate reply -> originating BC_TRANSACTION via debug_id /
-    // in_reply_to_debug_id and display "reply - <method used in the
-    // transaction>" so users can see which call this reply belongs to.
+    // 3. Resolve interface + method via the AIDL/HIDL registry.
+    //    replies don't carry a writeInterfaceToken so we skip resolution for
+    //    them; they receive an empty result.
+    let r = if txn.reply == 0 {
+        let code = txn.code;
+        let data_buf: &[u8] = &txn.data;
+        let registry = aidl_resolve::registry();
+        aidl_resolve::resolve(
+            registry,
+            base.binder_interface(),
+            code,
+            base.android_sdk(),
+            data_buf,
+        )
+    } else {
+        aidl_resolve::ResolvedTransaction {
+            interface: None,
+            method_name: None,
+            method_source: "",
+            overlay_path: None,
+        }
+    };
+
+    // record per-frame metadata for the reply_correlation post-dissector on
+    // first pass only.
+    let visited = unsafe { (*(*pinfo).fd).visited() != 0 };
+    if !visited {
+        let frame = unsafe { (*(*pinfo).fd).num };
+        let abs_ts = unsafe { (*(*pinfo).fd).abs_ts };
+        crate::reply_correlation::record_frame(
+            frame,
+            abs_ts,
+            txn.debug_id,
+            txn.in_reply_to_debug_id,
+            txn.reply,
+            base.pid,
+            r.interface.clone(),
+            r.method_name.clone(),
+        );
+
+        let td = crate::follow_stream::TapData {
+            debug_id: txn.debug_id,
+            in_reply_to_debug_id: txn.in_reply_to_debug_id,
+            reply: txn.reply,
+            code: txn.code,
+            flags: txn.flags,
+            interface: r.interface.clone(),
+            method: r.method_name.clone(),
+            src_pid: base.pid,
+            src_cmdline: comm_to_string(&base.cmdline),
+            dst_pid: txn.to_proc,
+            dst_cmdline: comm_to_string(&txn.target_cmdline),
+            data: txn.data.clone(),
+            abs_ts,
+            offsets: crate::follow_stream::parse_offset_summaries(txn)?,
+        };
+        crate::follow_stream::insert(frame, td);
+    }
+
+    // queue to the binderdump tap every pass (cheap when no listener is
+    // attached). the callback looks up TapData from the pool by frame number,
+    // so the data pointer is only used as a non-NULL marker.
+    if let Some(tap_id) = crate::follow_stream::tap_id() {
+        unsafe {
+            epan::tap_queue_packet(tap_id, pinfo, crate::follow_stream::frame_marker());
+        }
+    }
+
     if txn.reply != 0 {
         return Ok(());
     }
-
-    let code = txn.code;
-    let data_buf: &[u8] = &txn.data;
-
-    // 3. Resolve interface + method via the AIDL/HIDL registry.
-    let registry = aidl_resolve::registry();
-    let r = aidl_resolve::resolve(
-        registry,
-        base.binder_interface(),
-        code,
-        base.android_sdk(),
-        data_buf,
-    );
 
     // 4. Add interface / method_name / method_source fields. Anchor them at
     //    the same tvb offset as the code field with length 0 so they appear
@@ -637,6 +711,10 @@ fn handle_transaction_code(
 }
 
 pub extern "C" fn register_handoff() {
+    unsafe {
+        epan::register_init_routine(Some(binderdump_init_routine));
+    }
+
     let table = CString::new("wtap_encap").unwrap();
 
     unsafe {
@@ -671,6 +749,7 @@ pub extern "C" fn register_handoff() {
         }
     };
     aidl_resolve::init_registry(&aosp, &overlay);
+    crate::reply_postdissector::register_handoff();
 }
 
 /// Storage for the `aidl_overlay_dir` Wireshark preference. Wireshark reads
@@ -685,12 +764,7 @@ fn default_overlay_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
-unsafe fn register_aidl_overlay_pref(proto_id: c_int) {
-    let module = epan::prefs_register_protocol(proto_id, None);
-    if module.is_null() {
-        return;
-    }
-
+unsafe fn register_aidl_overlay_pref(module: *mut epan::module_t) {
     // Leak the strings: Wireshark stores the raw pointers and dereferences
     // them later, so they must outlive the call. They live for the lifetime
     // of the plugin / process.
@@ -719,11 +793,7 @@ fn default_aosp_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
-unsafe fn register_aosp_dir_pref(proto_id: c_int) {
-    let module = epan::prefs_register_protocol(proto_id, None);
-    if module.is_null() {
-        return;
-    }
+unsafe fn register_aosp_dir_pref(module: *mut epan::module_t) {
     let name = CString::new("aosp_corpus_dir").unwrap().into_raw();
     let title = CString::new("AOSP AIDL/HIDL corpus directory")
         .unwrap()
@@ -749,11 +819,6 @@ fn build_col_string(event: &binderdump_structs::event_layer::EventProtocol) -> S
         return String::new();
     };
 
-    let direction = if bwr.is_write() {
-        Direction::Bc
-    } else {
-        Direction::Br
-    };
     let raw_names = collect_command_names(bwr.is_write(), &bwr.data);
     let raw_refs: Vec<&str> = raw_names.iter().copied().collect();
 
@@ -782,14 +847,19 @@ fn build_col_string(event: &binderdump_structs::event_layer::EventProtocol) -> S
         None => (false, false, None, None, 0),
     };
 
+    let is_oneway = match bwr.transaction.as_ref() {
+        Some(txn) => !is_reply && (txn.flags & 0x01) != 0,
+        None => false,
+    };
+
     let inputs = ColInputs {
-        direction,
         is_reply,
         iface: iface.as_deref(),
         method: method.as_deref(),
         code,
         raw_commands: &raw_refs,
         has_transaction,
+        is_oneway,
     };
     col_info::format(&inputs)
 }

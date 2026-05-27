@@ -11,4 +11,15 @@ include!(concat!(env!("OUT_DIR"), "/wireshark_gen.rs"));
 unsafe extern "C" {
     pub fn g_direct_hash(v: gconstpointer) -> guint;
     pub fn g_direct_equal(v1: gconstpointer, v2: gconstpointer) -> gboolean;
+    pub fn g_strdup(s: *const std::os::raw::c_char) -> *mut std::os::raw::c_char;
+    pub fn g_byte_array_append(
+        array: *mut GByteArray,
+        data: *const u8,
+        len: u32,
+    ) -> *mut GByteArray;
+    pub fn g_malloc0(n_bytes: usize) -> *mut std::os::raw::c_void;
+    pub fn g_byte_array_new() -> *mut GByteArray;
+    pub fn g_byte_array_free(array: *mut GByteArray, free_segment: gboolean) -> *mut u8;
+    pub fn g_free(mem: *mut std::os::raw::c_void);
+    pub fn g_list_prepend(list: *mut GList, data: *mut std::os::raw::c_void) -> *mut GList;
 }

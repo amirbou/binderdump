@@ -5,13 +5,13 @@ pub enum Direction {
 }
 
 pub struct ColInputs<'a> {
-    pub direction: Direction,
     pub is_reply: bool,
     pub iface: Option<&'a str>,
     pub method: Option<&'a str>,
     pub code: u32,
     pub raw_commands: &'a [&'a str],
     pub has_transaction: bool,
+    pub is_oneway: bool,
 }
 
 pub fn format(inputs: &ColInputs) -> String {
@@ -21,10 +21,15 @@ pub fn format(inputs: &ColInputs) -> String {
     if inputs.is_reply {
         return "\u{2190} reply".to_string();
     }
-    match (inputs.iface, inputs.method) {
+    let arrow = match (inputs.iface, inputs.method) {
         (Some(iface), Some(method)) => format!("\u{2192} {}.{}()", iface, method),
         (Some(iface), None) => format!("\u{2192} {}::{}", iface, inputs.code),
         (None, _) => format!("\u{2192} <unknown interface>::{}", inputs.code),
+    };
+    if inputs.is_oneway {
+        format!("{} (oneway)", arrow)
+    } else {
+        arrow
     }
 }
 
@@ -34,13 +39,13 @@ mod tests {
 
     fn base<'a>(raw: &'a [&'a str]) -> ColInputs<'a> {
         ColInputs {
-            direction: Direction::Bc,
             is_reply: false,
             iface: None,
             method: None,
             code: 0,
             raw_commands: raw,
             has_transaction: false,
+            is_oneway: false,
         }
     }
 
@@ -69,17 +74,13 @@ mod tests {
         code: u32,
     ) -> ColInputs<'a> {
         ColInputs {
-            direction: if is_reply {
-                Direction::Br
-            } else {
-                Direction::Bc
-            },
             is_reply,
             iface,
             method,
             code,
             raw_commands: &[],
             has_transaction: true,
+            is_oneway: false,
         }
     }
 
@@ -104,6 +105,20 @@ mod tests {
     #[test]
     fn txn_reply_is_bare() {
         let inputs = txn(true, Some("IServiceManager"), Some("checkService"), 0);
+        assert_eq!(format(&inputs), "\u{2190} reply");
+    }
+
+    #[test]
+    fn txn_resolved_oneway_appends_marker() {
+        let mut inputs = txn(false, Some("IFace"), Some("notify"), 5);
+        inputs.is_oneway = true;
+        assert_eq!(format(&inputs), "\u{2192} IFace.notify() (oneway)");
+    }
+
+    #[test]
+    fn txn_reply_ignores_oneway() {
+        let mut inputs = txn(true, None, None, 0);
+        inputs.is_oneway = true;
         assert_eq!(format(&inputs), "\u{2190} reply");
     }
 }
