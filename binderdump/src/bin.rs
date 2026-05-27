@@ -5,7 +5,7 @@ use anyhow::Result;
 use binderdump::capture::events::{BinderEventData, BinderEventWriteRead};
 use binderdump::capture::process_cache::ProcessCache;
 use binderdump::capture::ringbuf::create_events_channel;
-use binderdump::capture::tracepoints::attach_tracepoints;
+use binderdump::capture::tracepoints::{attach_tracepoints, ReplyCorrelationMode};
 use binderdump::pcapng::packets;
 use binderdump_structs::binder_types::{
     binder_command::BinderCommand, binder_return::BinderReturn,
@@ -40,7 +40,7 @@ fn do_read(bwr: &BinderEventWriteRead) -> Result<()> {
 }
 
 fn run_pcap(path: &Path, duration: Option<Duration>) -> Result<()> {
-    let mut binder_skel = attach_tracepoints()?;
+    let mut binder_skel = attach_tracepoints(ReplyCorrelationMode::Auto)?;
 
     let event_channel = create_events_channel(&mut binder_skel)?;
 
@@ -57,7 +57,7 @@ fn run_pcap(path: &Path, duration: Option<Duration>) -> Result<()> {
 
 #[allow(unused)]
 fn run_print() -> Result<()> {
-    let mut binder_skel = attach_tracepoints()?;
+    let mut binder_skel = attach_tracepoints(ReplyCorrelationMode::Auto)?;
 
     let event_channel = create_events_channel(&mut binder_skel)?;
     let mut cache = ProcessCache::new();

@@ -8,12 +8,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use binderdump::capture::ringbuf::create_events_channel;
-use binderdump::capture::tracepoints::attach_tracepoints;
+use binderdump::capture::tracepoints::{attach_tracepoints, ReplyCorrelationMode};
 use binderdump::pcapng::packets::PacketGenerator;
 
 #[test]
 fn capture_for_one_second_terminates() -> Result<()> {
-    let mut binder_skel = attach_tracepoints()?;
+    let mut binder_skel = attach_tracepoints(ReplyCorrelationMode::Auto)?;
     let event_channel = create_events_channel(&mut binder_skel)?;
 
     let path = PathBuf::from("/data/local/tmp/binderdump_capture_test.pcapng");
