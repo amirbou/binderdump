@@ -21,6 +21,13 @@ struct Args {
     /// Stop after this many seconds of capture (omit for unbounded).
     #[arg(short = 't', long = "duration", value_name = "SECONDS")]
     duration_secs: Option<u64>,
+
+    /// Don't load the reply-correlation BPF program at all. Use when you
+    /// don't want it (debugging), or when kernel BTF advertises the right
+    /// structs but the offsets it reports produce wrong data (e.g. vendor
+    /// backport, out-of-tree binder).
+    #[arg(long = "no-reply-correlation", conflicts_with = "reply_offsets")]
+    no_reply_correlation: bool,
 }
 
 fn do_write(bwr: &BinderEventWriteRead) -> Result<()> {
@@ -39,8 +46,8 @@ fn do_read(bwr: &BinderEventWriteRead) -> Result<()> {
     Ok(())
 }
 
-fn run_pcap(path: &Path, duration: Option<Duration>) -> Result<()> {
-    let mut binder_skel = attach_tracepoints(ReplyCorrelationMode::Auto)?;
+fn run_pcap(path: &Path, duration: Option<Duration>, mode: ReplyCorrelationMode) -> Result<()> {
+    let mut binder_skel = attach_tracepoints(mode)?;
 
     let event_channel = create_events_channel(&mut binder_skel)?;
 
@@ -138,5 +145,10 @@ pub fn main() -> Result<()> {
 
     let args = Args::parse();
     let duration = args.duration_secs.map(Duration::from_secs);
-    run_pcap(&PathBuf::from("/data/local/tmp/out.pcapng"), duration)
+    let mode = if args.no_reply_correlation {
+        ReplyCorrelationMode::Disabled
+    } else {
+        ReplyCorrelationMode::Auto
+    };
+    run_pcap(&PathBuf::from("/data/local/tmp/out.pcapng"), duration, mode)
 }
