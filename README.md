@@ -33,6 +33,41 @@ The goal is to produce pcap files containing binder transactions, that can be vi
 After building the dissector, you should copy it to `~/.local/lib/wireshark/plugins/3.6/epan/libbinderdump.so` (replace 3.6 with your Wireshark version)
 
 
+## Reply correlation across kernels
+
+`binderdump` cross-links each binder reply with its originating request
+(see the `binderdump_reply` post-dissector and the `in_reply_to_debug_id`
+column). The capture-side program that emits this metadata reads three
+fields out of `struct binder_transaction` and `struct binder_thread`,
+which are private kernel structs whose layout shifts between releases.
+
+To stay portable the BPF program uses CO-RE: it declares minimal stubs
+of those structs with `__attribute__((preserve_access_index))`, and
+libbpf relocates each field access to the target kernel's offset at
+load time using `/sys/kernel/btf/vmlinux`.
+
+Requirements:
+
+- Kernel >= 5.8 (already required for ring buffers).
+- `CONFIG_DEBUG_INFO_BTF=y` (Android GKI 5.10+ has this by default).
+- Binder driver compiled into the kernel (default on Android).
+
+If `/sys/kernel/btf/vmlinux` is missing or doesn't include the binder
+structs, `binderdump` logs a one-line notice at startup and continues
+capturing everything else. Reply correlation just won't appear in the
+resulting pcapng.
+
+CLI overrides:
+
+- `--no-reply-correlation` — force-disable the BPF program even when
+  BTF is present (escape hatch for "BTF lies").
+- `--reply-offsets to_thread=N,transaction_stack=N,debug_id=N` — supply
+  the three byte offsets manually (decimal or `0x`-prefixed hex), bypassing
+  CO-RE entirely. Use when BTF is missing on-device but you have the
+  offsets from kernel sources or `pahole`. Mutually exclusive with
+  `--no-reply-correlation`.
+
+
 ## TODO
 
 Handle seeing only one side of the transaction:
