@@ -27,11 +27,7 @@ fn bind_common_types() {
     bindgen_generate(&src, &dst);
 }
 
-fn build_bpf_program(
-    path: &path::Path,
-    out_dir: &path::Path,
-    is_transaction_stack_feature_enabled: bool,
-) {
+fn build_bpf_program(path: &path::Path, out_dir: &path::Path) {
     println!("building bpf program: {}", path.display());
 
     let mut out = out_dir.join(path.file_stem().unwrap());
@@ -60,10 +56,6 @@ fn build_bpf_program(
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
     clang_args.push(format!("-D__{}__", arch));
 
-    if is_transaction_stack_feature_enabled {
-        clang_args.push(String::from("-DFEATURE_TRANSACTION_STACK"));
-    }
-
     SkeletonBuilder::new()
         .source(path)
         .clang_args(clang_args)
@@ -72,7 +64,7 @@ fn build_bpf_program(
         .unwrap();
 }
 
-fn build_bpf(is_transaction_stack_feature_enabled: bool) {
+fn build_bpf() {
     let out_dir = path::PathBuf::from(env::var_os("OUT_DIR").unwrap());
 
     let paths = fs::read_dir(BPF_PROGRAMS_DIR).expect("failed to ls bpf programs directory");
@@ -82,14 +74,13 @@ fn build_bpf(is_transaction_stack_feature_enabled: bool) {
             .file_name()
             .is_some_and(|filename| filename.to_string_lossy().ends_with(".bpf.c"))
         {
-            build_bpf_program(&path, &out_dir, is_transaction_stack_feature_enabled);
+            build_bpf_program(&path, &out_dir);
         }
     }
     println!("cargo::rerun-if-changed={}", BPF_PROGRAMS_DIR);
 }
 
 fn main() {
-    let is_transaction_stack_feature_enabled = cfg!(feature = "transaction-stack");
     bind_common_types();
-    build_bpf(is_transaction_stack_feature_enabled);
+    build_bpf();
 }

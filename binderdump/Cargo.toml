@@ -44,7 +44,3 @@ android_logger = "0.15.1"
 [build-dependencies]
 bindgen = "0.72.1"
 libbpf-cargo = "0.26.0"
-
-[features]
-transaction-stack = []
-default = ["transaction-stack"]
