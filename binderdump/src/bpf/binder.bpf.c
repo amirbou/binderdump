@@ -1,5 +1,6 @@
 #include <linux/types.h>
 
+#include <bpf/bpf_core_read.h>
 #include <bpf/bpf_helpers.h>
 #include <linux/android/binder.h>
 #include <linux/bpf.h>
@@ -915,52 +916,34 @@ int binder_command(struct trace_event_raw_binder_command *ctx) { return do_bc_br
 SEC("tp/binder/binder_return")
 int binder_return(struct trace_event_raw_binder_return *ctx) { return do_bc_br(ctx->cmd, 1); }
 
-// This is only going to work if the offsets are correct, I only tested on Pixel 6 with kernel 6.6
-#ifdef FEATURE_TRANSACTION_STACK
-// offsetof(struct binder_transaction, to_thread)
-#define OFFSETOF_TRANSACTION_TO_THREAD 64
+// CO-RE-relocatable stubs for the three fields we touch. libbpf rewrites
+// each access to the target kernel's offset at load time using BTF;
+// other fields are intentionally omitted (libbpf matches by name).
+struct binder_thread___local {
+    struct binder_transaction___local *transaction_stack;
+} __attribute__((preserve_access_index));
 
-// offsetof(struct binder_thread, transaction_stack)
-#define OFFSETOF_THREAD_TRANSACTION_STACK 64
+struct binder_transaction___local {
+    int debug_id;
+    struct binder_thread___local *to_thread;
+} __attribute__((preserve_access_index));
 
-// offsetof(struct binder_transaction, debug_id)
-#define OFFSETOF_TRANSACTION_DEBUG_ID 0
+// Manual-offset values (set from userspace via --reply-offsets). When the
+// manual program autoloads, these get patched into rodata before load.
+// All three must be supplied together; zero is a valid debug_id offset
+// so userspace, not BPF, enforces that.
+// (Reachable only via raw_binder_transaction_manual, which userspace only
+// autoloads after populating these via --reply-offsets.)
+const volatile __u32 cfg_off_to_thread = 0;
+const volatile __u32 cfg_off_transaction_stack = 0;
+const volatile __u32 cfg_off_debug_id = 0;
 
-// KEEP This before binder_transaction tracepoint so this is executed first
-SEC("raw_tp/binder_transaction")
-int raw_binder_transaction(struct bpf_raw_tracepoint_args *ctx) {
-    if (!(int)ctx->args[0]) {
-        // not a reply
-        return 0;
-    }
-    void *transaction = (void *)ctx->args[1];
-
-    void *to_thread = NULL;
-    void *transaction_stack = NULL;
-    int request_debug_id = 0;
-    int reply_debug_id = 0;
-
-    if (bpf_probe_read_kernel(&to_thread, sizeof(to_thread),
-                              transaction + OFFSETOF_TRANSACTION_TO_THREAD)) {
-        LOG("raw_binder_transaction: failed to read to_thread");
-        return 0;
-    }
-
-    if (bpf_probe_read_kernel(&transaction_stack, sizeof(transaction_stack),
-                              to_thread + OFFSETOF_THREAD_TRANSACTION_STACK)) {
-        LOG("raw_binder_transaction: failed to read transaction_stack");
-        return 0;
-    }
-
-    if (bpf_probe_read_kernel(&request_debug_id, sizeof(request_debug_id),
-                              transaction_stack + OFFSETOF_TRANSACTION_DEBUG_ID)) {
-        LOG("raw_binder_transaction: failed to read request_debug_id");
-        return 0;
-    }
-    if (bpf_probe_read_kernel(&reply_debug_id, sizeof(reply_debug_id),
-                              transaction + OFFSETOF_TRANSACTION_DEBUG_ID)) {
-        LOG("raw_binder_transaction: failed to read reply_debug_id");
-        return 0;
+// Shared submit path — debug_ids come from either branch. Inlined to
+// avoid an extra BPF helper call on a hot path.
+static __always_inline void submit_txn_stack(int request_debug_id, int reply_debug_id) {
+    // debug_id is monotonic from 1 in the kernel; treat 0 as a failed read.
+    if (request_debug_id == 0 || reply_debug_id == 0) {
+        return;
     }
 
     __u64 task_id = bpf_get_current_pid_tgid();
@@ -972,7 +955,7 @@ int raw_binder_transaction(struct bpf_raw_tracepoint_args *ctx) {
     event = bpf_ringbuf_reserve(&binder_events_buffer, sizeof(*event) + sizeof(*txn_event), 0);
     if (!event) {
         LOG("Failed to reserved txn stack event");
-        return 0;
+        return;
     }
     event->type = BINDER_TXN_STACK;
     event->pid = pid;
@@ -985,11 +968,74 @@ int raw_binder_transaction(struct bpf_raw_tracepoint_args *ctx) {
 
     LOG_RINGBUF("submit %u %x", sizeof(*event) + sizeof(*txn_event), *(int *)event);
     bpf_ringbuf_submit(event, 0);
+}
 
-    // LOG("transaction %d replies to transaction %d", reply_debug_id, request_debug_id);
+// KEEP these two before binder_transaction tracepoint so they are executed first.
+// At most one of these is autoloaded per capture session (userspace picks).
+SEC("raw_tp/binder_transaction")
+int raw_binder_transaction_core(struct bpf_raw_tracepoint_args *ctx) {
+    if (!(int)ctx->args[0]) {
+        return 0;
+    }
+    struct binder_transaction___local *transaction =
+        (struct binder_transaction___local *)ctx->args[1];
+
+    struct binder_thread___local *to_thread = BPF_CORE_READ(transaction, to_thread);
+    if (!to_thread) {
+        return 0;
+    }
+    struct binder_transaction___local *stack = BPF_CORE_READ(to_thread, transaction_stack);
+    if (!stack) {
+        return 0;
+    }
+
+    int request_debug_id = BPF_CORE_READ(stack, debug_id);
+    int reply_debug_id = BPF_CORE_READ(transaction, debug_id);
+    submit_txn_stack(request_debug_id, reply_debug_id);
     return 0;
 }
-#endif
+
+SEC("raw_tp/binder_transaction")
+int raw_binder_transaction_manual(struct bpf_raw_tracepoint_args *ctx) {
+    if (!(int)ctx->args[0]) {
+        return 0;
+    }
+    void *transaction_raw = (void *)ctx->args[1];
+
+    void *to_thread_raw = NULL;
+    void *stack_raw = NULL;
+    int request_debug_id = 0;
+    int reply_debug_id = 0;
+
+    if (bpf_probe_read_kernel(&to_thread_raw, sizeof(to_thread_raw),
+                              transaction_raw + cfg_off_to_thread)) {
+        LOG("raw_binder_transaction: manual read of to_thread failed");
+        return 0;
+    }
+    if (!to_thread_raw) {
+        return 0;
+    }
+    if (bpf_probe_read_kernel(&stack_raw, sizeof(stack_raw),
+                              to_thread_raw + cfg_off_transaction_stack)) {
+        LOG("raw_binder_transaction: manual read of transaction_stack failed");
+        return 0;
+    }
+    if (!stack_raw) {
+        return 0;
+    }
+    if (bpf_probe_read_kernel(&request_debug_id, sizeof(request_debug_id),
+                              stack_raw + cfg_off_debug_id)) {
+        LOG("raw_binder_transaction: manual read of request debug_id failed");
+        return 0;
+    }
+    if (bpf_probe_read_kernel(&reply_debug_id, sizeof(reply_debug_id),
+                              transaction_raw + cfg_off_debug_id)) {
+        LOG("raw_binder_transaction: manual read of reply debug_id failed");
+        return 0;
+    }
+    submit_txn_stack(request_debug_id, reply_debug_id);
+    return 0;
+}
 
 SEC("tp/binder/binder_transaction")
 int binder_transaction(struct trace_event_raw_binder_transaction *ctx) {

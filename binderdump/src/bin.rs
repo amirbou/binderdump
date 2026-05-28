@@ -5,7 +5,7 @@ use anyhow::Result;
 use binderdump::capture::events::{BinderEventData, BinderEventWriteRead};
 use binderdump::capture::process_cache::ProcessCache;
 use binderdump::capture::ringbuf::create_events_channel;
-use binderdump::capture::tracepoints::attach_tracepoints;
+use binderdump::capture::tracepoints::{attach_tracepoints, ReplyCorrelationMode, ReplyOffsets};
 use binderdump::pcapng::packets;
 use binderdump_structs::binder_types::{
     binder_command::BinderCommand, binder_return::BinderReturn,
@@ -21,6 +21,24 @@ struct Args {
     /// Stop after this many seconds of capture (omit for unbounded).
     #[arg(short = 't', long = "duration", value_name = "SECONDS")]
     duration_secs: Option<u64>,
+
+    /// Don't load the reply-correlation BPF program at all. Use when you
+    /// don't want it (debugging), or when kernel BTF advertises the right
+    /// structs but the offsets it reports produce wrong data (e.g. vendor
+    /// backport, out-of-tree binder).
+    #[arg(long = "no-reply-correlation", conflicts_with = "reply_offsets")]
+    no_reply_correlation: bool,
+
+    /// Manually specify binder struct offsets, bypassing CO-RE. Format:
+    /// 'to_thread=N,transaction_stack=N,debug_id=N'. Values accept
+    /// decimal or 0x-prefixed hex. Use when kernel BTF is missing or
+    /// describes a different struct layout than the running kernel's.
+    #[arg(
+        long = "reply-offsets",
+        value_name = "OFFSETS",
+        conflicts_with = "no_reply_correlation"
+    )]
+    reply_offsets: Option<ReplyOffsets>,
 }
 
 fn do_write(bwr: &BinderEventWriteRead) -> Result<()> {
@@ -39,8 +57,8 @@ fn do_read(bwr: &BinderEventWriteRead) -> Result<()> {
     Ok(())
 }
 
-fn run_pcap(path: &Path, duration: Option<Duration>) -> Result<()> {
-    let mut binder_skel = attach_tracepoints()?;
+fn run_pcap(path: &Path, duration: Option<Duration>, mode: ReplyCorrelationMode) -> Result<()> {
+    let mut binder_skel = attach_tracepoints(mode)?;
 
     let event_channel = create_events_channel(&mut binder_skel)?;
 
@@ -57,7 +75,7 @@ fn run_pcap(path: &Path, duration: Option<Duration>) -> Result<()> {
 
 #[allow(unused)]
 fn run_print() -> Result<()> {
-    let mut binder_skel = attach_tracepoints()?;
+    let mut binder_skel = attach_tracepoints(ReplyCorrelationMode::Auto)?;
 
     let event_channel = create_events_channel(&mut binder_skel)?;
     let mut cache = ProcessCache::new();
@@ -138,5 +156,12 @@ pub fn main() -> Result<()> {
 
     let args = Args::parse();
     let duration = args.duration_secs.map(Duration::from_secs);
-    run_pcap(&PathBuf::from("/data/local/tmp/out.pcapng"), duration)
+    let mode = if args.no_reply_correlation {
+        ReplyCorrelationMode::Disabled
+    } else if let Some(o) = args.reply_offsets {
+        o.into()
+    } else {
+        ReplyCorrelationMode::Auto
+    };
+    run_pcap(&PathBuf::from("/data/local/tmp/out.pcapng"), duration, mode)
 }

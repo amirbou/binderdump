@@ -26,7 +26,6 @@ typedef enum {
                       // is sent, or when BR_TRANSACTION, BR_TRANSACTION_SECCTX or BR_REPLY is
                       // received
     BINDER_TXN_STACK, // gets sent when a reply transaction is received for another transaction.
-                      // Only used if FEATURE_TRANSACTION_STACK is enabled.
     BINDER_TXN_PTR_DATA, // payload bytes of a BINDER_TYPE_PTR scatter-gather buffer referenced
                          // from a transaction's offsets array.
 } binder_process_state_t;
