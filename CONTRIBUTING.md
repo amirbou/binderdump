@@ -60,9 +60,14 @@ cargo build --release -p binderdump-dissector  # host (x86_64-linux-gnu) — for
 
 `scripts/run.sh` is wired in as the cargo `runner` for both Android
 targets, so `cargo run -p binderdump` will `adb push` the binary to
-`/data/local/tmp`, run it on the device, and `adb pull` the resulting
-`out.pcapng` back to `$OUT_DIR`. The script's pull dir is hardcoded —
-edit `scripts/run.sh` to match your local layout.
+`/data/local/tmp`, run it on the device, and (when `$OUT_DIR` is set)
+`adb pull` the resulting `out.pcapng` back there:
+
+```sh
+OUT_DIR=/path/to/pcaps cargo run -p binderdump -- -t 5
+```
+
+Without `$OUT_DIR`, the pull step is skipped.
 
 ## Tests
 

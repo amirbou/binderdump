@@ -56,7 +56,7 @@ cargo run -p binderdump                                   # uses scripts/run.sh 
 cargo test -p binderdump-structs                          # most tests live here and in binderdump-derive
 ```
 
-`scripts/run.sh` is wired in as the cargo `runner` for both Android targets: `cargo run` will `adb push` the binary to `/data/local/tmp`, run it on the device, and (for the `binderdump` bin specifically) `adb pull` the resulting `out.pcapng` back to `$OUT_DIR` (currently hardcoded to `/mnt/d/pcaps`).
+`scripts/run.sh` is wired in as the cargo `runner` for both Android targets: `cargo run` will `adb push` the binary to `/data/local/tmp`, run it on the device, and (for the `binderdump` bin specifically, when `$OUT_DIR` is set) `adb pull` the resulting `out.pcapng` back to `$OUT_DIR`.
 
 The dissector `.so` must be installed at `~/.local/lib/wireshark/plugins/<wireshark-version>/epan/libbinderdump.so` to be picked up by Wireshark.
 
@@ -75,7 +75,7 @@ When to run it:
 - The capture-side logic that populates protocol fields changed — e.g. new fields plumbed through from BPF events, or builder logic flipped.
 - Dissector field abbrevs changed in a way that the test asserts against extracted values.
 
-The script needs a rooted Android device on `adb` and uses `scripts/run.sh`'s hardcoded `/mnt/d/pcaps` pull dir. Don't regenerate the fixture for unrelated changes — keeping it stable means smaller diffs and reproducible test runs.
+The script needs a rooted Android device on `adb` and an `$OUT_DIR` env var pointing at a writable directory where `scripts/run.sh` should adb-pull the captured pcapng. Don't regenerate the fixture for unrelated changes — keeping it stable means smaller diffs and reproducible test runs.
 
 Pre-commit hooks (`.pre-commit-config.yaml`) run `cargo fmt`, `cargo check`, and `clang-format` on BPF C sources.
 
