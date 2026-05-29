@@ -3,7 +3,15 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 #![allow(unused_imports)]
-#![allow(improper_ctypes)] // Suppress u128 warnings
+#![allow(improper_ctypes)]
+// Suppress u128 warnings
+// glib G_E / G_PI / G_LN2 etc. flow through bindgen as plain float consts;
+// clippy flags them as approximate values of std::f64::consts::*. The
+// generated file can't reach for std::f64::consts (it's a verbatim
+// bindgen include), so allow the lint here. Same applies to
+// useless_transmute on glib bitfield accessors.
+#![allow(clippy::approx_constant)]
+#![allow(clippy::useless_transmute)]
 include!(concat!(env!("OUT_DIR"), "/wireshark_gen.rs"));
 
 // g_direct_hash/equal are exported glib symbols but hidden from bindgen by -fvisibility=hidden;
