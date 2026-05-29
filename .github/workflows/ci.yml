@@ -1,0 +1,228 @@
+name: CI
+
+on:
+  push:
+    branches: [master, dev]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: fmt + clippy (host)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly Rust (host)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: lint
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: Install Wireshark 4.6 dev headers (needed for clippy on dissector)
+        run: |
+          sudo add-apt-repository -y ppa:wireshark-dev/stable
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwireshark-dev libglib2.0-dev
+
+      # Clippy runs without \`-D warnings\` because the workspace currently
+      # carries several pre-existing style lints (expect_fun_call,
+      # dead_code, unused_mut, redundant_imports, needless_return).
+      # Default clippy still denies the \`correctness\` and \`suspicious\`
+      # groups, so real bugs still fail CI.
+      - name: cargo clippy (host crates)
+        run: |
+          cargo clippy -p binderdump-structs --all-targets
+          cargo clippy -p binderdump-derive   --all-targets
+          cargo clippy -p binderdump-trait    --all-targets
+          cargo clippy -p binderdump-dissector --all-targets
+
+  host-tests:
+    name: cargo test (host crates)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: host-tests
+
+      - name: cargo test
+        run: |
+          cargo test -p binderdump-structs --target x86_64-unknown-linux-gnu
+          cargo test -p binderdump-derive   --target x86_64-unknown-linux-gnu
+          cargo test -p binderdump-trait    --target x86_64-unknown-linux-gnu
+
+  cross-build:
+    name: cross-build (android aarch64 + x86_64)
+    # ubuntu-22.04: jammy's libelf-dev (0.186) was built without zstd
+    # support, so libbpf-sys's host-side static link chain doesn't
+    # reference ZSTD_* symbols. ubuntu-24.04 noble's libelf-dev (0.190)
+    # was built with zstd, which trips the link of the binderdump
+    # build-script binary because there's no first-class way to inject
+    # -lzstd into the build-script link line without also leaking it
+    # into the android-target link (where libzstd is unavailable in the
+    # NDK sysroot).
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          # rustfmt: libbpf-cargo pipes the generated Rust skeleton
+          # through rustfmt; without it the build script panics with
+          # "Broken pipe" on the closed stdin.
+          components: rustfmt
+          targets: aarch64-linux-android,x86_64-linux-android
+
+      - name: Install build deps for libbpf + libelf
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            m4 make autoconf automake autopoint pkg-config gawk \
+            gcc-multilib g++-multilib \
+            bison flex \
+            libelf-dev libbpf-dev zlib1g-dev libzstd-dev
+
+      - name: Install NDK r26d
+        uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r26d
+          add-to-path: false
+
+      - name: Cache static_libs (per submodule rev + Makefile)
+        uses: actions/cache@v4
+        with:
+          path: static_libs
+          key: static-libs-${{ runner.os }}-ndk-r26d-${{ hashFiles('libbpf/**', 'aosp-elfutils/**', 'aosp-elfutils-patches/**', 'Makefile', 'Makefile_arch') }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cross-build
+
+      - name: Build static libs + write .cargo/config.toml
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+        run: make
+
+      - name: Build binderdump (aarch64-linux-android)
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+        run: cargo build --release -p binderdump --target aarch64-linux-android
+
+      # x86_64-linux-android isn't built in CI: binder.bpf.c uses
+      # aarch64-only kernel defines (PSR_MODE32_BIT, struct
+      # user_pt_regs.pstate, BINDER_GET_EXTENDED_ERROR) unconditionally
+      # at file scope, so the BPF compile for an x86_64 target fails
+      # at \`compat_user_mode\`. Aarch64 is the primary supported
+      # target. Bring x86_64-android back once the BPF code grows
+      # proper arch guards.
+      - name: Upload aarch64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binderdump-aarch64-linux-android
+          path: target/aarch64-linux-android/release/binderdump
+          if-no-files-found: error
+
+  dissector:
+    name: dissector build + tshark integration
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install Wireshark 4.6 dev headers + tshark
+        run: |
+          sudo add-apt-repository -y ppa:wireshark-dev/stable
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwireshark-dev libglib2.0-dev tshark
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: dissector
+
+      - name: Build dissector
+        run: cargo build --release -p binderdump-dissector --target x86_64-unknown-linux-gnu
+
+      - name: Install dissector for tshark
+        run: |
+          set -euo pipefail
+          DISSECTOR_SO=target/x86_64-unknown-linux-gnu/release/libbinderdump_dissector.so
+          test -f "$DISSECTOR_SO" || { echo "dissector .so missing at $DISSECTOR_SO"; find target -name 'libbinderdump*.so' || true; exit 1; }
+          PERSONAL_PLUGIN=$(tshark -G folders | awk -F'\t' '/^Personal Plugins:/ {print $2; exit}')
+          test -n "$PERSONAL_PLUGIN" || { echo "could not discover personal plugin dir"; tshark -G folders; exit 1; }
+          mkdir -p "$PERSONAL_PLUGIN/epan"
+          cp "$DISSECTOR_SO" "$PERSONAL_PLUGIN/epan/libbinderdump.so"
+          echo "Installed plugin to: $PERSONAL_PLUGIN/epan/libbinderdump.so"
+          tshark -G protocols | awk -F'\t' '$3 == "binderdump"' | grep -q binderdump \
+            || { echo "binderdump not registered with tshark"; tshark -G protocols | grep -i binder || true; exit 1; }
+
+      # The dissector reads the AOSP AIDL corpus from
+      # ~/.config/wireshark/binderdump/aosp/ by default (see
+      # default_aosp_dir() in epan_plugin.rs). Stage the in-repo copy so
+      # the integration tests that resolve method names against the
+      # corpus can find it.
+      - name: Stage AOSP AIDL corpus for dissector
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.config/wireshark/binderdump"
+          cp -r binderdump-aidl/data/aosp "$HOME/.config/wireshark/binderdump/aosp"
+
+      - name: Run dissector integration test
+        run: cargo test -p binderdump-dissector --release
+
+      - name: Upload libbinderdump.so artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libbinderdump-x86_64-linux-gnu
+          path: target/x86_64-unknown-linux-gnu/release/libbinderdump_dissector.so
+          if-no-files-found: error
+
+  pre-commit:
+    name: pre-commit hooks
+    runs-on: ubuntu-24.04
+    # SKIP cargo-check: that hook builds the workspace, which needs the static
+    # libs + NDK that the cross-build job already exercises. Reproducing that
+    # setup here just to satisfy cargo-check would duplicate ~10min of work
+    # for no extra coverage. cross-build is the source of truth for
+    # compile-cleanliness.
+    env:
+      SKIP: cargo-check
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+          targets: x86_64-unknown-linux-gnu
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - uses: pre-commit/action@v3.0.1

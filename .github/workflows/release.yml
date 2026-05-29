@@ -1,0 +1,169 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  android-binaries:
+    name: build binderdump (${{ matrix.target }})
+    # ubuntu-22.04: jammy's libelf-dev was built without zstd, so
+    # libbpf-sys's host-side static link chain on the build-script
+    # binary doesn't need ZSTD_* symbols. See ci.yml cross-build for
+    # the longer story.
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        # x86_64-linux-android omitted: binder.bpf.c uses aarch64-only
+        # kernel defines without arch guards, so the BPF compile fails
+        # for an x86_64 target. See ci.yml cross-build for context.
+        target: [aarch64-linux-android]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          # rustfmt: libbpf-cargo pipes the generated skeleton through
+          # rustfmt; missing component → Broken pipe panic.
+          components: rustfmt
+          targets: ${{ matrix.target }}
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            m4 make autoconf automake autopoint pkg-config gawk \
+            gcc-multilib g++-multilib \
+            bison flex \
+            libelf-dev libbpf-dev zlib1g-dev libzstd-dev
+
+      - name: Install NDK r26d
+        uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r26d
+          add-to-path: false
+
+      - uses: actions/cache@v4
+        with:
+          path: static_libs
+          key: static-libs-${{ runner.os }}-ndk-r26d-${{ hashFiles('libbpf/**', 'aosp-elfutils/**', 'aosp-elfutils-patches/**', 'Makefile', 'Makefile_arch') }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+
+      - name: Build
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          make
+          cargo build --release -p binderdump --target ${{ matrix.target }}
+
+      - name: Stage artifact
+        run: |
+          mkdir dist
+          cp target/${{ matrix.target }}/release/binderdump \
+             dist/binderdump-${{ github.ref_name }}-${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binderdump-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  dissector:
+    name: build dissector (host)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install Wireshark 4.6 dev headers
+        run: |
+          sudo add-apt-repository -y ppa:wireshark-dev/stable
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwireshark-dev libglib2.0-dev
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-dissector
+
+      - name: Build
+        run: cargo build --release -p binderdump-dissector --target x86_64-unknown-linux-gnu
+
+      - name: Stage artifact
+        run: |
+          set -euo pipefail
+          mkdir dist
+          cp target/x86_64-unknown-linux-gnu/release/libbinderdump_dissector.so \
+             dist/libbinderdump-${{ github.ref_name }}-x86_64-linux-gnu.so
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libbinderdump
+          path: dist/*
+          if-no-files-found: error
+
+  aidl-corpus:
+    name: package AIDL/HIDL corpus
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stage per-version + all-versions tgzs
+        run: |
+          set -euo pipefail
+          mkdir dist
+          cd binderdump-aidl/data
+          # Bundle layout matches what the dissector looks for:
+          # the user extracts into ~/.config/wireshark/binderdump/ and
+          # ends up with aosp/ and native/ side by side (see
+          # default_aosp_dir and the aosp_dir.parent().join("native")
+          # lookup in aidl_resolve.rs).
+          for version_dir in aosp/android-*; do
+            version=$(basename "$version_dir")
+            tar czf "../../dist/binderdump-aidl-corpus-${{ github.ref_name }}-${version}.tgz" \
+              "aosp/${version}" "native/${version}"
+          done
+          tar czf "../../dist/binderdump-aidl-corpus-${{ github.ref_name }}-all.tgz" \
+            aosp native
+
+      - name: List staged tgzs
+        run: ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aidl-corpus
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: publish GitHub Release
+    needs: [android-binaries, dissector, aidl-corpus]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

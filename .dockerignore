@@ -1,0 +1,6 @@
+target/
+static_libs/
+tmp/
+.git/
+docs/superpowers/
+.devcontainer/

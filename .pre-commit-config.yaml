@@ -19,3 +19,4 @@ repos:
     rev: v18.1.5
     hooks:
     -   id: clang-format
+        files: ^(binderdump/src/bpf|binderdump-sys/src|binderdump-epan-sys/src)/.*\.(c|h)$

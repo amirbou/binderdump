@@ -17,11 +17,11 @@
 //        wait
 //
 //      The cargo runner (scripts/run.sh) adb-pushes the binary, runs it
-//      on the device, and pulls /data/local/tmp/out.pcapng back to
-//      $OUT_DIR (currently /mnt/d/pcaps).
+//      on the device, and (when $OUT_DIR is set) adb-pulls
+//      /data/local/tmp/out.pcapng back to $OUT_DIR.
 //   3. Copy the pulled file in:
 //
-//        cp /mnt/d/pcaps/out.pcapng \
+//        cp "$OUT_DIR/out.pcapng" \
 //           binderdump-dissector/tests/fixtures/sample.pcapng
 //
 //   Keep the fixture small (a few KB). If it balloons, shorten -t or skip
