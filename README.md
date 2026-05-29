@@ -1,37 +1,66 @@
-# Binderdump
+# binderdump
 
-tcpdump for Android's binder
+[![CI](https://github.com/amirbou/binderdump/actions/workflows/ci.yml/badge.svg)](https://github.com/amirbou/binderdump/actions/workflows/ci.yml)
 
-The goal is to produce pcap files containing binder transactions, that can be viewed with WireShark with a provided dissector
+> tcpdump for Android's binder.
 
+`binderdump` runs on an Android device, attaches eBPF tracepoints to the
+binder driver, and writes binder transactions to a pcapng file. Open
+the pcapng in Wireshark with the bundled dissector plugin and you get a
+normal protocol tree for every binder ioctl, write, read, transaction,
+and reply.
 
+## Quickstart
 
-## Development Setup
+### Use prebuilt binaries
 
-* Initialize the libelf and libbpf submodules with `git submodule update --init --recursive`
+Grab the latest release: <https://github.com/amirbou/binderdump/releases>
 
-* Install Rust using rustup
+```sh
+# 1. on a host with adb access to a rooted device
+adb push binderdump-<tag>-aarch64-linux-android /data/local/tmp/binderdump
+adb shell chmod +x /data/local/tmp/binderdump
+adb shell /data/local/tmp/binderdump -t 5      # 5-second capture
+adb pull /data/local/tmp/out.pcapng .
 
-* Add Android build targets with `rustup target add x86_64-linux-android` and `rustup target add aarch64-linux-android`
+# 2. install the dissector for Wireshark (Linux host)
+PLUGIN_DIR=$(tshark -G folders | awk -F'\t' '/^Personal Plugins:/ {print $2; exit}')
+mkdir -p "$PLUGIN_DIR/epan"
+cp libbinderdump-<tag>-x86_64-linux-gnu.so "$PLUGIN_DIR/epan/libbinderdump.so"
 
-* Download Android's latest NDK (I use r26d)
+# 3. open the pcapng in Wireshark
+wireshark out.pcapng
+```
 
-* Install `m4 make autotools clang gcc-multilib gawk clang-format` and maybe more things that I missed
+### Build from source
 
-* The dissector requires an updated `llvm` and `clang` installation otherwise some weird error related to `emmintrin.h` happens during compilation (I used llvm-19 and clang-19)
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full setup. Shortest path
+using the bundled Dockerfile:
 
-* Set the envrionment variable `ANDROID_NDK_ROOT` to point to the extracted NDK (`.../android-ndk-r26d`).
+```sh
+git submodule update --init --recursive
+docker build -t binderdump-build .
+docker run --rm -v "$PWD":/work -w /work binderdump-build bash -c '
+    make && cargo build --release -p binderdump && cargo build --release -p binderdump-dissector
+'
+```
 
-    You may skip this step and pass `ANDROID_NDK_ROOT=...` to `make` instead.
+## How it works
 
-* Run `make` to build libelf and libbpf, and configure cargo with the correct toolchain.
+- The BPF program (`binderdump/src/bpf/binder.bpf.c`) hooks binder
+  tracepoints and emits structured events to a ring buffer.
+- The Android-side capture binary reads the ring buffer, joins related
+  events into logical transactions, looks up `/proc/<pid>` metadata,
+  and writes pcapng enhanced packet blocks containing a layered binder
+  wire format.
+- The host-side Wireshark plugin (`binderdump-dissector`) generates
+  its `header_field_info` registration and dissection code at compile
+  time via a `#[derive(EpanProtocol)]` proc-macro, from the **same**
+  Rust structs the capture binary serializes. Touch a field, both
+  ends rebuild.
 
-    You should only have to call `make` once (unless updating the submodules). From that point, use `cargo` to build the project.
-
-## Dissector setup
-
-After building the dissector, you should copy it to `~/.local/lib/wireshark/plugins/3.6/epan/libbinderdump.so` (replace 3.6 with your Wireshark version)
-
+For more detail on the pipeline and the trade-offs, see
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Reply correlation across kernels
 
@@ -67,15 +96,18 @@ CLI overrides:
   offsets from kernel sources or `pahole`. Mutually exclusive with
   `--no-reply-correlation`.
 
+## Project status / known limitations
 
-## TODO
+- **Partial transactions.** If a transaction was sent to a thread that
+  was blocked on `binder_thread_read` before tracing started, only the
+  `sys_exit` + `transaction_received` events will be visible. We
+  currently only handle whole-transaction captures.
+- **hwbinder** support has not been thoroughly tested.
 
-Handle seeing only one side of the transaction:
-    if a transaction was sent to a thread that was blocked on `binder_thread_read` before we started tracing, we will only see the `sys_exit` and `transaction_received` events. We would then try to create a packet for the received transaction, but won't have the `binder_write_read` event for that syscall.
-    to solve this we could change `tp/` to `raw_tp/` in the tracepoint section to receive the raw arguments to the tracepoint - in `transaction_received` - the transaction object itself, and in `sys_exit`, the `pt_regs` of captured upon syscall entry. Using both should be enough to generate the data we need, but we would probably have to depend on the layout of `struct transaction`
+## Contributing
 
-    We are going to only handle cases where we see the whole transaction, so we can know at which offsets there are TXN/REPLY returns,
+See [CONTRIBUTING.md](CONTRIBUTING.md). PRs welcome.
 
+## License
 
-Make sure we correctly handle hwbinder
-    I see no hwbinder requests in my captures...
+See [LICENSE](LICENSE).
