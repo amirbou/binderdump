@@ -459,7 +459,8 @@ int do_binder_write_read(pid_t tid, pid_t pid, struct ioctl_context *ioctl_ctx, 
     // TODO - check addr != NULL?
     int _ret = bpf_probe_read_user(buffer->bwr.data, size, UNTAG(addr));
     if (_ret) {
-        LOG("bwr: failed to read addr %px size: %u (is_done: %d): %d", addr, size, is_done, _ret);
+        LOG("bwr: failed to read addr %px size: %u (is_done: %d)", addr, size, is_done);
+        LOG("bwr: read error %d", _ret);
         return -1;
     }
 l_send_event:
