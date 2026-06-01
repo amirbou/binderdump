@@ -48,6 +48,22 @@ pub fn special_method_name(s: SpecialTxn) -> &'static str {
     }
 }
 
+// True if `name` is one of the special_method_name sentinels. Lets the reply
+// path recognise an interface-agnostic transaction from the resolved name when
+// the original transaction code isn't on hand.
+pub fn is_special_method_name(name: &str) -> bool {
+    const ALL: [SpecialTxn; 7] = [
+        SpecialTxn::Ping,
+        SpecialTxn::Dump,
+        SpecialTxn::ShellCommand,
+        SpecialTxn::Interface,
+        SpecialTxn::Sysprops,
+        SpecialTxn::Extension,
+        SpecialTxn::Tweet,
+    ];
+    ALL.iter().any(|&s| special_method_name(s) == name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,6 +71,13 @@ mod tests {
     #[test]
     fn ping_recognized() {
         assert_eq!(lookup_special(0x5f504e47), Some(SpecialTxn::Ping));
+    }
+    #[test]
+    fn special_method_names_round_trip() {
+        assert!(is_special_method_name("PING_TRANSACTION"));
+        assert!(is_special_method_name("INTERFACE_TRANSACTION"));
+        assert!(!is_special_method_name("checkService"));
+        assert!(!is_special_method_name(""));
     }
     #[test]
     fn dump_recognized() {

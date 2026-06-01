@@ -12,6 +12,10 @@ pub struct ColInputs<'a> {
     pub raw_commands: &'a [&'a str],
     pub has_transaction: bool,
     pub is_oneway: bool,
+    /// Interface-agnostic built-in transaction (PING/DUMP/INTERFACE/...). These
+    /// resolve a name but inherit whatever interface the target binder fd had
+    /// (None, "", or the "<query>" placeholder), so the name is shown alone.
+    pub is_special: bool,
 }
 
 pub fn format(inputs: &ColInputs) -> String {
@@ -21,10 +25,14 @@ pub fn format(inputs: &ColInputs) -> String {
     if inputs.is_reply {
         return "\u{2190} reply".to_string();
     }
-    let arrow = match (inputs.iface, inputs.method) {
-        (Some(iface), Some(method)) => format!("\u{2192} {}.{}()", iface, method),
-        (Some(iface), None) => format!("\u{2192} {}::{}", iface, inputs.code),
-        (None, _) => format!("\u{2192} <unknown interface>::{}", inputs.code),
+    let arrow = match (inputs.is_special, inputs.method, inputs.iface) {
+        // Interface-agnostic special transactions: show the name alone,
+        // whatever interface (if any) the target binder fd carried.
+        (true, Some(method), _) => format!("\u{2192} {}", method),
+        (_, Some(method), Some(iface)) => format!("\u{2192} {}.{}()", iface, method),
+        (_, Some(method), None) => format!("\u{2192} {}", method),
+        (_, None, Some(iface)) => format!("\u{2192} {}::{}", iface, inputs.code),
+        (_, None, None) => format!("\u{2192} <unknown interface>::{}", inputs.code),
     };
     if inputs.is_oneway {
         format!("{} (oneway)", arrow)
@@ -46,6 +54,7 @@ mod tests {
             raw_commands: raw,
             has_transaction: false,
             is_oneway: false,
+            is_special: false,
         }
     }
 
@@ -81,6 +90,7 @@ mod tests {
             raw_commands: &[],
             has_transaction: true,
             is_oneway: false,
+            is_special: false,
         }
     }
 
@@ -100,6 +110,22 @@ mod tests {
     fn txn_unknown_iface_falls_back_to_unknown_label() {
         let inputs = txn(false, None, None, 33);
         assert_eq!(format(&inputs), "\u{2192} <unknown interface>::33");
+    }
+
+    #[test]
+    fn txn_special_transaction_shows_name_regardless_of_iface() {
+        // Special transactions inherit whatever interface the target binder fd
+        // carried — None (PING), "" (DUMP), or "<query>" (INTERFACE). All must
+        // render as the bare name, never "<iface>.NAME()" or the raw code.
+        for iface in [None, Some(""), Some("<query>")] {
+            let mut inputs = txn(false, iface, Some("DUMP_TRANSACTION"), 0x5f44_4d50);
+            inputs.is_special = true;
+            assert_eq!(
+                format(&inputs),
+                "\u{2192} DUMP_TRANSACTION",
+                "iface = {iface:?}"
+            );
+        }
     }
 
     #[test]

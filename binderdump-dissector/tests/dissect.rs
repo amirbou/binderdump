@@ -403,6 +403,51 @@ fn col_info_shows_request_arrow_for_at_least_one_frame() {
     );
 }
 
+// Regression: interface-agnostic special transactions resolve a method_name but
+// inherit whatever interface the target binder fd carried -- None, "" or the
+// "<query>" placeholder. COL_INFO used to render them three different ways
+// ("<unknown interface>::<code>", ".NAME()", "<query>.NAME()"); it must show the
+// bare name in every case, matching the method_name field. The committed fixture
+// contains PING (no interface) and INTERFACE (the "<query>" case).
+#[test]
+fn col_info_shows_special_transaction_name() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let pfx = "binderdump.ioctl_data.bwr.transaction";
+    // PING, DUMP, INTERFACE, SYSPROPS, SHELL_COMMAND.
+    let filter = "0x5f504e47, 0x5f444d50, 0x5f4e5446, 0x5f535052, 0x5f434d44";
+    let out = tshark(&[
+        "-r",
+        fixture.to_str().unwrap(),
+        "-Y",
+        &format!("{pfx}.code in {{{filter}}} && {pfx}.reply == 0"),
+        "-T",
+        "fields",
+        "-e",
+        &format!("{pfx}.method_name"),
+        "-e",
+        "_ws.col.Info",
+    ]);
+
+    let mut checked = 0usize;
+    for line in out.lines() {
+        let (name, info) = line.split_once('\t').unwrap_or(("", ""));
+        if name.is_empty() {
+            continue;
+        }
+        assert_eq!(
+            info,
+            format!("\u{2192} {name}"),
+            "special transaction COL_INFO must be the bare name"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked > 0,
+        "fixture has no special-transaction request to check"
+    );
+}
+
 #[test]
 fn col_info_shows_reply_marker_for_at_least_one_frame() {
     ensure_dissector_loaded();
