@@ -274,7 +274,9 @@ mod tests {
 
     #[test]
     fn parses_br_frozen_binder() {
-        let buf = 29205u32.to_ne_bytes();
+        // _IOR('r', 21, struct binder_frozen_state_info), sizeof == 16:
+        // (2 << 30) | (16 << 16) | ('r' << 8) | 21.
+        let buf = 0x8010_7215u32.to_ne_bytes();
         let r = BinderReturn::from_bytes(&buf).expect("must parse new opcode");
         assert!(matches!(r, BinderReturn::FrozenBinder));
     }
