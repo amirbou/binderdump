@@ -299,16 +299,19 @@ pub fn dissect_offsets_array(
     }
     let entry_count = txn.offsets.len() / ENTRY_SIZE;
 
-    // Tvb byte position of `txn.data` (preceded by a u16 length prefix).
+    // Tvb byte position of `txn.data`. `field.offset` points at the offsets
+    // bytes, which the serializer prefixes with a u32 length; the data bytes
+    // sit immediately before that prefix. (binder_serde length-prefixes every
+    // byte sequence with a u32 — see ser.rs serialize_bytes/serialize_seq.)
     let data_tvb_off = field
         .offset
-        .checked_sub(2 + txn.data.len())
+        .checked_sub(4 + txn.data.len())
         .ok_or_else(|| anyhow!("data field offset underflow"))?;
 
     // Tvb byte position of the first PtrPayload entry's serialized form.
-    // Layout after `offsets`: is_compat (1 byte), ptr_payloads_len (u16),
+    // Layout after `offsets`: is_compat (1 byte), ptr_payloads_len (u32),
     // ptr_payloads (variable).
-    let ptr_payloads_base = field.offset + txn.offsets.len() + 1 + 2;
+    let ptr_payloads_base = field.offset + txn.offsets.len() + 1 + 4;
     let payload_tvb = ptr_payload_tvb_offsets(ptr_payloads_base, &txn.ptr_payloads);
 
     let offsets_tree = unsafe {
