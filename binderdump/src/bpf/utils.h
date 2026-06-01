@@ -4,6 +4,7 @@
 #include <inttypes.h>
 
 #define GET_TID() (bpf_get_current_pid_tgid() & 0xffffffff)
+#define GET_PID() (bpf_get_current_pid_tgid() >> 32)
 
 #define UNTAG(addr) (const void *)((__u64)(addr) & 0xffffffffffff)
 

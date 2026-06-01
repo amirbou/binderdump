@@ -793,12 +793,12 @@ int __always_inline do_bc_br(uint32_t cmd, const bool is_return) {
     }
 
     if (is_return) {
-        if (do_transition(tid, BINDER_RETURN)) {
+        if (do_transition(pid, tid, BINDER_RETURN)) {
             LOG("bad transition");
             goto l_error;
         }
     } else {
-        if (do_transition(tid, BINDER_COMMAND)) {
+        if (do_transition(pid, tid, BINDER_COMMAND)) {
             LOG("bad transition");
             goto l_error;
         }
@@ -1045,7 +1045,7 @@ int binder_transaction(struct trace_event_raw_binder_transaction *ctx) {
     pid_t tid = task_id & 0xffffffff;
     struct binder_event *event = NULL;
     struct binder_event_transaction *txn_event = NULL;
-    if (do_transition(tid, BINDER_TXN)) {
+    if (do_transition(pid, tid, BINDER_TXN)) {
         return 0;
     }
 
@@ -1084,7 +1084,7 @@ int binder_transaction_received(struct trace_event_raw_binder_transaction_receiv
     pid_t tid = task_id & 0xffffffff;
     struct binder_event *event = NULL;
     struct binder_event_transaction_received *txn_event = NULL;
-    if (do_transition(tid, BINDER_TXN_RECEIVED)) {
+    if (do_transition(pid, tid, BINDER_TXN_RECEIVED)) {
         return 0;
     }
 
@@ -1113,30 +1113,34 @@ int binder_transaction_received(struct trace_event_raw_binder_transaction_receiv
 SEC("tp/binder/binder_write_done")
 int binder_write_done(void *ctx) {
     pid_t tid = GET_TID();
-    do_transition(tid, BINDER_WRITE_DONE);
+    pid_t pid = GET_PID();
+    do_transition(pid, tid, BINDER_WRITE_DONE);
     return 0;
 }
 
 SEC("tp/binder/binder_wait_for_work")
 int binder_wait_for_work(void *ctx) {
     pid_t tid = GET_TID();
-    do_transition(tid, BINDER_WAIT_FOR_WORK);
+    pid_t pid = GET_PID();
+    do_transition(pid, tid, BINDER_WAIT_FOR_WORK);
     return 0;
 }
 
 SEC("tp/binder/binder_read_done")
 int binder_read_done(void *ctx) {
     pid_t tid = GET_TID();
-    do_transition(tid, BINDER_READ_DONE);
+    pid_t pid = GET_PID();
+    do_transition(pid, tid, BINDER_READ_DONE);
     return 0;
 }
 
 SEC("tp/binder/binder_ioctl_done")
 int binder_ioctl_done(struct trace_event_raw_binder_ioctl_done *ctx) {
     pid_t tid = GET_TID();
+    pid_t pid = GET_PID();
     struct ioctl_context *ioctl_ctx = NULL;
 
-    if (do_transition(tid, BINDER_IOCTL_DONE)) {
+    if (do_transition(pid, tid, BINDER_IOCTL_DONE)) {
         return 0;
     }
 
