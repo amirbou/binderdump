@@ -170,8 +170,18 @@ fn configure_reply_correlation(
 pub fn attach_tracepoints<'a>(mode: ReplyCorrelationMode) -> Result<BinderSkel<'a>> {
     prepare_tracepoints()?;
 
-    let skel_builder = BinderSkelBuilder::default();
+    let mut skel_builder = BinderSkelBuilder::default();
     // skel_builder.obj_builder.debug(true);
+
+    // On kernels without BTF, hand libbpf a minimal custom BTF so it uses that
+    // as the CO-RE target instead of aborting the load over a missing
+    // /sys/kernel/btf/vmlinux. The reply-correlation program (the only CO-RE
+    // user) is disabled below, so the blob's contents are never consulted -- but
+    // libbpf does parse the file, so it must be valid BTF. See write_dummy_btf.
+    if !crate::capture::btf_probe::kernel_btf_present() {
+        let path = crate::capture::btf_probe::write_dummy_btf()?;
+        skel_builder.obj_builder.btf_custom_path(&path)?;
+    }
 
     let open_object = Box::leak(Box::new(MaybeUninit::uninit()));
     let mut open_skel = skel_builder.open(open_object)?;
