@@ -239,8 +239,51 @@ unsafe fn dissect_reply(
 
 fn reply_col_info(iface: Option<&str>, method: Option<&str>) -> Option<String> {
     let method = method?;
+    // Special transactions are interface-agnostic; show the bare name, matching
+    // the request-side COL_INFO and the method_name field.
+    let is_special = binderdump_aidl::registry::is_special_method_name(method);
     Some(match iface {
-        Some(i) => format!("\u{2190} reply to {}.{}()", i, method),
-        None => format!("\u{2190} reply to {}", method),
+        Some(i) if !is_special => format!("\u{2190} reply to {}.{}()", i, method),
+        _ => format!("\u{2190} reply to {}", method),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reply_col_info;
+
+    #[test]
+    fn normal_method_with_interface() {
+        assert_eq!(
+            reply_col_info(Some("IServiceManager"), Some("checkService")).as_deref(),
+            Some("\u{2190} reply to IServiceManager.checkService()")
+        );
+    }
+
+    #[test]
+    fn normal_method_without_interface_is_bare() {
+        assert_eq!(
+            reply_col_info(None, Some("checkService")).as_deref(),
+            Some("\u{2190} reply to checkService")
+        );
+    }
+
+    #[test]
+    fn no_method_is_none() {
+        assert_eq!(reply_col_info(Some("IFoo"), None), None);
+    }
+
+    // Special transactions inherit whatever interface the request carried
+    // (None / "" / "<query>"); the reply label must show the bare name in all
+    // three, never ".NAME()" or "<query>.NAME()".
+    #[test]
+    fn special_transaction_is_bare_regardless_of_interface() {
+        for iface in [None, Some(""), Some("<query>")] {
+            assert_eq!(
+                reply_col_info(iface, Some("DUMP_TRANSACTION")).as_deref(),
+                Some("\u{2190} reply to DUMP_TRANSACTION"),
+                "iface = {iface:?}"
+            );
+        }
+    }
 }

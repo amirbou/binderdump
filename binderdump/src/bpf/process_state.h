@@ -95,7 +95,7 @@ static __always_inline binder_process_state_t *get_process_state(pid_t tid) {
     return (binder_process_state_t *)bpf_map_lookup_elem(&binder_process_state, &tid);
 }
 
-int __noinline do_transition(pid_t tid, binder_process_state_t to) {
+int __noinline do_transition(pid_t pid, pid_t tid, binder_process_state_t to) {
     struct binder_event *event = NULL;
     binder_process_state_t *from = get_process_state(tid);
     if (!from) {
@@ -124,6 +124,7 @@ l_error:
         return -1;
     }
     event->type = BINDER_INVALID;
+    event->pid = pid;
     event->tid = tid;
     event->timestamp = bpf_ktime_get_boot_ns();
 

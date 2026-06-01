@@ -403,6 +403,51 @@ fn col_info_shows_request_arrow_for_at_least_one_frame() {
     );
 }
 
+// Regression: interface-agnostic special transactions resolve a method_name but
+// inherit whatever interface the target binder fd carried -- None, "" or the
+// "<query>" placeholder. COL_INFO used to render them three different ways
+// ("<unknown interface>::<code>", ".NAME()", "<query>.NAME()"); it must show the
+// bare name in every case, matching the method_name field. The committed fixture
+// contains PING (no interface) and INTERFACE (the "<query>" case).
+#[test]
+fn col_info_shows_special_transaction_name() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let pfx = "binderdump.ioctl_data.bwr.transaction";
+    // PING, DUMP, INTERFACE, SYSPROPS, SHELL_COMMAND.
+    let filter = "0x5f504e47, 0x5f444d50, 0x5f4e5446, 0x5f535052, 0x5f434d44";
+    let out = tshark(&[
+        "-r",
+        fixture.to_str().unwrap(),
+        "-Y",
+        &format!("{pfx}.code in {{{filter}}} && {pfx}.reply == 0"),
+        "-T",
+        "fields",
+        "-e",
+        &format!("{pfx}.method_name"),
+        "-e",
+        "_ws.col.Info",
+    ]);
+
+    let mut checked = 0usize;
+    for line in out.lines() {
+        let (name, info) = line.split_once('\t').unwrap_or(("", ""));
+        if name.is_empty() {
+            continue;
+        }
+        assert_eq!(
+            info,
+            format!("\u{2192} {name}"),
+            "special transaction COL_INFO must be the bare name"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked > 0,
+        "fixture has no special-transaction request to check"
+    );
+}
+
 #[test]
 fn col_info_shows_reply_marker_for_at_least_one_frame() {
     ensure_dissector_loaded();
@@ -755,6 +800,159 @@ fn transaction_stream_id_is_dense() {
             indices
         );
     }
+}
+
+// Regression test for the flat-object offset miscalculation: the dissector
+// back-computes the tvb position of `txn.data` from the `offsets` field, and
+// once assumed a 2-byte length prefix where binder_serde actually writes a
+// u32. That shifted every rendered flat_binder_object field by 2 bytes, so the
+// "Object Type" came out as garbage (e.g. 0x7368) and a HANDLE's value read as
+// the next object's bytes — e.g. a checkService reply installing handle 0
+// instead of 1. Assert every rendered object type is a real binder type id.
+#[test]
+fn flat_object_types_are_valid_binder_types() {
+    use binderdump_structs::binder_types::binder_type;
+
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+
+    let valid: std::collections::HashSet<u32> = [
+        binder_type::BINDER,
+        binder_type::WEAK_BINDER,
+        binder_type::HANDLE,
+        binder_type::WEAK_HANDLE,
+        binder_type::FD,
+        binder_type::FDA,
+        binder_type::PTR,
+    ]
+    .into_iter()
+    .map(|t| t as u32)
+    .collect();
+
+    let out = tshark(&[
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "binderdump.ioctl_data.bwr.transaction.offsets.entry.type",
+    ]);
+
+    let mut seen = 0usize;
+    for line in out.lines() {
+        for tok in line.split(',') {
+            let tok = tok.trim();
+            if tok.is_empty() {
+                continue;
+            }
+            let ty: u32 = tok.parse().expect("type field should be a u32");
+            assert!(
+                valid.contains(&ty),
+                "rendered flat object type {:#x} is not a known binder type \
+                 (offset miscalculation regressed?)",
+                ty
+            );
+            seen += 1;
+        }
+    }
+    assert!(
+        seen > 0,
+        "fixture has no flat_binder_object entries to check"
+    );
+}
+
+fn hex_to_bytes(s: &str) -> Vec<u8> {
+    let s = s.trim();
+    assert!(s.len() % 2 == 0, "odd-length hex string: {:?}", s);
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("invalid hex"))
+        .collect()
+}
+
+// Stronger regression for the flat-object offset miscalculation: cross-check
+// the rendered HANDLE value against the raw `data` bytes, using the data buffer
+// itself as ground truth. The raw offsets array isn't exposed as an extractable
+// field (the custom handler builds an anonymous subtree), so instead we locate
+// the flat_binder_object directly: a BINDER_TYPE_HANDLE object begins with the
+// 4-byte type magic at a 4-byte-aligned offset, and its handle is the u32 at
+// offset+8. For frames with exactly one HANDLE object whose magic appears once
+// at an aligned position in the captured data, the rendered handle must equal
+// data[pos+8]. The off-by-2 base shifted the read to data[pos+10], so a
+// checkService reply rendered handle 0 instead of 1; this test fails on that.
+#[test]
+fn handle_values_match_raw_data() {
+    use binderdump_structs::binder_types::binder_type;
+
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let magic = (binder_type::HANDLE as u32).to_le_bytes();
+
+    let pfx = "binderdump.ioctl_data.bwr.transaction";
+    let out = tshark(&[
+        "-r",
+        fixture.to_str().unwrap(),
+        "-Y",
+        &format!("{pfx}.offsets.entry.handle.handle"),
+        "-T",
+        "fields",
+        "-e",
+        "frame.number",
+        "-e",
+        &format!("{pfx}.data"),
+        "-e",
+        &format!("{pfx}.offsets.entry.type"),
+        "-e",
+        &format!("{pfx}.offsets.entry.handle.handle"),
+    ]);
+
+    let mut checked = 0usize;
+    for line in out.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        if cols.len() < 4 {
+            continue;
+        }
+        let frame = cols[0];
+        let data = hex_to_bytes(cols[1]);
+        let handle_entries = cols[2]
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .filter(|s| s.parse::<u32>().ok() == Some(binder_type::HANDLE as u32))
+            .count();
+        let handles: Vec<u32> = cols[3]
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).expect("handle hex"))
+            .collect();
+
+        // Restrict to the unambiguous case: exactly one HANDLE object in the
+        // frame, with the magic occurring exactly once at an aligned position
+        // within the captured data.
+        if handle_entries != 1 || handles.len() != 1 {
+            continue;
+        }
+        let positions: Vec<usize> = (0..data.len().saturating_sub(12))
+            .step_by(4)
+            .filter(|&p| data[p..p + 4] == magic)
+            .collect();
+        if positions.len() != 1 {
+            continue;
+        }
+        let pos = positions[0];
+        let raw = u32::from_le_bytes(data[pos + 8..pos + 12].try_into().unwrap());
+        assert_eq!(
+            handles[0], raw,
+            "frame {frame}: rendered handle {:#x} != data[{}+8] {:#x} \
+             (flat object offset miscalculation regressed?)",
+            handles[0], pos, raw
+        );
+        checked += 1;
+    }
+
+    assert!(
+        checked > 0,
+        "no single-HANDLE frames available to cross-check"
+    );
 }
 
 #[test]

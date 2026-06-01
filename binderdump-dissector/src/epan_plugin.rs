@@ -852,6 +852,12 @@ fn build_col_string(event: &binderdump_structs::event_layer::EventProtocol) -> S
         None => false,
     };
 
+    let is_special = !is_reply
+        && bwr
+            .transaction
+            .as_ref()
+            .is_some_and(|txn| binderdump_aidl::registry::lookup_special(txn.code).is_some());
+
     let inputs = ColInputs {
         is_reply,
         iface: iface.as_deref(),
@@ -860,6 +866,7 @@ fn build_col_string(event: &binderdump_structs::event_layer::EventProtocol) -> S
         raw_commands: &raw_refs,
         has_transaction,
         is_oneway,
+        is_special,
     };
     col_info::format(&inputs)
 }

@@ -324,6 +324,8 @@ mod tests {
 
     #[test]
     fn parses_bc_freeze_notification_done() {
+        // _IOW('c', 21, struct binder_handle_cookie), sizeof == 12.
+        assert_eq!(binderdump_sys::BC_FREEZE_NOTIFICATION_DONE, 1074553621);
         let header: u32 = binderdump_sys::BC_FREEZE_NOTIFICATION_DONE;
         let payload = DeathDoneCommand { cookie: 0 };
         let buf = make_buf(header, payload);
