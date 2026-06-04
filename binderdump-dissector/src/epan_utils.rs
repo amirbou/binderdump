@@ -56,6 +56,17 @@ pub unsafe fn add_generated_time(
     epan::binderdump_proto_item_set_generated(it);
 }
 
+/// Add a generated `FT_INT*` proto-tree item at offset 0 / length 0.
+pub unsafe fn add_generated_int(
+    tree: *mut epan::proto_tree,
+    hf: c_int,
+    tvb: *mut epan::tvbuff_t,
+    value: i32,
+) {
+    let it = epan::proto_tree_add_int(tree, hf, tvb, 0, 0, value);
+    epan::binderdump_proto_item_set_generated(it);
+}
+
 /// Add a generated `FT_STRING` item for the given `&str`. No-op (false
 /// return) if the string contains an interior NUL byte.
 pub unsafe fn add_generated_string(

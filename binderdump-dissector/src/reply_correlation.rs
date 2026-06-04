@@ -9,6 +9,8 @@ pub struct TxnState {
     pub req_frame: u32,
     pub rep_frame: u32,
     pub req_pid: i32,
+    pub req_tid: i32,
+    pub req_cmdline: Option<String>,
     pub rep_debug_id: i32,
     pub req_time: Option<epan::nstime_t>,
     pub interface: Option<String>,
@@ -57,6 +59,8 @@ pub fn record_frame(
     in_reply_to_debug_id: i32,
     reply: i32,
     req_pid: i32,
+    req_tid: i32,
+    req_cmdline: Option<String>,
     interface: Option<String>,
     method_name: Option<String>,
 ) {
@@ -135,6 +139,18 @@ pub fn record_frame(
             entry.interface = interface;
             entry.method_name = method_name;
         }
+        // caller tid/cmdline come only from the send (BC) frame. it is NOT
+        // necessarily the first frame seen for this debug_id (the recv/BR frame
+        // can arrive first and set req_frame), so this is deliberately not gated
+        // on req_frame == 0. the send frame is the only caller that passes
+        // req_cmdline = Some(..); "first non-None wins" then prevents a later
+        // recv record (None) or a duplicate from clobbering it.
+        if entry.req_cmdline.is_none() {
+            if let Some(c) = req_cmdline {
+                entry.req_tid = req_tid;
+                entry.req_cmdline = Some(c);
+            }
+        }
     } else if entry.rep_frame == 0 {
         entry.rep_frame = frame;
         entry.rep_debug_id = debug_id;
@@ -150,6 +166,17 @@ pub fn lookup_txn(key: i32) -> Option<TxnState> {
         return None;
     }
     state().lock().ok()?.txns.get(&key).cloned()
+}
+
+// caller tid + cmdline for a transaction, recorded from its send frame.
+// none until the send frame has been seen.
+pub fn caller_info(debug_id: i32) -> Option<(i32, String)> {
+    if debug_id == 0 {
+        return None;
+    }
+    let s = state().lock().ok()?;
+    let t = s.txns.get(&debug_id)?;
+    t.req_cmdline.as_deref().map(|c| (t.req_tid, c.to_owned()))
 }
 
 pub fn stream_index_for_anchor(anchor: i32) -> Option<u32> {
@@ -228,6 +255,8 @@ mod tests {
             0,
             0,
             0,
+            0,
+            None,
             Some("a.b.IFoo".into()),
             Some("hello".into()),
         );
@@ -242,8 +271,8 @@ mod tests {
     #[test]
     fn record_reply_then_lookup() {
         clear();
-        record_frame(5, ts(0, 0), 7, 0, 0, 0, None, None);
-        record_frame(11, ts(0, 0), 99, 7, 1, 0, None, None);
+        record_frame(5, ts(0, 0), 7, 0, 0, 0, 0, None, None, None);
+        record_frame(11, ts(0, 0), 99, 7, 1, 0, 0, None, None, None);
         let t = lookup_txn(7).expect("txn");
         assert_eq!(t.req_frame, 5);
         assert_eq!(t.rep_frame, 11);
@@ -262,6 +291,8 @@ mod tests {
             0,
             0,
             0,
+            0,
+            None,
             Some("first".into()),
             Some("a".into()),
         );
@@ -272,6 +303,8 @@ mod tests {
             0,
             0,
             0,
+            0,
+            None,
             Some("second".into()),
             Some("b".into()),
         );
@@ -283,7 +316,7 @@ mod tests {
     #[test]
     fn clear_wipes_both_maps() {
         clear();
-        record_frame(1, ts(0, 0), 1, 0, 0, 0, None, None);
+        record_frame(1, ts(0, 0), 1, 0, 0, 0, 0, None, None, None);
         clear();
         assert!(lookup_txn(1).is_none());
         assert!(lookup_frame(1).is_none());
@@ -307,6 +340,8 @@ mod tests {
             0,
             0,
             1234, // req_pid
+            0,
+            None,
             Some("a.b.IFoo".into()),
             Some("hello".into()),
         );
@@ -317,8 +352,8 @@ mod tests {
     #[test]
     fn req_pid_first_seen_wins() {
         clear();
-        record_frame(1, ts(0, 0), 5, 0, 0, 100, None, None);
-        record_frame(2, ts(0, 0), 5, 0, 0, 999, None, None);
+        record_frame(1, ts(0, 0), 5, 0, 0, 100, 0, None, None, None);
+        record_frame(2, ts(0, 0), 5, 0, 0, 999, 0, None, None, None);
         let t = lookup_txn(5).expect("txn");
         assert_eq!(t.req_pid, 100);
     }
@@ -327,9 +362,9 @@ mod tests {
     fn bc_reply_fills_rep_debug_id() {
         clear();
         // request: debug_id=10, no in_reply_to, reply=0
-        record_frame(1, ts(0, 0), 10, 0, 0, 100, None, None);
+        record_frame(1, ts(0, 0), 10, 0, 0, 100, 0, None, None, None);
         // reply: debug_id=20, in_reply_to=10, reply=1
-        record_frame(2, ts(0, 0), 20, 10, 1, 0, None, None);
+        record_frame(2, ts(0, 0), 20, 10, 1, 0, 0, None, None, None);
         let t = lookup_txn(10).expect("txn");
         assert_eq!(t.rep_debug_id, 20);
     }
@@ -337,10 +372,10 @@ mod tests {
     #[test]
     fn rep_debug_id_first_seen_wins() {
         clear();
-        record_frame(1, ts(0, 0), 10, 0, 0, 100, None, None);
-        record_frame(2, ts(0, 0), 20, 10, 1, 0, None, None);
+        record_frame(1, ts(0, 0), 10, 0, 0, 100, 0, None, None, None);
+        record_frame(2, ts(0, 0), 20, 10, 1, 0, 0, None, None, None);
         // a second reply event with same in_reply_to but different debug_id
-        record_frame(3, ts(0, 0), 99, 10, 1, 0, None, None);
+        record_frame(3, ts(0, 0), 99, 10, 1, 0, 0, None, None, None);
         let t = lookup_txn(10).expect("txn");
         assert_eq!(t.rep_debug_id, 20);
     }
@@ -348,16 +383,16 @@ mod tests {
     #[test]
     fn stream_index_starts_at_zero() {
         clear();
-        record_frame(1, ts(0, 0), 42, 0, 0, 100, None, None);
+        record_frame(1, ts(0, 0), 42, 0, 0, 100, 0, None, None, None);
         assert_eq!(stream_index_for_anchor(42), Some(0));
     }
 
     #[test]
     fn stream_index_is_monotonic() {
         clear();
-        record_frame(1, ts(0, 0), 10, 0, 0, 100, None, None);
-        record_frame(2, ts(0, 0), 20, 0, 0, 101, None, None);
-        record_frame(3, ts(0, 0), 30, 0, 0, 102, None, None);
+        record_frame(1, ts(0, 0), 10, 0, 0, 100, 0, None, None, None);
+        record_frame(2, ts(0, 0), 20, 0, 0, 101, 0, None, None, None);
+        record_frame(3, ts(0, 0), 30, 0, 0, 102, 0, None, None, None);
         assert_eq!(stream_index_for_anchor(10), Some(0));
         assert_eq!(stream_index_for_anchor(20), Some(1));
         assert_eq!(stream_index_for_anchor(30), Some(2));
@@ -366,17 +401,17 @@ mod tests {
     #[test]
     fn same_anchor_reuses_index() {
         clear();
-        record_frame(1, ts(0, 0), 42, 0, 0, 100, None, None);
-        record_frame(2, ts(0, 0), 42, 0, 0, 100, None, None);
+        record_frame(1, ts(0, 0), 42, 0, 0, 100, 0, None, None, None);
+        record_frame(2, ts(0, 0), 42, 0, 0, 100, 0, None, None, None);
         assert_eq!(stream_index_for_anchor(42), Some(0));
     }
 
     #[test]
     fn clear_resets_counter() {
         clear();
-        record_frame(1, ts(0, 0), 42, 0, 0, 100, None, None);
+        record_frame(1, ts(0, 0), 42, 0, 0, 100, 0, None, None, None);
         clear();
-        record_frame(1, ts(0, 0), 99, 0, 0, 100, None, None);
+        record_frame(1, ts(0, 0), 99, 0, 0, 100, 0, None, None, None);
         assert_eq!(stream_index_for_anchor(99), Some(0));
     }
 
@@ -384,24 +419,24 @@ mod tests {
     fn bc_reply_aliases_y_to_n_when_orphan_seen_first() {
         clear();
         // Orphan BR_REPLY (no in_reply_to): anchor=Y=99, allocates index 0.
-        record_frame(1, ts(0, 0), 99, 0, 1, 0, None, None);
+        record_frame(1, ts(0, 0), 99, 0, 1, 0, 0, None, None, None);
         assert_eq!(stream_index_for_anchor(99), Some(0));
         // BC_REPLY arrives later: debug_id=99 (Y), in_reply_to=10 (N).
         // Should NOT allocate a new index — should alias N→0.
-        record_frame(2, ts(0, 0), 99, 10, 1, 0, None, None);
+        record_frame(2, ts(0, 0), 99, 10, 1, 0, 0, None, None, None);
         assert_eq!(stream_index_for_anchor(10), Some(0));
         assert_eq!(stream_index_for_anchor(99), Some(0));
         // next_stream_index should still be 1 (only one allocation total).
         // Record an unrelated request — gets index 1, proving counter is 1.
-        record_frame(3, ts(0, 0), 7, 0, 0, 50, None, None);
+        record_frame(3, ts(0, 0), 7, 0, 0, 50, 0, None, None, None);
         assert_eq!(stream_index_for_anchor(7), Some(1));
     }
 
     #[test]
     fn n_by_rep_debug_id_populated_on_bc_reply() {
         clear();
-        record_frame(1, ts(0, 0), 10, 0, 0, 100, None, None);
-        record_frame(2, ts(0, 0), 99, 10, 1, 0, None, None);
+        record_frame(1, ts(0, 0), 10, 0, 0, 100, 0, None, None, None);
+        record_frame(2, ts(0, 0), 99, 10, 1, 0, 0, None, None, None);
         // Both anchors should map to the same index.
         assert_eq!(stream_index_for_anchor(10), stream_index_for_anchor(99));
     }
@@ -409,8 +444,8 @@ mod tests {
     #[test]
     fn stream_index_for_any_debug_id_resolves_via_y_to_n() {
         clear();
-        record_frame(1, ts(0, 0), 10, 0, 0, 100, None, None);
-        record_frame(2, ts(0, 0), 99, 10, 1, 0, None, None);
+        record_frame(1, ts(0, 0), 10, 0, 0, 100, 0, None, None, None);
+        record_frame(2, ts(0, 0), 99, 10, 1, 0, 0, None, None, None);
         let n_idx = stream_index_for_any_debug_id(10);
         let y_idx = stream_index_for_any_debug_id(99);
         assert!(n_idx.is_some());
@@ -420,7 +455,7 @@ mod tests {
     #[test]
     fn stream_index_for_frame_returns_index() {
         clear();
-        record_frame(7, ts(0, 0), 42, 0, 0, 100, None, None);
+        record_frame(7, ts(0, 0), 42, 0, 0, 100, 0, None, None, None);
         assert_eq!(stream_index_for_frame(7), Some(0));
     }
 
@@ -434,17 +469,75 @@ mod tests {
     fn req_pid_for_frame_resolves_orphan_br_reply_via_y_to_n() {
         clear();
         // BC_TRANSACTION (party A=100 → kernel): anchor=N=10, req_pid=100.
-        record_frame(1, ts(0, 0), 10, 0, 0, 100, None, None);
+        record_frame(1, ts(0, 0), 10, 0, 0, 100, 0, None, None, None);
         // BC_REPLY (party B sends; debug_id=Y=99, in_reply_to=N=10).
         // Aliases Y→N in n_by_rep_debug_id.
-        record_frame(2, ts(0, 0), 99, 10, 1, 200, None, None);
+        record_frame(2, ts(0, 0), 99, 10, 1, 200, 0, None, None, None);
         // BR_REPLY (party A reads; debug_id=Y=99, in_reply_to=0 — orphan-shape).
-        record_frame(3, ts(0, 0), 99, 0, 1, 200, None, None);
+        record_frame(3, ts(0, 0), 99, 0, 1, 200, 0, None, None, None);
         // Frame 3's anchor is Y=99 (orphan). Helper must walk Y→N=10 → req_pid=100.
         assert_eq!(req_pid_for_frame(3), Some(100));
         // Frame 1 (the request) resolves directly to its anchor.
         assert_eq!(req_pid_for_frame(1), Some(100));
         // Unknown frame returns None.
         assert_eq!(req_pid_for_frame(999), None);
+    }
+
+    #[test]
+    fn caller_info_recorded_from_send_frame() {
+        clear();
+        record_frame(
+            1,
+            ts(0, 0),
+            42,
+            0,
+            0,
+            100,
+            1001,
+            Some("com.example.app".into()),
+            None,
+            None,
+        );
+        assert_eq!(caller_info(42), Some((1001, "com.example.app".into())));
+    }
+
+    #[test]
+    fn caller_info_not_overwritten_by_recv_frame() {
+        clear();
+        record_frame(1, ts(0, 0), 42, 0, 0, 0, 0, None, None, None);
+        assert_eq!(caller_info(42), None);
+        record_frame(
+            2,
+            ts(0, 0),
+            42,
+            0,
+            0,
+            100,
+            1001,
+            Some("com.example.app".into()),
+            None,
+            None,
+        );
+        assert_eq!(caller_info(42), Some((1001, "com.example.app".into())));
+        record_frame(
+            3,
+            ts(0, 0),
+            42,
+            0,
+            0,
+            100,
+            2002,
+            Some("other".into()),
+            None,
+            None,
+        );
+        assert_eq!(caller_info(42), Some((1001, "com.example.app".into())));
+    }
+
+    #[test]
+    fn caller_info_unknown_is_none() {
+        clear();
+        assert_eq!(caller_info(0), None);
+        assert_eq!(caller_info(999), None);
     }
 }
