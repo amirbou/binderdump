@@ -28,6 +28,8 @@ The two leaf crates that link host libraries (`binderdump-epan-sys`, `binderdump
 
 Use the `binderdump-style` skill before writing or editing any code in this workspace — Rust, BPF C, build scripts, tests, commit messages, or PR bodies. It documents the project's commit-message form, Rust idioms, error handling, comment voice, BPF C rules, dissector field registration, serde/wire-format invariants, and hard don'ts (no `unwrap` outside tests, no doc-comment ceremony, no file-header banners, etc.). Read it once at the start of a coding session and consult it whenever introducing a new file, helper, or dependency.
 
+After opening a PR (and after any later change to it), run a review cycle over the PR's diff: open the `binderdump-style` skill and the maintainer-CR-patterns notes and check the diff against each item as a literal checklist (squash same-branch fixups, no `Co-Authored-By`, tests in `mod tests`, sentinel-zero comments, fixtures via the dedicated script, helpers extend existing files, etc.). Fix what it surfaces and re-run until clean before declaring the PR ready. Raise any conflict between the request and the style guide at design time, not after building.
+
 ## Approach Verification
 
 - Before implementing data structure changes (especially adding fields to structs/BPF maps), verify the field is not redundant with existing data

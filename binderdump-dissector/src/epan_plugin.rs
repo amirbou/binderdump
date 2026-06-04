@@ -187,6 +187,76 @@ impl Protocol {
         }
     }
 
+    fn add_endpoint_fields(
+        &self,
+        event: &EventProtocol,
+        tvb: *mut epan::tvbuff_t,
+        tree: *mut epan::proto_tree,
+    ) {
+        use crate::epan_utils::{add_generated_int, add_generated_string};
+        let manager = &self.dissector.field_manager;
+
+        // on a receive frame the caller's tid/cmdline come from caller_info,
+        // which the matching send frame populated earlier. safe on every pass:
+        // wireshark always completes one full sequential pass before the UI is
+        // interactive, so by the time any frame is re-dissected the state is set.
+        let ep = crate::binderdump::resolve_endpoints(event, |debug_id| {
+            crate::reply_correlation::caller_info(debug_id)
+        });
+
+        // emit helpers: look the abbrev up and add a generated item when both the
+        // field and the (optional) value are present.
+        let emit_int = |abbrev: &str, val: Option<i32>| {
+            if let (Some(h), Some(v)) = (manager.get_handle(abbrev), val) {
+                unsafe { add_generated_int(tree, h, tvb, v) };
+            }
+        };
+        let emit_str = |abbrev: &str, val: Option<&str>| {
+            if let (Some(h), Some(v)) = (manager.get_handle(abbrev), val) {
+                unsafe { add_generated_string(tree, h, tvb, v) };
+            }
+        };
+
+        // src_pid is always known; the other endpoint ids/cmdlines are optional.
+        emit_int("binderdump.src.pid", Some(ep.src_pid));
+        emit_int("binderdump.src.tid", ep.src_tid);
+        emit_str("binderdump.src.cmdline", ep.src_cmdline.as_deref());
+        emit_int("binderdump.dst.pid", ep.dst_pid);
+        emit_int("binderdump.dst.tid", ep.dst_tid);
+        emit_str("binderdump.dst.cmdline", ep.dst_cmdline.as_deref());
+
+        // bc/br: one generated string per command/return in the buffer so the
+        // frame matches `== NAME` or `contains "..."` for any of them.
+        if let Some(bwr) = event.ioctl_data.as_ref().and_then(|i| i.bwr.as_ref()) {
+            let is_write = bwr.is_write();
+            let abbrev = if is_write {
+                "binderdump.bc"
+            } else {
+                "binderdump.br"
+            };
+            if let Some(h) = manager.get_handle(abbrev) {
+                for name in crate::binderdump::collect_command_names(is_write, &bwr.data) {
+                    unsafe { add_generated_string(tree, h, tvb, name) };
+                }
+            }
+        }
+
+        // iface: the transaction's resolved AIDL interface token, surfaced at the
+        // frame root alongside src/dst. taken from the request's stored
+        // resolution (reply_correlation) so it shows on both the BC and BR request
+        // frame; replies carry it via binderdump_reply.request_interface.
+        if let Some(txn) = event
+            .ioctl_data
+            .as_ref()
+            .and_then(|i| i.bwr.as_ref())
+            .and_then(|b| b.transaction.as_ref())
+        {
+            let iface =
+                crate::reply_correlation::lookup_txn(txn.debug_id).and_then(|t| t.interface);
+            emit_str("binderdump.iface", iface.as_deref());
+        }
+    }
+
     fn add_exported_pdu(&self, tvb: *mut epan::tvbuff_t, pinfo: *mut epan::packet_info) {
         unsafe {
             if epan::have_tap_listener(self.exported_pdu_tap) {
@@ -300,6 +370,7 @@ impl Protocol {
             let mut switch_src_dst = false;
 
             self.record_and_render_frame_link(&event, pinfo, tvb, tree_item);
+            self.add_endpoint_fields(&event, tvb, tree_item);
 
             let col_string = build_col_string(&event);
 
@@ -527,6 +598,69 @@ pub extern "C" fn register_protoinfo() {
                 strings: None,
             })
             .add_extra_field(FieldInfo {
+                name: "Source PID".into(),
+                abbrev: "binderdump.src.pid".into(),
+                ftype: FtEnum::I32,
+                display: FieldDisplay::Dec,
+                strings: None,
+            })
+            .add_extra_field(FieldInfo {
+                name: "Source TID".into(),
+                abbrev: "binderdump.src.tid".into(),
+                ftype: FtEnum::I32,
+                display: FieldDisplay::Dec,
+                strings: None,
+            })
+            .add_extra_field(FieldInfo {
+                name: "Source cmdline".into(),
+                abbrev: "binderdump.src.cmdline".into(),
+                ftype: FtEnum::String,
+                display: FieldDisplay::StrAsciis,
+                strings: None,
+            })
+            .add_extra_field(FieldInfo {
+                name: "Destination PID".into(),
+                abbrev: "binderdump.dst.pid".into(),
+                ftype: FtEnum::I32,
+                display: FieldDisplay::Dec,
+                strings: None,
+            })
+            .add_extra_field(FieldInfo {
+                name: "Destination TID".into(),
+                abbrev: "binderdump.dst.tid".into(),
+                ftype: FtEnum::I32,
+                display: FieldDisplay::Dec,
+                strings: None,
+            })
+            .add_extra_field(FieldInfo {
+                name: "Destination cmdline".into(),
+                abbrev: "binderdump.dst.cmdline".into(),
+                ftype: FtEnum::String,
+                display: FieldDisplay::StrAsciis,
+                strings: None,
+            })
+            .add_extra_field(FieldInfo {
+                name: "Binder command".into(),
+                abbrev: "binderdump.bc".into(),
+                ftype: FtEnum::String,
+                display: FieldDisplay::StrAsciis,
+                strings: None,
+            })
+            .add_extra_field(FieldInfo {
+                name: "Binder return".into(),
+                abbrev: "binderdump.br".into(),
+                ftype: FtEnum::String,
+                display: FieldDisplay::StrAsciis,
+                strings: None,
+            })
+            .add_extra_field(FieldInfo {
+                name: "Interface (token)".into(),
+                abbrev: "binderdump.iface".into(),
+                ftype: FtEnum::String,
+                display: FieldDisplay::StrAsciis,
+                strings: None,
+            })
+            .add_extra_field(FieldInfo {
                 name: "BC Frame".into(),
                 abbrev: "binderdump.ioctl_data.bwr.transaction.bc_frame".into(),
                 ftype: FtEnum::FrameNum,
@@ -640,6 +774,20 @@ fn handle_transaction_code(
     if !visited {
         let frame = unsafe { (*(*pinfo).fd).num };
         let abs_ts = unsafe { (*(*pinfo).fd).abs_ts };
+        // caller tid/cmdline only exist on the send (BC/write) side, where the
+        // local process is the sender. pass them so the receive frame can look
+        // them up by debug_id.
+        // render with the same helper resolve_endpoints uses so the cmdline
+        // shown on the recv frame (looked up via caller_info) is byte-identical
+        // to the one rendered on the send frame.
+        let (req_tid, req_cmdline) = if txn.reply == 0 && bwr.is_write() {
+            (
+                base.tid,
+                Some(crate::binderdump::cmdline_to_string(&base.cmdline)),
+            )
+        } else {
+            (0, None)
+        };
         crate::reply_correlation::record_frame(
             frame,
             abs_ts,
@@ -647,6 +795,8 @@ fn handle_transaction_code(
             txn.in_reply_to_debug_id,
             txn.reply,
             base.pid,
+            req_tid,
+            req_cmdline,
             r.interface.clone(),
             r.method_name.clone(),
         );

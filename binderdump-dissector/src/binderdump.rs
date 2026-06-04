@@ -352,6 +352,93 @@ pub fn collect_command_names(is_write: bool, data: &[u8]) -> Vec<&'static str> {
     names
 }
 
+// stable src/dst endpoint derivation for the convenience filter fields
+// (binderdump.src.* / binderdump.dst.*). pure (no epan ffi) so it is
+// unit-testable on its own.
+pub struct Endpoints {
+    // always known: every frame has a local pid (the txn sender or, for
+    // non-transaction frames, the capturing process).
+    pub src_pid: i32,
+    pub src_tid: Option<i32>,
+    pub src_cmdline: Option<String>,
+    pub dst_pid: Option<i32>,
+    pub dst_tid: Option<i32>,
+    pub dst_cmdline: Option<String>,
+}
+
+pub fn cmdline_to_string(buf: &[u8]) -> String {
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    String::from_utf8_lossy(&buf[..end]).into_owned()
+}
+
+// resolve stable endpoints for one frame. caller_lookup maps a transaction
+// debug_id to the sender's (tid, cmdline) recorded from its send frame; used
+// on the receive side where the wire only carries the sender pid.
+pub fn resolve_endpoints(
+    event: &EventProtocol,
+    caller_lookup: impl Fn(i32) -> Option<(i32, String)>,
+) -> Endpoints {
+    // default: local process is the source, no destination.
+    let mut ep = Endpoints {
+        src_pid: event.pid,
+        src_tid: Some(event.tid),
+        src_cmdline: Some(cmdline_to_string(&event.cmdline)),
+        dst_pid: None,
+        dst_tid: None,
+        dst_cmdline: None,
+    };
+
+    let Some(ioctl) = event.ioctl_data.as_ref() else {
+        return ep;
+    };
+    let Some(bwr) = ioctl.bwr.as_ref() else {
+        return ep;
+    };
+    let Some(txn) = bwr.transaction.as_ref() else {
+        return ep;
+    };
+
+    // replies keep the local-src / no-dst default; richer reply linkage lives
+    // under the binderdump_reply.* post-dissector fields.
+    if txn.reply != 0 {
+        return ep;
+    }
+
+    // the transaction rides the WRITE buffer on the sender (BC_TRANSACTION) and
+    // the READ buffer on the receiver (BR_TRANSACTION). on each side the LOCAL
+    // process is one endpoint and the wire carries the other; resolving this way
+    // makes src/dst identical on both frames of a txn:
+    //   send (write): local = caller (default src); wire to_proc/target = callee.
+    //   recv (read):  local = callee; wire sender_pid = caller. the kernel only
+    //                 stamps sender_pid on this side, and to_proc here is NOT the
+    //                 target (it mirrors the sender), so the callee must come
+    //                 from the local event, not the wire.
+    if bwr.is_write() {
+        // 0 / empty is the unset sentinel; one-way (async) txns carry to_thread
+        // == 0 and the target proc/cmdline may be unresolved.
+        ep.dst_pid = (txn.to_proc != 0).then_some(txn.to_proc);
+        ep.dst_tid = (txn.to_thread != 0).then_some(txn.to_thread);
+        let dst_cmd = cmdline_to_string(&txn.target_cmdline);
+        ep.dst_cmdline = (!dst_cmd.is_empty()).then_some(dst_cmd);
+    } else {
+        ep.src_pid = txn.sender_pid;
+        match caller_lookup(txn.debug_id) {
+            Some((tid, cmd)) => {
+                ep.src_tid = Some(tid);
+                ep.src_cmdline = Some(cmd);
+            }
+            None => {
+                ep.src_tid = None;
+                ep.src_cmdline = None;
+            }
+        }
+        ep.dst_pid = Some(event.pid);
+        ep.dst_tid = Some(event.tid);
+        ep.dst_cmdline = Some(cmdline_to_string(&event.cmdline));
+    }
+    ep
+}
+
 pub trait AddBinderTypes {
     fn add_bc_types(self) -> Self;
     fn add_br_types(self) -> Self;
@@ -425,5 +512,212 @@ mod tests {
         data.extend_from_slice(&0u64.to_le_bytes());
         let names = collect_command_names(true, &data);
         assert_eq!(names, vec!["BC_FREE_BUFFER"]);
+    }
+
+    use binderdump_structs::binder_types::{binder_ioctl, BinderInterface};
+    use binderdump_structs::bwr_layer::{
+        BinderWriteReadProtocol, BinderWriteReadType, TransactionProtocol,
+    };
+    use binderdump_structs::event_layer::{EventType, IoctlProtocol};
+
+    fn comm(s: &str) -> [u8; 16] {
+        let mut b = [0u8; 16];
+        let bytes = s.as_bytes();
+        b[..bytes.len()].copy_from_slice(bytes);
+        b
+    }
+
+    fn event_with_txn(
+        local_pid: i32,
+        local_tid: i32,
+        local_cmd: &str,
+        bwr_type: BinderWriteReadType,
+        txn: Option<TransactionProtocol>,
+    ) -> EventProtocol {
+        let bwr = BinderWriteReadProtocol {
+            bwr_type,
+            transaction: txn,
+            ..Default::default()
+        };
+        let ioctl = IoctlProtocol::new(7, binder_ioctl::default(), 0, 0, 0, 0, 0, false, Some(bwr));
+        EventProtocol::new(
+            0,
+            local_pid,
+            local_tid,
+            comm(local_cmd),
+            EventType::FinishedIoctl,
+            BinderInterface::default(),
+            0,
+            local_cmd.as_bytes().to_vec(),
+            Some(ioctl),
+        )
+    }
+
+    fn txn(
+        reply: i32,
+        debug_id: i32,
+        sender_pid: i32,
+        to_proc: i32,
+        to_thread: i32,
+        target: &str,
+    ) -> TransactionProtocol {
+        TransactionProtocol {
+            reply,
+            debug_id,
+            sender_pid,
+            to_proc,
+            to_thread,
+            target_cmdline: target.as_bytes().to_vec(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn send_frame_uses_local_as_src_target_as_dst() {
+        let e = event_with_txn(
+            100,
+            1001,
+            "app",
+            BinderWriteReadType::Write,
+            Some(txn(0, 42, 0, 200, 2002, "system_server")),
+        );
+        let ep = resolve_endpoints(&e, |_| None);
+        assert_eq!(ep.src_pid, 100); // send frame: wire sender_pid is 0, so src_pid must be the local event.pid
+        assert_eq!(ep.src_tid, Some(1001));
+        assert_eq!(ep.src_cmdline.as_deref(), Some("app"));
+        assert_eq!(ep.dst_pid, Some(200));
+        assert_eq!(ep.dst_tid, Some(2002));
+        assert_eq!(ep.dst_cmdline.as_deref(), Some("system_server"));
+    }
+
+    #[test]
+    fn recv_frame_resolves_src_from_lookup() {
+        // recv (read) frame: local IS the callee. wire to_proc/target are NOT the
+        // target here (they mirror the sender), so dst must come from the local
+        // event; src comes from sender_pid + the caller-info lookup.
+        let e = event_with_txn(
+            200,
+            2002,
+            "system_server",
+            BinderWriteReadType::Read,
+            Some(txn(0, 42, 100, 100, 100, "NOT_THE_TARGET")),
+        );
+        let ep = resolve_endpoints(&e, |id| {
+            assert_eq!(id, 42);
+            Some((1001, "app".into()))
+        });
+        assert_eq!(ep.src_pid, 100);
+        assert_eq!(ep.src_tid, Some(1001));
+        assert_eq!(ep.src_cmdline.as_deref(), Some("app"));
+        assert_eq!(ep.dst_pid, Some(200));
+        assert_eq!(ep.dst_tid, Some(2002));
+        assert_eq!(ep.dst_cmdline.as_deref(), Some("system_server"));
+    }
+
+    #[test]
+    fn recv_frame_without_lookup_keeps_pid_only() {
+        let e = event_with_txn(
+            200,
+            2002,
+            "system_server",
+            BinderWriteReadType::Read,
+            Some(txn(0, 42, 100, 100, 100, "NOT_THE_TARGET")),
+        );
+        let ep = resolve_endpoints(&e, |_| None);
+        assert_eq!(ep.src_pid, 100);
+        assert_eq!(ep.src_tid, None);
+        assert_eq!(ep.src_cmdline, None);
+        assert_eq!(ep.dst_pid, Some(200));
+        assert_eq!(ep.dst_cmdline.as_deref(), Some("system_server"));
+    }
+
+    #[test]
+    fn reply_frame_is_local_src_no_dst() {
+        let e = event_with_txn(
+            200,
+            2002,
+            "system_server",
+            BinderWriteReadType::Write,
+            Some(txn(1, 42, 100, 0, 0, "")),
+        );
+        let ep = resolve_endpoints(&e, |_| None);
+        assert_eq!(ep.src_pid, 200);
+        assert_eq!(ep.src_tid, Some(2002));
+        assert_eq!(ep.src_cmdline.as_deref(), Some("system_server"));
+        assert_eq!(ep.dst_pid, None);
+        assert_eq!(ep.dst_cmdline, None);
+    }
+
+    #[test]
+    fn non_transaction_frame_is_local_src_no_dst() {
+        let bwr = BinderWriteReadProtocol {
+            bwr_type: BinderWriteReadType::Write,
+            transaction: None,
+            ..Default::default()
+        };
+        let ioctl = IoctlProtocol::new(7, binder_ioctl::default(), 0, 0, 0, 0, 0, false, Some(bwr));
+        let e = EventProtocol::new(
+            0,
+            300,
+            3003,
+            comm("daemon"),
+            EventType::FinishedIoctl,
+            BinderInterface::default(),
+            0,
+            b"daemon".to_vec(),
+            Some(ioctl),
+        );
+        let ep = resolve_endpoints(&e, |_| None);
+        assert_eq!(ep.src_pid, 300);
+        assert_eq!(ep.src_tid, Some(3003));
+        assert_eq!(ep.src_cmdline.as_deref(), Some("daemon"));
+        assert_eq!(ep.dst_pid, None);
+    }
+
+    #[test]
+    fn async_send_frame_has_no_dst_tid() {
+        // one-way transaction: kernel leaves to_thread == 0 (no blocked thread).
+        let e = event_with_txn(
+            100,
+            1001,
+            "app",
+            BinderWriteReadType::Write,
+            Some(txn(0, 42, 100, 200, 0, "system_server")),
+        );
+        let ep = resolve_endpoints(&e, |_| None);
+        assert_eq!(ep.dst_pid, Some(200));
+        assert_eq!(ep.dst_tid, None);
+        assert_eq!(ep.dst_cmdline.as_deref(), Some("system_server"));
+    }
+
+    #[test]
+    fn endpoints_stable_across_send_and_recv() {
+        // the same transaction's send and recv frames must report identical src
+        // AND dst, so one filter catches both. send: local=caller(100), wire
+        // to_proc=callee(200), sender_pid=0.
+        let send = event_with_txn(
+            100,
+            1001,
+            "app",
+            BinderWriteReadType::Write,
+            Some(txn(0, 42, 0, 200, 2002, "system_server")),
+        );
+        let send_ep = resolve_endpoints(&send, |_| None);
+        // recv: local=callee(200), wire sender_pid=caller(100); to_proc mirrors
+        // the sender (not the target), so dst must come from the local event.
+        let recv = event_with_txn(
+            200,
+            2002,
+            "system_server",
+            BinderWriteReadType::Read,
+            Some(txn(0, 42, 100, 100, 100, "NOT_THE_TARGET")),
+        );
+        let recv_ep = resolve_endpoints(&recv, |_| Some((1001, "app".into())));
+        assert_eq!(send_ep.src_pid, 100);
+        assert_eq!(recv_ep.src_pid, 100);
+        assert_eq!(send_ep.dst_pid, Some(200));
+        assert_eq!(recv_ep.dst_pid, Some(200));
+        assert_eq!(send_ep.src_cmdline, recv_ep.src_cmdline);
+        assert_eq!(send_ep.dst_cmdline, recv_ep.dst_cmdline);
     }
 }
