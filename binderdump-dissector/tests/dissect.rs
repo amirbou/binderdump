@@ -956,6 +956,104 @@ fn handle_values_match_raw_data() {
 }
 
 #[test]
+fn convenience_filter_fields_extract() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let path = fixture.to_str().unwrap();
+
+    // src.pid is set on every binderdump frame (local proc as fallback), so
+    // it must extract at least one non-empty value.
+    let src_pids = tshark(&["-r", path, "-T", "fields", "-e", "binderdump.src.pid"]);
+    assert!(
+        src_pids.lines().any(|l| !l.trim().is_empty()),
+        "binderdump.src.pid extracted no values"
+    );
+
+    // dst.cmdline is only set on transaction frames; the fixture contains
+    // transactions, so at least one frame should carry it.
+    let dst_cmds = tshark(&["-r", path, "-T", "fields", "-e", "binderdump.dst.cmdline"]);
+    assert!(
+        dst_cmds.lines().any(|l| !l.trim().is_empty()),
+        "binderdump.dst.cmdline extracted no values (expected on transaction frames)"
+    );
+
+    // bc/br must be filterable by substring. the fixture's traffic includes
+    // BC_* commands on write frames; at least one frame matches a BC.
+    let bc_frames = tshark(&[
+        "-r",
+        path,
+        "-Y",
+        "binderdump.bc contains \"BC_\"",
+        "-T",
+        "fields",
+        "-e",
+        "frame.number",
+    ]);
+    assert!(
+        bc_frames.lines().any(|l| !l.trim().is_empty()),
+        "no frame matched `binderdump.bc contains \"BC_\"`"
+    );
+
+    // iface: the resolved AIDL interface token, filterable without the deep
+    // struct path. the fixture has IServiceManager traffic.
+    let iface_frames = tshark(&[
+        "-r",
+        path,
+        "-Y",
+        "binderdump.iface contains \"IServiceManager\"",
+        "-T",
+        "fields",
+        "-e",
+        "frame.number",
+    ]);
+    assert!(
+        iface_frames.lines().any(|l| !l.trim().is_empty()),
+        "no frame matched `binderdump.iface contains \"IServiceManager\"`"
+    );
+
+    // regression: on the send (BC_TRANSACTION) frame the kernel leaves the wire
+    // sender_pid == 0, so src.pid must come from the local process (event.pid),
+    // not the wire sender_pid. extract both together and assert they agree.
+    // the event.pid==0 guard below is defensive — a current-code capture sets
+    // pid on every event, so it should not trigger on this fixture.
+    let send_pairs = tshark(&[
+        "-r",
+        path,
+        "-Y",
+        "binderdump.bc contains \"BC_TRANSACTION\"",
+        "-T",
+        "fields",
+        "-e",
+        "binderdump.pid",
+        "-e",
+        "binderdump.src.pid",
+    ]);
+    let mut checked = 0usize;
+    for line in send_pairs.lines() {
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() < 2 {
+            continue;
+        }
+        let event_pid: i64 = parts[0].trim().parse().unwrap_or(0);
+        let src_pid: i64 = parts[1].trim().parse().unwrap_or(-1);
+        if event_pid == 0 {
+            continue;
+        } // legitimately pid-less SplitIoctl write
+        assert_eq!(
+            src_pid, event_pid,
+            "BC_TRANSACTION send frame: src.pid ({}) != event.pid ({}) \
+             (wire sender_pid is 0 on send frames; the local pid must be used)",
+            src_pid, event_pid
+        );
+        checked += 1;
+    }
+    assert!(
+        checked > 0,
+        "no BC_TRANSACTION send frames with a known event.pid in fixture"
+    );
+}
+
+#[test]
 fn follow_via_stream_id_zero() {
     ensure_dissector_loaded();
     let fixture = fixture_path();
