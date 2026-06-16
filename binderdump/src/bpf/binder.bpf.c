@@ -105,15 +105,21 @@ int sys_enter(struct trace_event_raw_sys_enter *ctx) {
 }
 
 #ifdef __aarch64__
-int __noinline do_bc_br_transaction(pid_t pid, pid_t tid, char log_char,
-                                    struct transaction_command *command);
+int __noinline do_bc_br_transaction(pid_t pid, pid_t tid, char log_char);
 
-int handle_binder_return_from_ioctl(pid_t tid, pid_t pid, struct binder_write_read *bwr,
-                                    struct binder_reply_offsets *reply_offsets) {
+// These global (non-inlined) subprogs take only scalar args and re-fetch their
+// per-cpu map buffers internally. The kernel verifier before 5.13 only accepts
+// SCALAR and PTR_TO_CTX args for global functions (btf_prepare_func_args:
+// "Arg#N type ... is not supported yet" -> -EINVAL); pointer args to global
+// funcs landed in 5.13 (e5069b9c23b3). Passing struct pointers here breaks the
+// load on GKI 5.10. Same reasoning as the ptr_walk_state_map handoff.
+int handle_binder_return_from_ioctl(pid_t tid, pid_t pid, __u64 read_buffer) {
     int ret = 1;
     uint32_t map_key = 0;
 
-    if (!bwr || !reply_offsets) {
+    struct binder_reply_offsets *reply_offsets =
+        bpf_map_lookup_elem(&binder_reply_offsets_map, &tid);
+    if (!reply_offsets) {
         LOG("br: invalid args");
         goto l_cleanup;
     }
@@ -133,13 +139,13 @@ int handle_binder_return_from_ioctl(pid_t tid, pid_t pid, struct binder_write_re
         uint32_t cmd = reply->cmd;
         if (cmd == BR_TRANSACTION || cmd == BR_TRANSACTION_SEC_CTX || cmd == BR_REPLY) {
             if (bpf_probe_read_user(command, sizeof(*command),
-                                    UNTAG(bwr->read_buffer + reply->offset))) {
-                LOG("failed to read BC data %px (cmd: %d)", bwr->read_buffer + reply->offset, cmd);
+                                    UNTAG(read_buffer + reply->offset))) {
+                LOG("failed to read BC data %px (cmd: %d)", read_buffer + reply->offset, cmd);
                 goto l_cleanup;
             }
 
             // LOG("b%c handling command from read_only ioctl: %x", log_char, command);
-            if (do_bc_br_transaction(pid, tid, 'r', command) != 0) {
+            if (do_bc_br_transaction(pid, tid, 'r') != 0) {
                 LOG("br failed to handle transaction command");
                 goto l_cleanup;
             }
@@ -259,7 +265,7 @@ int raw_sys_exit(struct bpf_raw_tracepoint_args *ctx) {
             bpf_ringbuf_submit(event, BPF_RB_FORCE_WAKEUP);
 
             // now pass on the cmds we got from binder_return and binder_txn_received
-            handle_binder_return_from_ioctl(tid, pid, &bwr, reply_offsets);
+            handle_binder_return_from_ioctl(tid, pid, bwr.read_buffer);
 
             return 0;
         l_error:
@@ -538,9 +544,9 @@ int binder_ioctl(struct trace_event_raw_binder_ioctl *ctx) {
     return 0;
 }
 
-int __noinline handle_transaction_chunk(__u64 chunk_size, __u64 addr,
-                                        struct write_read_buffer *buffer, size_t chunk_index) {
-
+int __noinline handle_transaction_chunk(__u64 chunk_size, __u64 addr, size_t chunk_index) {
+    __u32 key = 0;
+    struct write_read_buffer *buffer = bpf_map_lookup_elem(&tmp_buffers, &key);
     if (!buffer) {
         return -1;
     }
@@ -656,12 +662,12 @@ static int __always_inline emit_ptr_payloads(struct write_read_buffer *offsets_b
     return 0;
 }
 
-int __noinline do_bc_br_transaction(pid_t pid, pid_t tid, char log_char,
-                                    struct transaction_command *command) {
+int __noinline do_bc_br_transaction(pid_t pid, pid_t tid, char log_char) {
     struct write_read_buffer *buffer = NULL;
     __u32 key = 0;
     __u64 data_size = 0;
     __u32 offsets_size = 0;
+    struct transaction_command *command = bpf_map_lookup_elem(&transaction_command_buffers, &key);
     if (!command) {
         return -1;
     }
@@ -694,7 +700,7 @@ int __noinline do_bc_br_transaction(pid_t pid, pid_t tid, char log_char,
         if (chunk_size > (__u32)(sizeof(*buffer) - offsetof(struct write_read_buffer, bwr.data))) {
             chunk_size = (__u32)(sizeof(*buffer) - offsetof(struct write_read_buffer, bwr.data));
         }
-        if (handle_transaction_chunk(chunk_size, (__u64)addr, buffer, i) != 0) {
+        if (handle_transaction_chunk(chunk_size, (__u64)addr, i) != 0) {
             goto l_error;
         }
         data_size -= chunk_size;
@@ -886,7 +892,7 @@ int __always_inline do_bc_br(uint32_t cmd, const bool is_return) {
         goto l_error;
     }
 
-    if (do_bc_br_transaction(pid, tid, log_char, command) != 0) {
+    if (do_bc_br_transaction(pid, tid, log_char) != 0) {
         LOG("b%c failed to handle transaction command", log_char);
         goto l_error;
     }
