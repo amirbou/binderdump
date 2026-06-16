@@ -622,7 +622,7 @@ static int __always_inline emit_ptr_payloads(struct write_read_buffer *offsets_b
     if (!offsets_buf || !st || st->offsets_size == 0) {
         return 0;
     }
-    __u32 ptr_size = st->is_compat ? 4 : 8;
+    const __u32 ptr_size = sizeof(binder_size_t);
     __u32 entry_count = st->offsets_size / ptr_size;
     if (entry_count > MAX_PTR_OBJECTS) {
         entry_count = MAX_PTR_OBJECTS;
@@ -769,8 +769,6 @@ int __noinline do_bc_br_transaction(pid_t pid, pid_t tid, char log_char) {
             st->task_id = ((__u64)pid << 32) | (__u32)tid;
             st->data_user_addr = (__u64)command->txn.data.ptr.buffer & 0xffffffffffffULL;
             st->offsets_size = offsets_size;
-            struct ioctl_context *ic = bpf_map_lookup_elem(&ioctl_context_map, &tid);
-            st->is_compat = ic ? ic->is_compat : 0;
             emit_ptr_payloads(buffer);
         }
     }
