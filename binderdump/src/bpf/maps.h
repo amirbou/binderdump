@@ -81,7 +81,6 @@ struct ptr_walk_state {
     __u64 task_id;
     __u64 data_user_addr;
     __u32 offsets_size;
-    int is_compat;
     // per-iteration scratch — populated by the walker, consumed by emit_one_ptr_payload
     __u32 cur_offset_index;
     __u64 cur_ptr_buffer_addr;
