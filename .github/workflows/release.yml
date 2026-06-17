@@ -73,6 +73,8 @@ jobs:
           mkdir dist
           cp target/${{ matrix.target }}/release/binderdump \
              dist/binderdump-${{ github.ref_name }}-${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/offset_finder \
+             dist/offset_finder-${{ github.ref_name }}-${{ matrix.target }}
 
       - uses: actions/upload-artifact@v4
         with:

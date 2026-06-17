@@ -84,7 +84,7 @@ impl From<ReplyOffsets> for ReplyCorrelationMode {
     }
 }
 
-fn bump_memlock_rlimit() -> Result<()> {
+pub fn bump_memlock_rlimit() -> Result<()> {
     let rlimit = libc::rlimit {
         rlim_cur: 128 << 20,
         rlim_max: 128 << 20,
