@@ -11,7 +11,7 @@ use std::ptr::null_mut;
 use std::sync::{Mutex, OnceLock};
 
 use crate::binderdump::collect_command_names;
-use crate::col_info::{self, ColInputs, Direction};
+use crate::col_info::{self, BwrInputs, ColEvent, Direction};
 use crate::txn_link::TxnLinkTable;
 
 use crate::aidl_resolve;
@@ -962,11 +962,27 @@ unsafe fn register_aosp_dir_pref(module: *mut epan::module_t) {
 }
 
 fn build_col_string(event: &binderdump_structs::event_layer::EventProtocol) -> String {
+    use binderdump_structs::event_layer::EventType;
+    use binderdump_trait::EpanProtocolEnum;
+
     let Some(ioctl) = event.ioctl_data.as_ref() else {
-        return String::new();
+        // no ioctl payload — these are the process/thread death events.
+        return match &event.event_type {
+            EventType::DeadProcess => col_info::format(&ColEvent::DeadProcess),
+            EventType::DeadThread => col_info::format(&ColEvent::DeadThread),
+            // split ioctls are a fragment of a following event, and a
+            // finished/invalid event with no ioctl payload carries nothing to
+            // summarize — leave the column blank.
+            EventType::SplitIoctl | EventType::FinishedIoctl | EventType::Invalid => String::new(),
+        };
     };
     let Some(bwr) = ioctl.bwr.as_ref() else {
-        return String::new();
+        // a non-BWR ioctl — only the command and its return value are captured,
+        // not the payload behind the arg pointer.
+        return col_info::format(&ColEvent::Ioctl {
+            name: ioctl.cmd.to_str(),
+            result: ioctl.result,
+        });
     };
 
     let raw_names = collect_command_names(bwr.is_write(), &bwr.data);
@@ -1008,7 +1024,7 @@ fn build_col_string(event: &binderdump_structs::event_layer::EventProtocol) -> S
             .as_ref()
             .is_some_and(|txn| binderdump_aidl::registry::lookup_special(txn.code).is_some());
 
-    let inputs = ColInputs {
+    let inputs = ColEvent::Bwr(BwrInputs {
         is_reply,
         iface: iface.as_deref(),
         method: method.as_deref(),
@@ -1017,6 +1033,6 @@ fn build_col_string(event: &binderdump_structs::event_layer::EventProtocol) -> S
         has_transaction,
         is_oneway,
         is_special,
-    };
+    });
     col_info::format(&inputs)
 }
