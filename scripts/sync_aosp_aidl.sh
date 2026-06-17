@@ -47,6 +47,7 @@ declare -A VERSIONS=(
     [14]="34 android14-release"
     [15]="35 android15-release"
     [16]="36 android16-release"
+    [17]="37 android17-release"
 )
 
 # Format: "<repo>:<subdir>:<ext>:<dest>[:<rel-prefix>]"

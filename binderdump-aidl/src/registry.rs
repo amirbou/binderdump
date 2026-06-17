@@ -340,7 +340,7 @@ mod tests {
         let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let native_dir = repo_root.join("data/native");
         let reg = Registry::empty().with_native_dir(&native_dir);
-        for sdk in [33u32, 34u32, 35u32, 36u32] {
+        for sdk in [33u32, 34u32, 35u32, 36u32, 37u32] {
             for (fqn, code, expected) in [
                 // code 1 = ON_DISCONNECT (onFrameAvailable is code 2)
                 ("android.gui.IConsumerListener", 1u32, "onDisconnect"),
@@ -368,7 +368,7 @@ mod tests {
         let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let native_dir = repo_root.join("data/native");
         let reg = Registry::empty().with_native_dir(&native_dir);
-        for sdk in [33u32, 34u32, 35u32, 36u32] {
+        for sdk in [33u32, 34u32, 35u32, 36u32, 37u32] {
             match reg.resolve(sdk, "android.utils.IMemory", 1) {
                 Lookup::Hit { method, source } => {
                     assert_eq!(method.name, "getMemory", "sdk={sdk}");
@@ -387,8 +387,8 @@ mod tests {
         let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let native_dir = repo_root.join("data/native");
         let reg = Registry::empty().with_native_dir(&native_dir);
-        // code-1 method names verified stable across android-33..36 from .aidl sources.
-        for sdk in [33u32, 34u32, 35u32, 36u32] {
+        // code-1 method names verified stable across android-33..37 from .aidl sources.
+        for sdk in [33u32, 34u32, 35u32, 36u32, 37u32] {
             for (fqn, code, expected) in [
                 ("android.media.IDataSource", 1u32, "getIMemory"),
                 ("android.media.IMediaCodecList", 1, "create"),
@@ -423,7 +423,7 @@ mod tests {
         let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let native_dir = repo_root.join("data/native");
         let reg = Registry::empty().with_native_dir(&native_dir);
-        for sdk in [33u32, 34u32, 35u32, 36u32] {
+        for sdk in [33u32, 34u32, 35u32, 36u32, 37u32] {
             for fqn in [
                 "android.hardware.ICameraRecordingProxy",
                 // ICameraRecordingProxyListener: deleted post-android-11; shipped to all
@@ -460,7 +460,7 @@ mod tests {
         let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let native_dir = repo_root.join("data/native");
         let reg = Registry::empty().with_native_dir(&native_dir);
-        for sdk in [33u32, 34u32, 35u32, 36u32] {
+        for sdk in [33u32, 34u32, 35u32, 36u32, 37u32] {
             assert!(
                 matches!(
                     reg.resolve(sdk, "drm.IDrmServiceListener", 1),
@@ -509,7 +509,7 @@ mod tests {
         let reg = Registry::empty().with_native_dir(&native_dir);
 
         for fqn in crate::native_interfaces::all() {
-            for sdk in [33u32, 34u32, 35u32, 36u32] {
+            for sdk in [33u32, 34u32, 35u32, 36u32, 37u32] {
                 if NO_SYNTHETIC_AIDL.contains(&(sdk, fqn)) {
                     continue;
                 }
@@ -570,7 +570,7 @@ mod tests {
         let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let native_dir = repo_root.join("data/native");
         let reg = Registry::empty().with_native_dir(&native_dir);
-        for sdk in [33u32, 34u32, 35u32, 36u32] {
+        for sdk in [33u32, 34u32, 35u32, 36u32, 37u32] {
             match reg.resolve(sdk, "android.ui.ISurfaceComposer", 1) {
                 Lookup::Hit { method, .. } => {
                     assert_eq!(method.name, "bootFinished", "sdk={sdk}");
