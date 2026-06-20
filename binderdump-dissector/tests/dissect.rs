@@ -1053,6 +1053,61 @@ fn convenience_filter_fields_extract() {
     );
 }
 
+// Regression: AIDL parcel decode must render decoded parameter nodes for known
+// interfaces using the committed AOSP corpus, not just fall back to raw nodes.
+//
+// Decoded params render through per-(interface, method, param) fields registered
+// dynamically at dissection time; tshark can't reference those in -e/-Y (filters
+// compile before dissection), so this asserts against the rendered tree (-V),
+// which exercises the full decode + render path.
+//
+// getMemory (android.hardware.memtrack.IMemtrack, sdk 35): first param `pid`
+// (int) decodes to 1362. onDnsEvent (android.net.metrics.INetdEventListener)
+// carries a String16 hostname.
+#[test]
+fn parcel_params_decode_from_committed_corpus() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let path = fixture.to_str().unwrap();
+    let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../binderdump-aidl/data/aosp");
+    let corpus_pref = format!(
+        "binderdump.aosp_corpus_dir:{}",
+        corpus_dir.to_str().unwrap()
+    );
+    let pfx = "binderdump.ioctl_data.bwr.transaction";
+
+    // String16 decode: onDnsEvent carries a hostname rendered under Parameters.
+    let strings = tshark(&[
+        "-r",
+        path,
+        "-o",
+        &corpus_pref,
+        "-Y",
+        &format!("{pfx}.interface==\"android.net.metrics.INetdEventListener\""),
+        "-V",
+    ]);
+    assert!(
+        strings.contains("chrome.cloudflare-dns.com"),
+        "expected a decoded String16 param 'chrome.cloudflare-dns.com' in the tree; got:\n{}",
+        strings
+    );
+
+    // Primitive decode: getMemory first param renders as "pid: 1362".
+    let ints = tshark(&[
+        "-r",
+        path,
+        "-o",
+        &corpus_pref,
+        "-Y",
+        &format!("{pfx}.method_name==\"getMemory\""),
+        "-V",
+    ]);
+    assert!(
+        ints.contains("pid: 1362"),
+        "expected decoded 'pid: 1362' (getMemory) in the tree; got tree without it",
+    );
+}
+
 #[test]
 fn follow_via_stream_id_zero() {
     ensure_dissector_loaded();

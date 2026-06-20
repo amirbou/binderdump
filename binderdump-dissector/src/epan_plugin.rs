@@ -530,6 +530,12 @@ unsafe impl Sync for DissectorHandle {}
 
 static G_PROTOCOL: OnceLock<Protocol> = OnceLock::new();
 
+// the registered protocol id, needed by dissect_parcel to register per-param
+// fields dynamically at dissection time. None before register_protoinfo runs.
+pub(crate) fn proto_handle() -> Option<c_int> {
+    G_PROTOCOL.get().map(|p| p.handle)
+}
+
 unsafe extern "C" fn binderdump_init_routine() {
     crate::reply_correlation::clear();
     crate::follow_stream::clear();
@@ -783,6 +789,8 @@ fn handle_transaction_code(
             method_name: None,
             method_source: "",
             overlay_path: None,
+            method: None,
+            params_start: None,
         }
     };
 
