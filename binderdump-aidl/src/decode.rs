@@ -68,9 +68,184 @@ impl<'a> ParcelCursor<'a> {
     }
 }
 
+use crate::model::{Direction, Method, Prim, TypeRef};
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum DecodedValue {
+    I64(i64),
+    U64(u64),
+    F64(f64),
+    Bool(bool),
+    Str(Option<String>),
+    Raw,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecodedNode {
+    pub name: String,
+    pub type_label: String,
+    pub start: usize,
+    pub len: usize,
+    pub value: DecodedValue,
+}
+
+// decode the in/inout parameters of `method` from `buf` starting at `start`.
+// out-only params carry no bytes outbound and are skipped. The first param
+// whose type we can't decode (or any overrun) appends a single Raw node over
+// the remaining bytes and stops — every later offset would be unreliable.
+pub fn decode_aidl_params(method: &Method, buf: &[u8], start: usize) -> Vec<DecodedNode> {
+    let mut cur = ParcelCursor::new(buf, start);
+    let mut nodes = Vec::new();
+
+    for param in &method.params {
+        if param.direction == Direction::Out {
+            continue;
+        }
+        let before = cur.pos;
+        let decoded = decode_one(&mut cur, &param.ty);
+        match decoded {
+            Some((value, label)) => nodes.push(DecodedNode {
+                name: param.name.clone(),
+                type_label: label,
+                start: before,
+                len: cur.pos - before,
+                value,
+            }),
+            None => {
+                nodes.push(raw_tail(param.name.clone(), before, buf.len()));
+                return nodes;
+            }
+        }
+    }
+    nodes
+}
+
+fn raw_tail(name: String, start: usize, buf_len: usize) -> DecodedNode {
+    DecodedNode {
+        name,
+        type_label: "raw".to_string(),
+        start,
+        len: buf_len.saturating_sub(start),
+        value: DecodedValue::Raw,
+    }
+}
+
+// returns (value, type_label) or None if this type isn't decodable in this
+// sub-project (containers/parcelables come later) or the buffer ran out.
+fn decode_one(cur: &mut ParcelCursor, ty: &TypeRef) -> Option<(DecodedValue, String)> {
+    match ty {
+        TypeRef::Primitive(p) => decode_prim(cur, *p),
+        TypeRef::String => cur
+            .read_string16()
+            .map(|s| (DecodedValue::Str(s), "String".to_string())),
+        // Array/List/Map/IBinder/UserDefined: not in this sub-project.
+        _ => None,
+    }
+}
+
+fn decode_prim(cur: &mut ParcelCursor, prim: Prim) -> Option<(DecodedValue, String)> {
+    let (v, label) = match prim {
+        Prim::Bool => (DecodedValue::Bool(cur.read_bool()?), "boolean"),
+        // byte/char/short are int32-promoted on the wire.
+        Prim::I8 | Prim::U8 => (DecodedValue::I64(cur.read_i32()? as i64), "byte"),
+        Prim::Char => (DecodedValue::U64(cur.read_u32()? as u64), "char"),
+        Prim::I16 | Prim::U16 => (DecodedValue::I64(cur.read_i32()? as i64), "short"),
+        Prim::I32 => (DecodedValue::I64(cur.read_i32()? as i64), "int"),
+        Prim::U32 => (DecodedValue::U64(cur.read_u32()? as u64), "int"),
+        Prim::I64 => (DecodedValue::I64(cur.read_i64()?), "long"),
+        Prim::U64 => (DecodedValue::U64(cur.read_u64()?), "long"),
+        Prim::F32 => (DecodedValue::F64(cur.read_f32()? as f64), "float"),
+        Prim::F64 => (DecodedValue::F64(cur.read_f64()?), "double"),
+    };
+    Some((v, label.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Direction, Method, Parameter, Prim, TypeRef};
+
+    fn in_param(name: &str, ty: TypeRef) -> Parameter {
+        Parameter {
+            name: name.to_string(),
+            ty,
+            direction: Direction::In,
+        }
+    }
+
+    fn method(params: Vec<Parameter>) -> Method {
+        Method {
+            name: "m".into(),
+            params,
+            return_type: None,
+            oneway: false,
+            code: None,
+        }
+    }
+
+    #[test]
+    fn decodes_int_and_string() {
+        let m = method(vec![
+            in_param("count", TypeRef::Primitive(Prim::I32)),
+            in_param("name", TypeRef::String),
+        ]);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&5i32.to_le_bytes());
+        buf.extend_from_slice(&2i32.to_le_bytes()); // "hi"
+        buf.extend_from_slice(&(b'h' as u16).to_le_bytes());
+        buf.extend_from_slice(&(b'i' as u16).to_le_bytes());
+        buf.extend_from_slice(&[0, 0]); // u16 NUL
+        buf.extend_from_slice(&[0, 0]); // pad to 4-byte boundary
+        let nodes = decode_aidl_params(&m, &buf, 0);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].name, "count");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(5)));
+        assert_eq!(nodes[0].start, 0);
+        assert_eq!(nodes[0].len, 4);
+        assert_eq!(nodes[1].name, "name");
+        assert!(matches!(&nodes[1].value, DecodedValue::Str(Some(s)) if s == "hi"));
+    }
+
+    #[test]
+    fn out_param_is_skipped_on_request() {
+        let mut m = method(vec![in_param("x", TypeRef::Primitive(Prim::I32))]);
+        m.params[0].direction = Direction::Out;
+        let buf = 9i32.to_le_bytes();
+        let nodes = decode_aidl_params(&m, &buf, 0);
+        assert!(nodes.is_empty());
+    }
+
+    #[test]
+    fn unknown_type_stops_with_raw_tail() {
+        let m = method(vec![
+            in_param("x", TypeRef::Primitive(Prim::I32)),
+            in_param("obj", TypeRef::UserDefined("a.b.Foo".into())), // not decodable yet
+            in_param("y", TypeRef::Primitive(Prim::I32)),
+        ]);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&1i32.to_le_bytes());
+        buf.extend_from_slice(&[0xaa, 0xbb, 0xcc, 0xdd]);
+        let nodes = decode_aidl_params(&m, &buf, 0);
+        assert_eq!(nodes.len(), 2);
+        assert!(matches!(nodes[0].value, DecodedValue::I64(1)));
+        assert!(matches!(nodes[1].value, DecodedValue::Raw));
+        assert_eq!(nodes[1].start, 4);
+        assert_eq!(nodes[1].len, 4); // remaining bytes
+    }
+
+    #[test]
+    fn overrun_emits_raw_tail() {
+        let m = method(vec![
+            in_param("a", TypeRef::Primitive(Prim::I32)),
+            in_param("b", TypeRef::Primitive(Prim::I64)), // wants 8 bytes, only 2 left
+        ]);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&1i32.to_le_bytes());
+        buf.extend_from_slice(&[0, 0]);
+        let nodes = decode_aidl_params(&m, &buf, 0);
+        assert!(matches!(nodes[0].value, DecodedValue::I64(1)));
+        assert!(matches!(nodes.last().unwrap().value, DecodedValue::Raw));
+    }
 
     #[test]
     fn reads_i32_and_advances() {
