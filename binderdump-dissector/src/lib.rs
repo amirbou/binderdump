@@ -3,6 +3,7 @@ mod binderdump;
 mod col_info;
 mod dissect_flat_objects;
 mod dissect_offsets;
+mod dissect_parcel;
 mod epan_plugin;
 mod epan_utils;
 pub mod follow_stream;
