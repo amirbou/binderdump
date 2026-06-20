@@ -8,22 +8,46 @@
 //   u32 work_source_uid           (API 29+, IPCThreadState::TF_CLEAR_BUF era)
 //   u32 header marker 'SYS\0'     (API 30+, kHeader from IPCThreadState.h)
 //   String16 interface_descriptor
-pub fn parse_aidl_token(bytes: &[u8], android_sdk: u32) -> Option<String> {
-    let mut off = 0usize;
-    let _ = read_u32_le(bytes, off)?;
+
+// length of the writeInterfaceToken header before the String16 descriptor.
+// policy(4) is always present; work_source_uid added in API 29 (Android 10);
+// the RPC header marker added in API 30 (Android 11). See parse_aidl_token.
+fn aidl_header_len(android_sdk: u32) -> usize {
+    let work_source_uid = if android_sdk >= 29 { 4 } else { 0 };
+    let header_marker = if android_sdk >= 30 { 4 } else { 0 };
+    4 + work_source_uid + header_marker
+}
+
+// round up to the next 4-byte boundary. parcel writes are 4-aligned.
+pub(crate) fn pad_to_4(n: usize) -> usize {
+    (n + 3) & !3
+}
+
+// byte offset of the first parameter, i.e. just past the String16 interface
+// descriptor written by writeInterfaceToken. None on a truncated token.
+pub fn aidl_params_start(bytes: &[u8], android_sdk: u32) -> Option<usize> {
+    let mut off = aidl_header_len(android_sdk);
+    let char_count = read_i32_le(bytes, off)?;
     off += 4;
-    // work_source_uid: introduced for binder work-source tracking in API 29 (Android 10).
-    if android_sdk >= 29 {
-        let _ = read_u32_le(bytes, off)?;
-        off += 4;
+    if char_count < 0 {
+        // null descriptor: libbinder wrote only the -1 int32.
+        return Some(off);
     }
-    // RPC header marker: added in API 30 (Android 11) so the kernel can tell apart
-    // a kBinder vs kHeader prefixed parcel; libbinder writes it unconditionally
-    // from then on.
-    if android_sdk >= 30 {
-        let _ = read_u32_le(bytes, off)?;
-        off += 4;
+    let n = char_count as usize;
+    // char_count UTF-16 units + a u16 NUL terminator, padded to 4 bytes.
+    let body = n.checked_mul(2)?.checked_add(2)?;
+    off = pad_to_4(off.checked_add(body)?);
+    (off <= bytes.len()).then_some(off)
+}
+
+pub fn parse_aidl_token(bytes: &[u8], android_sdk: u32) -> Option<String> {
+    // skip the writeInterfaceToken header (strict-mode policy, work_source_uid
+    // for sdk>=29, RPC marker for sdk>=30). validate that those bytes exist.
+    let hlen = aidl_header_len(android_sdk);
+    if bytes.get(..hlen).is_none() {
+        return None;
     }
+    let mut off = hlen;
     // String16: int32 char_count, then chars (u16 LE), then null term, padded to 4
     let char_count = read_i32_le(bytes, off)?;
     off += 4;
@@ -52,9 +76,6 @@ pub fn parse_hidl_token(bytes: &[u8]) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-fn read_u32_le(buf: &[u8], off: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(buf.get(off..off + 4)?.try_into().ok()?))
-}
 fn read_i32_le(buf: &[u8], off: usize) -> Option<i32> {
     Some(i32::from_le_bytes(buf.get(off..off + 4)?.try_into().ok()?))
 }
@@ -159,5 +180,43 @@ mod tests {
     fn hidl_no_null_returns_none() {
         let bytes = b"android.hardware.audio@7.0::IDevice";
         assert!(parse_hidl_token(bytes).is_none());
+    }
+
+    #[test]
+    fn params_start_sdk30() {
+        let buf = build_aidl_token(30, "android.os.IServiceManager");
+        // header: policy(4)+worksource(4)+marker(4)=12; +char_count(4);
+        // "android.os.IServiceManager" = 26 chars -> 26*2 + 2 (NUL) = 54, pad to 56
+        assert_eq!(aidl_params_start(&buf, 30), Some(12 + 4 + 56));
+    }
+
+    #[test]
+    fn params_start_sdk28_padded() {
+        // "x.IFoo" = 6 chars -> 6*2 + 2 = 14, pad to 16
+        let buf = build_aidl_token(28, "x.IFoo");
+        assert_eq!(aidl_params_start(&buf, 28), Some(4 + 4 + 16));
+    }
+
+    #[test]
+    fn params_start_empty_descriptor() {
+        let buf = build_aidl_token(30, "");
+        // char_count 0 -> 0 units + 2 NUL = 2, pad to 4
+        assert_eq!(aidl_params_start(&buf, 30), Some(12 + 4 + 4));
+    }
+
+    #[test]
+    fn params_start_truncated() {
+        assert!(aidl_params_start(&[0u8; 5], 30).is_none());
+    }
+
+    #[test]
+    fn params_start_null_descriptor() {
+        // char_count == -1: libbinder writes only the int32, no chars/NUL/pad
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0u32.to_le_bytes()); // policy
+        buf.extend_from_slice(&0u32.to_le_bytes()); // worksource (sdk>=29)
+        buf.extend_from_slice(&0x53595300u32.to_le_bytes()); // marker (sdk>=30)
+        buf.extend_from_slice(&(-1i32).to_le_bytes()); // char_count
+        assert_eq!(aidl_params_start(&buf, 30), Some(12 + 4));
     }
 }
