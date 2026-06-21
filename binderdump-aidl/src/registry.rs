@@ -569,6 +569,28 @@ mod tests {
     }
 
     #[test]
+    fn enum_def_loads_from_overlay_and_aosp() {
+        // overlay-provided enum
+        let mut overlay = OverlayLayer {
+            source_path: "x".into(),
+            interfaces: Default::default(),
+            enums: Default::default(),
+        };
+        overlay.enums.insert(
+            "a.b.E".into(),
+            EnumDef {
+                fqn: "a.b.E".into(),
+                backing: Prim::I32,
+                consts: vec![("A".into(), 0)],
+            },
+        );
+        let reg = Registry::from_parts(vec![overlay], None, HashMap::new());
+        let e = reg.enum_def(34, "a.b.E").expect("overlay enum");
+        assert_eq!(e.consts, vec![("A".into(), 0)]);
+        assert!(reg.enum_def(34, "a.b.Missing").is_none());
+    }
+
+    #[test]
     fn bundled_native_corpus_resolves_isurfacecomposer_legacy() {
         let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let native_dir = repo_root.join("data/native");
@@ -587,7 +609,7 @@ mod tests {
     }
 }
 
-use crate::model::{Interface, Method, OverlayLayer};
+use crate::model::{EnumDef, Interface, Method, OverlayLayer};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
@@ -627,6 +649,8 @@ pub struct Registry {
     /// `&'static Interface` borrow can outlive the RwLockReadGuard at
     /// resolve time.
     lazy_cache: RwLock<HashMap<(u32, String), Option<&'static Interface>>>,
+    /// same as lazy_cache but for enums; None slots cache negative lookups.
+    lazy_enum_cache: RwLock<HashMap<(u32, String), Option<&'static EnumDef>>>,
     /// fqn → file-path index, populated lazily once per SDK on first
     /// indirect lookup. The Option means we've populated for that SDK
     /// already (Some) or not yet (absent).
@@ -648,6 +672,7 @@ impl Registry {
             aosp_root,
             native_layers,
             lazy_cache: RwLock::new(HashMap::new()),
+            lazy_enum_cache: RwLock::new(HashMap::new()),
             fqn_index: RwLock::new(HashMap::new()),
         }
     }
@@ -893,6 +918,74 @@ impl Registry {
             .unwrap()
             .insert((sdk, fqn.to_string()), leaked);
         leaked
+    }
+
+    pub fn enum_def(&self, sdk: u32, fqn: &str) -> Option<&EnumDef> {
+        for overlay in self.overlays.iter().rev() {
+            if let Some(e) = overlay.enums.get(fqn) {
+                return Some(e);
+            }
+        }
+        if self.aosp_root.is_some() {
+            return self.lazy_enum(sdk, fqn);
+        }
+        None
+    }
+
+    fn lazy_enum(&self, sdk: u32, fqn: &str) -> Option<&'static EnumDef> {
+        {
+            let cache = self.lazy_enum_cache.read().unwrap();
+            if let Some(slot) = cache.get(&(sdk, fqn.to_string())) {
+                return *slot;
+            }
+        }
+        let loaded = self.lazy_load_enum(sdk, fqn);
+        let leaked: Option<&'static EnumDef> = loaded.map(|e| &*Box::leak(Box::new(e)));
+        self.lazy_enum_cache
+            .write()
+            .unwrap()
+            .insert((sdk, fqn.to_string()), leaked);
+        leaked
+    }
+
+    // parse the candidate aidl file(s) for `fqn` and return its EnumDef, if any.
+    // reuses the same path resolution as lazy_load_one (fast aidl_path + slow index).
+    fn lazy_load_enum(&self, sdk: u32, fqn: &str) -> Option<EnumDef> {
+        let root = self.aosp_root.as_ref()?;
+        let find = |path: &Path| -> Option<EnumDef> {
+            let src = std::fs::read_to_string(path).ok()?;
+            if path.extension().and_then(|s| s.to_str()) != Some("aidl") {
+                return None;
+            }
+            match crate::parser::aidl::parse_aidl(&src) {
+                Ok(p) => p.enums.into_iter().find(|e| e.fqn == fqn),
+                Err(_) => None,
+            }
+        };
+        // fast path: dotted-fqn convention
+        if let Some(e) = find(&crate::aosp_layout::aidl_path(root, sdk, fqn)) {
+            return Some(e);
+        }
+        // slow path: per-sdk fqn->path index (enums can be nested in a differently
+        // named file, e.g. a.b.IFoo.Inner lives in IFoo.aidl).
+        self.populate_fqn_index(sdk);
+        let path = {
+            let idx = self.fqn_index.read().unwrap();
+            idx.get(&sdk).and_then(|m| m.get(fqn).cloned())
+        };
+        // also try the enclosing type's file for a nested enum (strip last segment).
+        let candidates = path
+            .into_iter()
+            .chain(fqn.rsplit_once('.').and_then(|(outer, _)| {
+                let idx = self.fqn_index.read().unwrap();
+                idx.get(&sdk).and_then(|m| m.get(outer).cloned())
+            }));
+        for p in candidates {
+            if let Some(e) = find(&p) {
+                return Some(e);
+            }
+        }
+        None
     }
 
     fn materialize_lazy(&self, slot: Option<&'static Interface>, code: u32) -> Lookup<'static> {

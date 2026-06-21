@@ -82,24 +82,24 @@ pub fn aidl_interfaces_in(src: &str) -> Vec<String> {
     // real files have them on their own lines, but the text search also
     // handles compact single-line test fixtures correctly.
     let mut out = Vec::new();
-    let mut rest = src;
-    while let Some(pos) = rest.find("interface ") {
-        rest = &rest[pos + "interface ".len()..];
-        // require that the match is at a word boundary (preceded by whitespace,
-        // `;`, or start of string) to avoid false positives inside strings or
-        // identifiers like `MyInterface `.
-        let before = &src[..src.len() - rest.len() - "interface ".len()];
-        if let Some(prev) = before.chars().last() {
-            if prev.is_alphanumeric() || prev == '_' {
-                continue;
+    for keyword in ["interface ", "enum ", "parcelable ", "union "] {
+        let mut rest = src;
+        while let Some(pos) = rest.find(keyword) {
+            rest = &rest[pos + keyword.len()..];
+            // require word boundary (no alphanumeric or _ immediately before)
+            let before = &src[..src.len() - rest.len() - keyword.len()];
+            if let Some(prev) = before.chars().last() {
+                if prev.is_alphanumeric() || prev == '_' {
+                    continue;
+                }
             }
-        }
-        let name: String = rest
-            .chars()
-            .take_while(|c| c.is_alphanumeric() || *c == '_')
-            .collect();
-        if !name.is_empty() {
-            out.push(format!("{}.{}", pkg, name));
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() {
+                out.push(format!("{}.{}", pkg, name));
+            }
         }
     }
     out
