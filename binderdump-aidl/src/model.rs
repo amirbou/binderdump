@@ -44,6 +44,16 @@ pub enum TypeRef {
     UserDefined(String), // fqn of enum/parcelable/interface, resolved later
 }
 
+impl TypeRef {
+    // returns the inner Prim if self is Primitive, else None.
+    pub fn as_ref_prim(&self) -> Option<Prim> {
+        match self {
+            TypeRef::Primitive(p) => Some(*p),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Parameter {
     pub name: String,
