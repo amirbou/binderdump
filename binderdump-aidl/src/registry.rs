@@ -763,7 +763,7 @@ impl Registry {
             let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
             match ext {
                 "aidl" => match crate::parser::aidl::parse_aidl(&src) {
-                    Ok(parsed) => parsed.into_iter().find(|i| i.fqn == fqn),
+                    Ok(parsed) => parsed.interfaces.into_iter().find(|i| i.fqn == fqn),
                     Err(e) => {
                         eprintln!(
                             "binderdump-aidl: lazy parse failed for {}: {:?}",
@@ -936,16 +936,24 @@ impl Registry {
             };
             match ext {
                 "aidl" => match parse_aidl(&src) {
-                    Ok(v) => {
+                    Ok(parsed) => {
                         eprintln!(
                             "binderdump-aidl: loaded {} interface(s) from {}",
-                            v.len(),
+                            parsed.interfaces.len(),
                             path.display()
                         );
                         layers.push(OverlayLayer {
                             source_path: path,
-                            interfaces: v.into_iter().map(|i| (i.fqn.clone(), i)).collect(),
-                            enums: Default::default(),
+                            interfaces: parsed
+                                .interfaces
+                                .into_iter()
+                                .map(|i| (i.fqn.clone(), i))
+                                .collect(),
+                            enums: parsed
+                                .enums
+                                .into_iter()
+                                .map(|e| (e.fqn.clone(), e))
+                                .collect(),
                         });
                     }
                     Err(_) => {
