@@ -3,31 +3,35 @@
 // and tags how the resolution happened (aosp / overlay / special / etc.)
 // for the `binder.transaction.method_source` field.
 
-use binderdump_aidl::token::{parse_aidl_token, parse_hidl_token};
-use binderdump_aidl::{Lookup, Registry, Source};
+use binderdump_aidl::token::{aidl_params_start, parse_aidl_token, parse_hidl_token};
+use binderdump_aidl::{Lookup, Method, Registry, Source};
 use binderdump_structs::binder_types::BinderInterface;
 use std::sync::OnceLock;
 
-pub struct ResolvedTransaction {
+pub struct ResolvedTransaction<'a> {
     pub interface: Option<String>,
     pub method_name: Option<String>,
     // one of: "aosp", "overlay", "special", "unknown_iface", "unknown_code", "no_token"
     pub method_source: &'static str,
     pub overlay_path: Option<String>,
+    pub method: Option<&'a Method>, // resolved method, for param decode
+    pub params_start: Option<usize>, // AIDL: offset where params begin
 }
 
-pub fn resolve(
-    reg: &Registry,
+pub fn resolve<'a>(
+    reg: &'a Registry,
     iface: BinderInterface,
     code: u32,
     android_sdk: u32,
     data_buf: &[u8],
-) -> ResolvedTransaction {
-    let interface = match iface {
+) -> ResolvedTransaction<'a> {
+    let (interface, params_start) = match iface {
         BinderInterface::BINDER | BinderInterface::VNDBINDER => {
-            parse_aidl_token(data_buf, android_sdk)
+            let iface = parse_aidl_token(data_buf, android_sdk);
+            let start = aidl_params_start(data_buf, android_sdk);
+            (iface, start)
         }
-        BinderInterface::HWBINDER => parse_hidl_token(data_buf),
+        BinderInterface::HWBINDER => (parse_hidl_token(data_buf), None),
     };
 
     // Special codes are interface-agnostic - check first.
@@ -43,6 +47,8 @@ pub fn resolve(
             method_name: Some(binderdump_aidl::registry::special_method_name(s).to_string()),
             method_source: "special",
             overlay_path: None,
+            method: None,
+            params_start,
         };
     }
 
@@ -52,6 +58,8 @@ pub fn resolve(
             method_name: None,
             method_source: "no_token",
             overlay_path: None,
+            method: None,
+            params_start,
         };
     };
 
@@ -67,6 +75,8 @@ pub fn resolve(
                 method_name: Some(method.name.clone()),
                 method_source: src_label,
                 overlay_path,
+                method: Some(method),
+                params_start,
             }
         }
         Lookup::UnknownInterface => {
@@ -84,6 +94,8 @@ pub fn resolve(
                 method_name: None,
                 method_source: label,
                 overlay_path: None,
+                method: None,
+                params_start,
             }
         }
         Lookup::UnknownCode { interface: _ } => ResolvedTransaction {
@@ -91,6 +103,8 @@ pub fn resolve(
             method_name: None,
             method_source: "unknown_code",
             overlay_path: None,
+            method: None,
+            params_start,
         },
         Lookup::SpecialCode(_) => unreachable!("checked above"),
     }

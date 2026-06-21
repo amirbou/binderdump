@@ -19,6 +19,7 @@ use crate::binderdump::dissect_bwr_data;
 use crate::binderdump::AddBinderTypes;
 use crate::dissect_flat_objects;
 use crate::dissect_offsets;
+use crate::dissect_parcel;
 use crate::header_fields_manager::{
     FieldHandler, FieldHandlerFunc, HeaderField, HeaderFieldsManager,
 };
@@ -529,6 +530,12 @@ unsafe impl Sync for DissectorHandle {}
 
 static G_PROTOCOL: OnceLock<Protocol> = OnceLock::new();
 
+// the registered protocol id, needed by dissect_parcel to register per-param
+// fields dynamically at dissection time. None before register_protoinfo runs.
+pub(crate) fn proto_handle() -> Option<c_int> {
+    G_PROTOCOL.get().map(|p| p.handle)
+}
+
 unsafe extern "C" fn binderdump_init_routine() {
     crate::reply_correlation::clear();
     crate::follow_stream::clear();
@@ -551,6 +558,23 @@ pub extern "C" fn register_protoinfo() {
                 "binderdump.ioctl_data.bwr.transaction.offsets",
                 dissect_flat_objects::dissect_offsets_array,
             )
+            .add_custom_handler(
+                "binderdump.ioctl_data.bwr.transaction.data",
+                dissect_parcel::dissect_transaction_data,
+            )
+            .add_extra_subtree("binderdump.ioctl_data.bwr.transaction.parcel")
+            // decoded parameters render through per-(interface, method, param)
+            // fields registered dynamically at dissection time (see
+            // dissect_parcel.rs). only the undecodable-tail field is static, so
+            // a "show transactions we couldn't fully decode" filter works from
+            // tshark too.
+            .add_extra_field(FieldInfo {
+                name: "Parameter (raw)".into(),
+                abbrev: "binderdump.ioctl_data.bwr.transaction.parcel.raw".into(),
+                ftype: FtEnum::Bytes,
+                display: FieldDisplay::SepSpace,
+                strings: None,
+            })
             .add_extra_enum::<binder_type>(
                 "Object Type",
                 "binderdump.ioctl_data.bwr.transaction.offsets.entry.type",
@@ -765,6 +789,8 @@ fn handle_transaction_code(
             method_name: None,
             method_source: "",
             overlay_path: None,
+            method: None,
+            params_start: None,
         }
     };
 
