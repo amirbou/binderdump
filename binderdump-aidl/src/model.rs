@@ -88,10 +88,38 @@ impl Interface {
     }
 }
 
+// a parcelable/union member: declared type + name. defaults/annotations are
+// dropped — they never appear on the wire.
+#[derive(Clone, Debug)]
+pub struct Field {
+    pub name: String,
+    pub ty: TypeRef,
+}
+
+#[derive(Clone, Debug)]
+pub struct Parcelable {
+    pub fqn: String,
+    pub fields: Vec<Field>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EnumDef {
+    pub fqn: String,
+    pub backing: Prim,              // default I32; byte/long via @Backing
+    pub consts: Vec<(String, i64)>, // declaration order
+}
+
+#[derive(Clone, Debug)]
+pub struct Union {
+    pub fqn: String,
+    pub fields: Vec<Field>,
+}
+
 #[derive(Clone, Debug)]
 pub struct OverlayLayer {
     pub source_path: PathBuf,
     pub interfaces: std::collections::HashMap<String, Interface>,
+    pub enums: std::collections::HashMap<String, EnumDef>,
 }
 
 #[cfg(test)]

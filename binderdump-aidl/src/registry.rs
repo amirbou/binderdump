@@ -134,6 +134,7 @@ mod tests {
         let mut overlay = OverlayLayer {
             source_path: "/tmp/x.aidl".into(),
             interfaces: Default::default(),
+            enums: Default::default(),
         };
         overlay
             .interfaces
@@ -154,6 +155,7 @@ mod tests {
         let mut overlay = OverlayLayer {
             source_path: "/tmp/x.aidl".into(),
             interfaces: Default::default(),
+            enums: Default::default(),
         };
         // Even if an overlay declared a method at PING's value, special table wins.
         overlay
@@ -180,6 +182,7 @@ mod tests {
         let mut overlay = OverlayLayer {
             source_path: "/tmp/x.aidl".into(),
             interfaces: Default::default(),
+            enums: Default::default(),
         };
         overlay
             .interfaces
@@ -942,6 +945,7 @@ impl Registry {
                         layers.push(OverlayLayer {
                             source_path: path,
                             interfaces: v.into_iter().map(|i| (i.fqn.clone(), i)).collect(),
+                            enums: Default::default(),
                         });
                     }
                     Err(_) => {
@@ -983,6 +987,7 @@ impl Registry {
                         layers.push(OverlayLayer {
                             source_path: path,
                             interfaces,
+                            enums: Default::default(),
                         });
                     }
                 }
