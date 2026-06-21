@@ -1108,6 +1108,37 @@ fn parcel_params_decode_from_committed_corpus() {
     );
 }
 
+// Asserts the array-subtree render path: parser captured the array param →
+// decoder produced Array{len:0} → dissector rendered the subtree title.
+// onDnsEvent's `ipAddresses` is an empty String[] in the fixture; the title
+// "ipAddresses: 0 items" exercises the full 2a array path even at len==0.
+#[test]
+fn parcel_array_renders_from_committed_corpus() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let path = fixture.to_str().unwrap();
+    let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../binderdump-aidl/data/aosp");
+    let corpus_pref = format!(
+        "binderdump.aosp_corpus_dir:{}",
+        corpus_dir.to_str().unwrap()
+    );
+    let pfx = "binderdump.ioctl_data.bwr.transaction";
+
+    let out = tshark(&[
+        "-r",
+        path,
+        "-o",
+        &corpus_pref,
+        "-Y",
+        &format!("{pfx}.interface==\"android.net.metrics.INetdEventListener\""),
+        "-V",
+    ]);
+    assert!(
+        out.contains("ipAddresses: 0 items"),
+        "expected 'ipAddresses: 0 items' subtree title (array-decode render path); got tree without it"
+    );
+}
+
 #[test]
 fn follow_via_stream_id_zero() {
     ensure_dissector_loaded();
