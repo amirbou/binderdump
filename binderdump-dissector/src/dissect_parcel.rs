@@ -69,7 +69,13 @@ pub fn dissect_transaction_data(
     let (Some(method), Some(start)) = (r.method, r.params_start) else {
         return Ok(());
     };
-    let nodes = decode_aidl_params(method, &txn.data, start);
+    let nodes = decode_aidl_params(
+        crate::aidl_resolve::registry(),
+        event.android_sdk(),
+        method,
+        &txn.data,
+        start,
+    );
     if nodes.is_empty() {
         return Ok(());
     }
@@ -93,13 +99,14 @@ pub fn dissect_transaction_data(
 
     let iface = r.interface.as_deref().unwrap_or("unknown");
     for node in &nodes {
-        render_node(
+        render_value(
             manager,
             params_tree,
             tvb,
             data_off,
             iface,
             &method.name,
+            &node.name,
             node,
         )?;
     }
@@ -107,37 +114,93 @@ pub fn dissect_transaction_data(
     Ok(())
 }
 
-fn render_node(
+// render one decoded node into the wireshark tree.
+// `leaf_name` is the field-path segment used for dynamic field registration;
+// for top-level params this equals node.name, for array elements this is the
+// parent array's name so all elements land on the same per-param field.
+fn render_value(
     manager: &HeaderFieldsManager<EventProtocol>,
     tree: *mut epan::proto_node,
     tvb: *mut epan::tvbuff,
     data_off: usize,
     iface: &str,
     method: &str,
+    leaf_name: &str,
     node: &DecodedNode,
 ) -> anyhow::Result<()> {
     let off: c_int = (data_off + node.start).try_into()?;
     let len: c_int = node.len.try_into()?;
 
-    // undecodable tail: no known type, rendered through the static raw field so
-    // it is filterable from tshark too ("transactions we couldn't fully
-    // decode"). decoded values get per-param fields below.
-    if let DecodedValue::Raw = node.value {
-        let h = handle(manager, "raw")?;
-        unsafe {
-            epan::proto_tree_add_item(tree, h, tvb, off, len, epan::ENC_NA);
+    match &node.value {
+        // undecodable tail: static raw field so it is filterable from tshark.
+        DecodedValue::Raw => {
+            let h = handle(manager, "raw")?;
+            unsafe {
+                epan::proto_tree_add_item(tree, h, tvb, off, len, epan::ENC_NA);
+            }
         }
-        return Ok(());
-    }
 
-    // each decoded value renders through its per-(interface, method, param)
-    // field. registration can only fail if the proto handle isn't available
-    // yet (never at dissection time), so skip the node rather than mis-render.
-    let fqn = fqn_handle(iface, method, node);
-    if fqn < 0 {
-        return Ok(());
+        // byte[]: render as a raw bytes blob using the static parcel.raw field.
+        DecodedValue::Bytes => {
+            let h = handle(manager, "raw")?;
+            unsafe {
+                epan::proto_tree_add_item(tree, h, tvb, off, len, epan::ENC_NA);
+            }
+        }
+
+        // array: open a subtree then recurse into each child. children are
+        // associated with the array param's field path (leaf_name), so
+        // repeated elements share the same registered field.
+        DecodedValue::Array {
+            len: elem_count,
+            null,
+        } => {
+            let title = if *null {
+                format!("{}: null", node.name)
+            } else {
+                let s = if *elem_count == 1 { "" } else { "s" };
+                format!("{}: {} item{}", node.name, elem_count, s)
+            };
+            let ett = manager
+                .get_handle("binderdump.ioctl_data.bwr.transaction.parcel")
+                .unwrap_or(-1);
+            // "<invalid>" is a literal with no interior NUL, so this unwrap can't fail.
+            let title_c =
+                CString::new(title).unwrap_or_else(|_| CString::new("<invalid>").unwrap());
+            let sub = unsafe {
+                epan::proto_tree_add_subtree(
+                    tree,
+                    tvb,
+                    off,
+                    len,
+                    ett,
+                    std::ptr::null_mut(),
+                    title_c.as_ptr(),
+                )
+            };
+            for child in &node.children {
+                render_value(manager, sub, tvb, data_off, iface, method, leaf_name, child)?;
+            }
+        }
+
+        // enum: per-param field with a val64_string so wireshark shows NAME (n).
+        DecodedValue::Enum { repr, variants } => {
+            let fqn = fqn_handle_enum(iface, method, leaf_name, variants);
+            if fqn >= 0 {
+                unsafe {
+                    epan::proto_tree_add_int64(tree, fqn, tvb, off, len, *repr);
+                }
+            }
+        }
+
+        // scalars: per-param field, typed add matching value_ftype.
+        _ => {
+            let fqn = fqn_handle(iface, method, leaf_name, node);
+            if fqn >= 0 {
+                add_typed(tree, fqn, tvb, off, len, &node.value);
+            }
+        }
     }
-    add_typed(tree, fqn, tvb, off, len, &node.value);
 
     Ok(())
 }
@@ -173,13 +236,16 @@ fn add_typed(
                 epan::proto_tree_add_string(tree, hf, tvb, off, len, c.as_ptr());
             }
         }
-        // Raw is rendered by render_node through the static field, never here.
-        DecodedValue::Raw => {}
+        // these variants are handled by render_value before add_typed is called.
+        DecodedValue::Raw
+        | DecodedValue::Bytes
+        | DecodedValue::Array { .. }
+        | DecodedValue::Enum { .. } => {}
     }
 }
 
 // ftype + display for the dynamic per-param field; matches the value variant so
-// add_typed renders into it correctly.
+// add_typed renders into it correctly. Enum/Array/Bytes use dedicated paths.
 fn value_ftype(
     value: &DecodedValue,
 ) -> (
@@ -194,7 +260,8 @@ fn value_ftype(
         DecodedValue::U64(_) => (ftenum::FT_UINT64, field_display_e::BASE_DEC),
         DecodedValue::F64(_) => (ftenum::FT_DOUBLE, field_display_e::BASE_NONE),
         DecodedValue::Str(_) => (ftenum::FT_STRING, field_display_e::BASE_NONE),
-        DecodedValue::Raw => (ftenum::FT_BYTES, field_display_e::BASE_NONE),
+        // Raw/Bytes/Array/Enum go through dedicated render paths, not this fn.
+        _ => (ftenum::FT_BYTES, field_display_e::BASE_NONE),
     }
 }
 
@@ -227,17 +294,15 @@ fn sanitize(s: &str) -> String {
         .collect()
 }
 
-// register (or fetch) the field for one param. abbrev is
-// binderdump...parcel.<iface>.<method>.<param>; the display name is the bare
-// param name. returns -1 if the proto handle isn't available yet.
-fn fqn_handle(iface: &str, method: &str, node: &DecodedNode) -> c_int {
-    // shorter, top-level path (not the deep struct path) so the filter is
-    // ergonomic: binderdump.parcel.<iface>.<method>.<param>.
+// register (or fetch) a plain scalar per-param field. abbrev is
+// binderdump.parcel.<iface>.<method>.<leaf>; display name is the bare leaf.
+// returns -1 if the proto handle isn't available yet.
+fn fqn_handle(iface: &str, method: &str, leaf: &str, node: &DecodedNode) -> c_int {
     let abbrev = format!(
         "binderdump.parcel.{}.{}.{}",
         sanitize(iface),
         sanitize(method),
-        sanitize(&node.name),
+        sanitize(leaf),
     );
 
     let mut map = match dyn_fields().lock() {
@@ -253,12 +318,9 @@ fn fqn_handle(iface: &str, method: &str, node: &DecodedNode) -> c_int {
     };
 
     let (ft, display) = value_ftype(&node.value);
-    // the name/abbrev strings and the hf_register_info must outlive the field,
-    // i.e. the process — leak them. bounded by the distinct params actually seen.
-    let (Ok(name_c), Ok(abbrev_c)) = (
-        CString::new(node.name.clone()),
-        CString::new(abbrev.clone()),
-    ) else {
+    // name/abbrev strings and hf_register_info must outlive the field (process
+    // lifetime) — leak them. bounded by the distinct params actually seen.
+    let (Ok(name_c), Ok(abbrev_c)) = (CString::new(leaf), CString::new(abbrev.clone())) else {
         return -1;
     };
     let name_ptr = Box::leak(name_c.into_boxed_c_str()).as_ptr();
@@ -273,6 +335,93 @@ fn fqn_handle(iface: &str, method: &str, node: &DecodedNode) -> c_int {
                 type_: ft,
                 display: display as c_int,
                 strings: std::ptr::null(),
+                bitmask: 0,
+                blurb: std::ptr::null(),
+                // HFILL defaults
+                id: -1,
+                parent: 0,
+                ref_type: binderdump_epan_sys::hf_ref_type_HF_REF_TYPE_NONE,
+                same_name_prev_id: -1,
+                same_name_next: std::ptr::null_mut(),
+            },
+        }));
+    unsafe {
+        binderdump_epan_sys::proto_register_field_array(proto, hf as *mut _, 1);
+    }
+    let h = *p_id;
+    map.insert(abbrev, h);
+    h
+}
+
+// register (or fetch) an enum per-param field. same abbrev scheme as
+// fqn_handle but FT_INT64 + a leaked val64_string so wireshark shows NAME (n).
+// variants is (repr_value, name). returns -1 if proto handle isn't ready.
+fn fqn_handle_enum(iface: &str, method: &str, leaf: &str, variants: &[(i64, String)]) -> c_int {
+    use binderdump_epan_sys::{field_display_e, ftenum};
+
+    let abbrev = format!(
+        "binderdump.parcel.{}.{}.{}",
+        sanitize(iface),
+        sanitize(method),
+        sanitize(leaf),
+    );
+
+    let mut map = match dyn_fields().lock() {
+        Ok(m) => m,
+        Err(_) => return -1,
+    };
+    if let Some(&h) = map.get(&abbrev) {
+        return h;
+    }
+    let proto = match crate::epan_plugin::proto_handle() {
+        Some(p) if p >= 0 => p,
+        _ => return -1,
+    };
+
+    // build a leaked val64_string array (NUL-sentinel terminated). name strings
+    // are also leaked; bounded by distinct (iface, method, param) triples.
+    let vs_ptr: *const std::ffi::c_void = if variants.is_empty() {
+        std::ptr::null()
+    } else {
+        let mut raw: Vec<binderdump_epan_sys::val64_string> =
+            Vec::with_capacity(variants.len() + 1);
+        for (repr, name) in variants {
+            // CString::new fails only on interior NUL which enum names won't have.
+            let s = CString::new(name.as_str()).unwrap_or_else(|_| CString::new("?").unwrap());
+            let strptr = Box::leak(s.into_boxed_c_str()).as_ptr();
+            raw.push(binderdump_epan_sys::val64_string {
+                value: *repr as u64,
+                strptr,
+            });
+        }
+        // sentinel
+        raw.push(binderdump_epan_sys::val64_string {
+            value: 0,
+            strptr: std::ptr::null_mut(),
+        });
+        let boxed: *mut [binderdump_epan_sys::val64_string] = Box::into_raw(raw.into_boxed_slice());
+        boxed as *const std::ffi::c_void
+    };
+
+    let display = field_display_e::BASE_DEC as c_int
+        | binderdump_epan_sys::BASE_VAL64_STRING as c_int
+        | binderdump_epan_sys::BASE_SPECIAL_VALS as c_int;
+
+    let (Ok(name_c), Ok(abbrev_c)) = (CString::new(leaf), CString::new(abbrev.clone())) else {
+        return -1;
+    };
+    let name_ptr = Box::leak(name_c.into_boxed_c_str()).as_ptr();
+    let abbrev_ptr = Box::leak(abbrev_c.into_boxed_c_str()).as_ptr();
+    let p_id: &'static mut c_int = Box::leak(Box::new(-1));
+    let hf: &'static mut binderdump_epan_sys::hf_register_info =
+        Box::leak(Box::new(binderdump_epan_sys::hf_register_info {
+            p_id: p_id as *mut c_int,
+            hfinfo: binderdump_epan_sys::header_field_info {
+                name: name_ptr,
+                abbrev: abbrev_ptr,
+                type_: ftenum::FT_INT64,
+                display,
+                strings: vs_ptr,
                 bitmask: 0,
                 blurb: std::ptr::null(),
                 // HFILL defaults
