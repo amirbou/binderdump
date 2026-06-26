@@ -1179,6 +1179,45 @@ fn parcel_struct_renders_from_committed_corpus() {
     );
 }
 
+// Asserts the union render path against a dedicated fixture. union.pcapng captures
+// IAudioFlingerService.getInputBufferSize(..., in AudioChannelLayout channelMask)
+// calls (driven via `service call media.audio_flinger 24 ... i32 <tag> i32 <val>`);
+// the dissector reads the union tag, decodes the selected member, and renders it as a
+// subtree. Kept separate from the other fixtures so their values stay stable.
+// Regenerate with binderdump-dissector/tests/regen_union_fixture.sh.
+#[test]
+fn parcel_union_renders_from_committed_corpus() {
+    ensure_dissector_loaded();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/union.pcapng");
+    let path = fixture.to_str().unwrap();
+    let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../binderdump-aidl/data/aosp");
+    let corpus_pref = format!(
+        "binderdump.aosp_corpus_dir:{}",
+        corpus_dir.to_str().unwrap()
+    );
+    let pfx = "binderdump.ioctl_data.bwr.transaction";
+
+    let out = tshark(&[
+        "-r",
+        path,
+        "-o",
+        &corpus_pref,
+        "-Y",
+        &format!("{pfx}.interface==\"android.media.IAudioFlingerService\""),
+        "-V",
+    ]);
+    // the union subtree title + its active member (layoutMask = tag 3) prove the
+    // tag read + member decode.
+    assert!(
+        out.contains("channelMask: android.media.audio.common.AudioChannelLayout"),
+        "expected AudioChannelLayout union subtree; got tree without it"
+    );
+    assert!(
+        out.contains("channelMask.layoutMask: 12"),
+        "expected decoded union member 'channelMask.layoutMask: 12'; got tree without it"
+    );
+}
+
 #[test]
 fn follow_via_stream_id_zero() {
     ensure_dissector_loaded();
