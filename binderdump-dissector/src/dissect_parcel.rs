@@ -183,6 +183,51 @@ fn render_value(
             }
         }
 
+        // parcelable: a subtree titled "<name>: <fqn>" (or "<name>: null"); each
+        // field is its own dotted dynamic field (leaf.<field>). null -> no children.
+        // (mirrors the existing Array arm's subtree + null-title shape.)
+        DecodedValue::Parcelable { fqn, null } => {
+            let title = if *null {
+                format!("{}: null", node.name)
+            } else {
+                format!("{}: {}", node.name, fqn)
+            };
+            let ett = manager
+                .get_handle("binderdump.ioctl_data.bwr.transaction.parcel")
+                .unwrap_or(-1);
+            // "<invalid>" is a literal with no interior NUL, so this unwrap can't fail.
+            let title_c =
+                CString::new(title).unwrap_or_else(|_| CString::new("<invalid>").unwrap());
+            let sub = unsafe {
+                epan::proto_tree_add_subtree(
+                    tree,
+                    tvb,
+                    off,
+                    len,
+                    ett,
+                    std::ptr::null_mut(),
+                    title_c.as_ptr(),
+                )
+            };
+            for child in &node.children {
+                let child_leaf = if child.name.is_empty() {
+                    leaf_name.to_string()
+                } else {
+                    format!("{}.{}", leaf_name, child.name)
+                };
+                render_value(
+                    manager,
+                    sub,
+                    tvb,
+                    data_off,
+                    iface,
+                    method,
+                    &child_leaf,
+                    child,
+                )?;
+            }
+        }
+
         // enum: per-param field with a val64_string so wireshark shows NAME (n).
         DecodedValue::Enum { repr, variants } => {
             let fqn = fqn_handle_enum(iface, method, leaf_name, variants);
@@ -240,7 +285,8 @@ fn add_typed(
         DecodedValue::Raw
         | DecodedValue::Bytes
         | DecodedValue::Array { .. }
-        | DecodedValue::Enum { .. } => {}
+        | DecodedValue::Enum { .. }
+        | DecodedValue::Parcelable { .. } => {}
     }
 }
 
