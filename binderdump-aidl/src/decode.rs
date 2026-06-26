@@ -52,6 +52,18 @@ impl<'a> ParcelCursor<'a> {
         Some(())
     }
 
+    pub fn buf_len(&self) -> usize {
+        self.buf.len()
+    }
+
+    pub fn seek(&mut self, pos: usize) -> Option<()> {
+        if pos > self.buf.len() {
+            return None;
+        }
+        self.pos = pos;
+        Some(())
+    }
+
     // String16: int32 char_count (-1 = null), then (char_count+1) char16_t
     // units (UTF-16 LE + u16 NUL), whole region padded to 4 bytes.
     // Outer None = overrun; inner None = null.
@@ -95,6 +107,10 @@ pub enum DecodedValue {
         null: bool,
     },
     Bytes, // byte[]; the bytes live at node.start/len
+    Parcelable {
+        fqn: String,
+        null: bool,
+    }, // children = decoded fields (+ optional raw remainder)
     Raw,
 }
 
@@ -194,21 +210,23 @@ fn decode_value(
             ))
         }
         TypeRef::UserDefined(fqn) => {
-            // non-enum / unknown UserDefined -> None -> Raw
-            let e = reg.enum_def(sdk, fqn)?;
-            let repr = read_backing(cur, e.backing)?;
-            let variants: Vec<(i64, String)> =
-                e.consts.iter().map(|(n, v)| (*v, n.clone())).collect();
-            Some(node(
-                DecodedValue::Enum { repr, variants },
-                &e.fqn,
-                start,
-                cur.pos - start,
-                vec![],
-            ))
+            if let Some(e) = reg.enum_def(sdk, fqn) {
+                let repr = read_backing(cur, e.backing)?;
+                let variants: Vec<(i64, String)> =
+                    e.consts.iter().map(|(n, v)| (*v, n.clone())).collect();
+                Some(node(
+                    DecodedValue::Enum { repr, variants },
+                    &e.fqn,
+                    start,
+                    cur.pos - start,
+                    vec![],
+                ))
+            } else {
+                decode_parcelable(reg, sdk, cur, fqn, start)
+            }
         }
         TypeRef::Array(el) | TypeRef::List(el) => decode_array(reg, sdk, cur, el, start),
-        TypeRef::Nullable(inner) => decode_value(reg, sdk, cur, inner),
+        TypeRef::Nullable(inner) => decode_nullable(reg, sdk, cur, inner, start),
         // Map and IBinder are not decodable here (2c / not a simple value).
         TypeRef::Map(_, _) | TypeRef::IBinder => None,
     }
@@ -277,6 +295,105 @@ fn decode_array(
     ))
 }
 
+// a @nullable parcelable is preceded by an int32 presence flag (0=null, 1=present);
+// String/array/List/Map encode null inline (no flag), so decode the inner directly.
+fn decode_nullable(
+    reg: &Registry,
+    sdk: u32,
+    cur: &mut ParcelCursor,
+    inner: &TypeRef,
+    start: usize,
+) -> Option<DecodedNode> {
+    if let TypeRef::UserDefined(fqn) = inner {
+        let is_structured_parcelable = reg.enum_def(sdk, fqn).is_none()
+            && reg
+                .parcelable_def(sdk, fqn)
+                .is_some_and(|p| !p.fields.is_empty());
+        if is_structured_parcelable {
+            let present = cur.read_i32()?;
+            if present == 0 {
+                return Some(node(
+                    DecodedValue::Parcelable {
+                        fqn: fqn.clone(),
+                        null: true,
+                    },
+                    fqn,
+                    start,
+                    cur.pos - start,
+                    vec![],
+                ));
+            }
+            // block starts after the flag
+            return decode_parcelable(reg, sdk, cur, fqn, cur.pos);
+        }
+    }
+    decode_value(reg, sdk, cur, inner) // inline-null types
+}
+
+// decode a structured AIDL parcelable: int32 size (incl. itself), fields in
+// declaration order guarded by the boundary, then resync to start+size.
+fn decode_parcelable(
+    reg: &Registry,
+    sdk: u32,
+    cur: &mut ParcelCursor,
+    fqn: &str,
+    start: usize,
+) -> Option<DecodedNode> {
+    let p = reg.parcelable_def(sdk, fqn)?;
+    if p.fields.is_empty() {
+        return None; // unstructured / forward-declared: no size header on the wire
+    }
+    let raw_size = cur.read_i32()?;
+    if raw_size < 4 {
+        return None;
+    }
+    let size = raw_size as usize;
+    let end = start.checked_add(size)?;
+    if end > cur.buf_len() {
+        return None;
+    }
+    // clone fields + fqn to release the reg borrow before the &mut cur loop
+    let fields = p.fields.clone();
+    let pfqn = p.fqn.clone();
+    let mut children = Vec::new();
+    for field in &fields {
+        if cur.pos - start >= size {
+            break; // boundary: trailing fields absent (older sender)
+        }
+        match decode_value(reg, sdk, cur, &field.ty) {
+            Some(mut n) => {
+                n.name = field.name.clone();
+                children.push(n);
+            }
+            None => {
+                // undecodable field (map/union/etc) — width unknown; surface the
+                // rest of the block as raw and stop this block's fields.
+                if cur.pos < end {
+                    children.push(node(
+                        DecodedValue::Bytes,
+                        "raw",
+                        cur.pos,
+                        end - cur.pos,
+                        vec![],
+                    ));
+                }
+                break;
+            }
+        }
+    }
+    cur.seek(end)?; // resync to the block boundary regardless
+    Some(node(
+        DecodedValue::Parcelable {
+            fqn: pfqn,
+            null: false,
+        },
+        fqn,
+        start,
+        size,
+        children,
+    ))
+}
+
 fn decode_prim(cur: &mut ParcelCursor, prim: Prim) -> Option<(DecodedValue, String)> {
     let (v, label) = match prim {
         Prim::Bool => (DecodedValue::Bool(cur.read_bool()?), "boolean"),
@@ -300,6 +417,233 @@ mod tests {
     use crate::model::{Direction, EnumDef, Method, OverlayLayer, Parameter, Prim, TypeRef};
     use crate::registry::Registry;
     use std::collections::HashMap;
+
+    fn reg_with_parcelable(fqn: &str, fields: Vec<(&str, TypeRef)>) -> Registry {
+        use crate::model::{Field, Parcelable};
+        let mut o = OverlayLayer {
+            source_path: "t".into(),
+            interfaces: Default::default(),
+            enums: Default::default(),
+            parcelables: Default::default(),
+        };
+        o.parcelables.insert(
+            fqn.into(),
+            Parcelable {
+                fqn: fqn.into(),
+                fields: fields
+                    .into_iter()
+                    .map(|(n, ty)| Field {
+                        name: n.to_string(),
+                        ty,
+                    })
+                    .collect(),
+            },
+        );
+        Registry::from_parts(vec![o], None, HashMap::new())
+    }
+
+    // a structured parcelable block: int32 size (incl itself) + body bytes.
+    fn parcelable_block(body: &[u8]) -> Vec<u8> {
+        let size = (body.len() + 4) as i32;
+        let mut v = size.to_le_bytes().to_vec();
+        v.extend_from_slice(body);
+        v
+    }
+
+    #[test]
+    fn decodes_structured_parcelable_fields() {
+        let reg = reg_with_parcelable(
+            "a.P",
+            vec![
+                ("id", TypeRef::Primitive(Prim::I32)),
+                ("name", TypeRef::String),
+            ],
+        );
+        let m = method(vec![in_param("p", TypeRef::UserDefined("a.P".into()))]);
+        let mut body = Vec::new();
+        body.extend_from_slice(&7i32.to_le_bytes());
+        body.extend_from_slice(&2i32.to_le_bytes());
+        body.extend_from_slice(&(b'h' as u16).to_le_bytes());
+        body.extend_from_slice(&(b'i' as u16).to_le_bytes());
+        body.extend_from_slice(&[0, 0, 0, 0]); // NUL + pad
+        let buf = parcelable_block(&body);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert!(
+            matches!(&nodes[0].value, DecodedValue::Parcelable { fqn, null: false } if fqn == "a.P")
+        );
+        assert_eq!(nodes[0].children.len(), 2);
+        assert_eq!(nodes[0].children[0].name, "id");
+        assert!(matches!(nodes[0].children[0].value, DecodedValue::I64(7)));
+        assert!(matches!(&nodes[0].children[1].value, DecodedValue::Str(Some(s)) if s == "hi"));
+    }
+
+    #[test]
+    fn parcelable_resyncs_and_next_param_decodes() {
+        let reg = reg_with_parcelable("a.P", vec![("id", TypeRef::Primitive(Prim::I32))]);
+        let m = method(vec![
+            in_param("p", TypeRef::UserDefined("a.P".into())),
+            in_param("after", TypeRef::Primitive(Prim::I32)),
+        ]);
+        let mut body = Vec::new();
+        body.extend_from_slice(&5i32.to_le_bytes());
+        body.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]); // extra trailing
+        let mut buf = parcelable_block(&body);
+        buf.extend_from_slice(&9i32.to_le_bytes());
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert!(matches!(nodes[0].children[0].value, DecodedValue::I64(5)));
+        assert!(matches!(nodes[1].value, DecodedValue::I64(9)));
+    }
+
+    #[test]
+    fn parcelable_short_block_omits_trailing_fields() {
+        let reg = reg_with_parcelable(
+            "a.P",
+            vec![
+                ("id", TypeRef::Primitive(Prim::I32)),
+                ("extra", TypeRef::Primitive(Prim::I32)),
+            ],
+        );
+        let m = method(vec![in_param("p", TypeRef::UserDefined("a.P".into()))]);
+        let buf = parcelable_block(&5i32.to_le_bytes()); // size=8, only id
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert_eq!(nodes[0].children.len(), 1);
+        assert!(matches!(nodes[0].children[0].value, DecodedValue::I64(5)));
+    }
+
+    #[test]
+    fn parcelable_undecodable_field_yields_remainder() {
+        let reg = reg_with_parcelable(
+            "a.P",
+            vec![
+                ("id", TypeRef::Primitive(Prim::I32)),
+                (
+                    "m",
+                    TypeRef::Map(Box::new(TypeRef::String), Box::new(TypeRef::String)),
+                ),
+            ],
+        );
+        let m = method(vec![
+            in_param("p", TypeRef::UserDefined("a.P".into())),
+            in_param("after", TypeRef::Primitive(Prim::I32)),
+        ]);
+        let mut body = Vec::new();
+        body.extend_from_slice(&3i32.to_le_bytes());
+        body.extend_from_slice(&[1, 2, 3, 4]);
+        let mut buf = parcelable_block(&body);
+        buf.extend_from_slice(&9i32.to_le_bytes());
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert!(matches!(nodes[0].children[0].value, DecodedValue::I64(3)));
+        assert!(matches!(
+            nodes[0].children.last().unwrap().value,
+            DecodedValue::Bytes
+        ));
+        assert!(matches!(nodes[1].value, DecodedValue::I64(9)));
+    }
+
+    #[test]
+    fn zero_field_parcelable_is_undecodable() {
+        let reg = reg_with_parcelable("a.Empty", vec![]);
+        let m = method(vec![in_param("p", TypeRef::UserDefined("a.Empty".into()))]);
+        let buf = [0u8; 8];
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert!(matches!(nodes[0].value, DecodedValue::Raw));
+    }
+
+    #[test]
+    fn nested_parcelable_field() {
+        use crate::model::{Field, Parcelable};
+        let mut o = OverlayLayer {
+            source_path: "t".into(),
+            interfaces: Default::default(),
+            enums: Default::default(),
+            parcelables: Default::default(),
+        };
+        o.parcelables.insert(
+            "a.Inner".into(),
+            Parcelable {
+                fqn: "a.Inner".into(),
+                fields: vec![Field {
+                    name: "v".into(),
+                    ty: TypeRef::Primitive(Prim::I32),
+                }],
+            },
+        );
+        o.parcelables.insert(
+            "a.Outer".into(),
+            Parcelable {
+                fqn: "a.Outer".into(),
+                fields: vec![Field {
+                    name: "inner".into(),
+                    ty: TypeRef::UserDefined("a.Inner".into()),
+                }],
+            },
+        );
+        let reg = Registry::from_parts(vec![o], None, HashMap::new());
+        let m = method(vec![in_param("p", TypeRef::UserDefined("a.Outer".into()))]);
+        let inner = parcelable_block(&42i32.to_le_bytes());
+        let buf = parcelable_block(&inner);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let inner_node = &nodes[0].children[0];
+        assert_eq!(inner_node.name, "inner");
+        assert!(
+            matches!(&inner_node.value, DecodedValue::Parcelable { fqn, .. } if fqn == "a.Inner")
+        );
+        assert!(matches!(
+            inner_node.children[0].value,
+            DecodedValue::I64(42)
+        ));
+    }
+
+    #[test]
+    fn nullable_parcelable_present_and_null() {
+        let reg = reg_with_parcelable("a.P", vec![("id", TypeRef::Primitive(Prim::I32))]);
+        let nty = TypeRef::Nullable(Box::new(TypeRef::UserDefined("a.P".into())));
+        // present: flag=1 then the block; a following int must still decode.
+        let m = method(vec![
+            in_param("p", nty.clone()),
+            in_param("after", TypeRef::Primitive(Prim::I32)),
+        ]);
+        let mut buf = 1i32.to_le_bytes().to_vec(); // presence flag = 1
+        buf.extend_from_slice(&parcelable_block(&7i32.to_le_bytes()));
+        buf.extend_from_slice(&9i32.to_le_bytes());
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert!(matches!(
+            &nodes[0].value,
+            DecodedValue::Parcelable { null: false, .. }
+        ));
+        assert!(matches!(nodes[0].children[0].value, DecodedValue::I64(7)));
+        assert!(matches!(nodes[1].value, DecodedValue::I64(9)));
+
+        // null: flag=0, no block; the following int decodes right after the flag.
+        let m2 = method(vec![
+            in_param("p", nty),
+            in_param("after", TypeRef::Primitive(Prim::I32)),
+        ]);
+        let mut buf2 = 0i32.to_le_bytes().to_vec(); // presence flag = 0
+        buf2.extend_from_slice(&9i32.to_le_bytes());
+        let nodes2 = decode_aidl_params(&reg, 34, &m2, &buf2, 0);
+        assert!(matches!(
+            &nodes2[0].value,
+            DecodedValue::Parcelable { null: true, .. }
+        ));
+        assert!(nodes2[0].children.is_empty());
+        assert!(matches!(nodes2[1].value, DecodedValue::I64(9)));
+    }
+
+    #[test]
+    fn nullable_string_decodes_inline_no_flag() {
+        let reg = Registry::empty();
+        let m = method(vec![in_param(
+            "s",
+            TypeRef::Nullable(Box::new(TypeRef::String)),
+        )]);
+        let mut buf = 2i32.to_le_bytes().to_vec(); // char_count 2 (no separate flag)
+        buf.extend_from_slice(&(b'h' as u16).to_le_bytes());
+        buf.extend_from_slice(&(b'i' as u16).to_le_bytes());
+        buf.extend_from_slice(&[0, 0, 0, 0]);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "hi"));
+    }
 
     fn reg_with_enum(fqn: &str, backing: Prim, consts: Vec<(&str, i64)>) -> Registry {
         let mut o = OverlayLayer {
