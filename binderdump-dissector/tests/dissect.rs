@@ -1139,6 +1139,46 @@ fn parcel_array_renders_from_committed_corpus() {
     );
 }
 
+// Asserts the structured-parcelable render path against a dedicated fixture.
+// parcelable.pcapng captures IDnsResolver.setResolverConfiguration(ResolverParamsParcel)
+// transactions (driven via `service call dnsresolver 3 ...`); the dissector reads the
+// parcelable size header, decodes the int fields in declaration order, and renders a
+// subtree. Kept separate from sample.pcapng so the other tests' hardcoded values stay
+// stable. Regenerate with binderdump-dissector/tests/regen_parcelable_fixture.sh.
+#[test]
+fn parcel_struct_renders_from_committed_corpus() {
+    ensure_dissector_loaded();
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/parcelable.pcapng");
+    let path = fixture.to_str().unwrap();
+    let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../binderdump-aidl/data/aosp");
+    let corpus_pref = format!(
+        "binderdump.aosp_corpus_dir:{}",
+        corpus_dir.to_str().unwrap()
+    );
+    let pfx = "binderdump.ioctl_data.bwr.transaction";
+
+    let out = tshark(&[
+        "-r",
+        path,
+        "-o",
+        &corpus_pref,
+        "-Y",
+        &format!("{pfx}.interface==\"android.net.IDnsResolver\""),
+        "-V",
+    ]);
+    // the parcelable subtree title and a decoded scalar field (netId = 100, the
+    // first ResolverParamsParcel field) prove the size-header + field walk.
+    assert!(
+        out.contains("resolverParams: android.net.ResolverParamsParcel"),
+        "expected ResolverParamsParcel subtree; got tree without it"
+    );
+    assert!(
+        out.contains("resolverParams.netId: 100"),
+        "expected decoded 'resolverParams.netId: 100' field; got tree without it"
+    );
+}
+
 #[test]
 fn follow_via_stream_id_zero() {
     ensure_dissector_loaded();

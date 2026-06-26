@@ -41,7 +41,8 @@ pub enum TypeRef {
     Array(Box<TypeRef>),
     List(Box<TypeRef>),
     Map(Box<TypeRef>, Box<TypeRef>),
-    UserDefined(String), // fqn of enum/parcelable/interface, resolved later
+    UserDefined(String),    // fqn of enum/parcelable/interface, resolved later
+    Nullable(Box<TypeRef>), // `@nullable T`
 }
 
 impl TypeRef {
@@ -130,6 +131,7 @@ pub struct OverlayLayer {
     pub source_path: PathBuf,
     pub interfaces: std::collections::HashMap<String, Interface>,
     pub enums: std::collections::HashMap<String, EnumDef>,
+    pub parcelables: std::collections::HashMap<String, Parcelable>,
 }
 
 #[cfg(test)]

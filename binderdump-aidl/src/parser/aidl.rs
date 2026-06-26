@@ -68,25 +68,8 @@ pub fn parse_aidl(source: &str) -> Result<ParsedAidl, Vec<Simple<char>>> {
             }
             Some(parts.join("."))
         }
-        fn skip_annotations(&mut self) {
-            while matches!(self.peek(), Some(Token::AtSymbol)) {
-                self.pos += 1;
-                let _ = self.ident();
-                if self.eat_punct('(') {
-                    let mut depth = 1;
-                    while depth > 0 {
-                        match self.advance() {
-                            Some(Token::Punct('(')) => depth += 1,
-                            Some(Token::Punct(')')) => depth -= 1,
-                            None => break,
-                            _ => {}
-                        }
-                    }
-                }
-            }
-        }
         fn parse_type(&mut self) -> Option<TypeRef> {
-            self.skip_annotations();
+            let annot = eat_annotations(self);
             let base = match self.peek()? {
                 Token::Keyword(kw) => match *kw {
                     "boolean" => {
@@ -200,7 +183,11 @@ pub fn parse_aidl(source: &str) -> Result<ParsedAidl, Vec<Simple<char>>> {
                 }
                 t = TypeRef::Array(Box::new(t));
             }
-            Some(t)
+            if annot.nullable {
+                Some(TypeRef::Nullable(Box::new(t)))
+            } else {
+                Some(t)
+            }
         }
         // eat an integer literal, handling: 42, -1, 0x1F, (-1), (-1) /* -1 */
         fn eat_int_literal(&mut self) -> Option<i64> {
@@ -424,18 +411,28 @@ pub fn parse_aidl(source: &str) -> Result<ParsedAidl, Vec<Simple<char>>> {
         })
     }
 
-    // consume a run of annotations, returning the @Backing primitive if one was
-    // present (default I32). other annotations (with optional balanced (...)) are
-    // skipped. used before both top-level and nested type declarations.
-    fn eat_annotations_capturing_backing(cur: &mut Cursor<'_>) -> Prim {
-        let mut backing = Prim::I32;
+    struct Annots {
+        nullable: bool,
+        backing: Prim, // default I32; set by @Backing(type=...)
+    }
+
+    // consume a run of annotations, noting @nullable and @Backing; skip the rest
+    // (with optional balanced (...)).
+    fn eat_annotations(cur: &mut Cursor<'_>) -> Annots {
+        let mut a = Annots {
+            nullable: false,
+            backing: Prim::I32,
+        };
         while matches!(cur.peek(), Some(Token::AtSymbol)) {
             if let Some(p) = try_eat_backing(cur) {
-                backing = p;
+                a.backing = p;
                 continue;
             }
             cur.pos += 1; // eat @
-            let _ = cur.ident();
+            let name = cur.ident().unwrap_or_default();
+            if name == "nullable" {
+                a.nullable = true;
+            }
             if cur.eat_punct('(') {
                 let mut depth = 1;
                 while depth > 0 {
@@ -448,7 +445,7 @@ pub fn parse_aidl(source: &str) -> Result<ParsedAidl, Vec<Simple<char>>> {
                 }
             }
         }
-        backing
+        a
     }
 
     // parse an enum body: `Name { Const [= val]? , ... }` or `Name ;`
@@ -473,7 +470,7 @@ pub fn parse_aidl(source: &str) -> Result<ParsedAidl, Vec<Simple<char>>> {
         let mut next: i64 = 0;
         let mut resolvable = true;
         loop {
-            cur.skip_annotations();
+            eat_annotations(cur); // skip enum-constant annotations (e.g. @deprecated)
             if cur.eat_punct('}') {
                 break;
             }
@@ -570,7 +567,7 @@ pub fn parse_aidl(source: &str) -> Result<ParsedAidl, Vec<Simple<char>>> {
         // in parcelable `a.P` is `a.P.Kind`.
         let nested_pkg = fqn;
         loop {
-            let nested_backing = eat_annotations_capturing_backing(cur);
+            let annot = eat_annotations(cur);
             if cur.eat_punct('}') {
                 break;
             }
@@ -580,7 +577,7 @@ pub fn parse_aidl(source: &str) -> Result<ParsedAidl, Vec<Simple<char>>> {
             }
             // nested enum: parse and collect; pass captured @Backing if any
             if cur.eat_kw("enum") {
-                if let Some(nested) = parse_enum_body(cur, nested_pkg, nested_backing) {
+                if let Some(nested) = parse_enum_body(cur, nested_pkg, annot.backing) {
                     out_enums.push(nested);
                 }
                 continue;
@@ -592,13 +589,16 @@ pub fn parse_aidl(source: &str) -> Result<ParsedAidl, Vec<Simple<char>>> {
                 continue;
             }
             // a field: <type> <name> [= default]? ;
-            let ty = match cur.parse_type() {
+            let mut ty = match cur.parse_type() {
                 Some(t) => t,
                 None => {
                     cur.advance();
                     continue;
                 } // recover
             };
+            if annot.nullable && !matches!(ty, TypeRef::Nullable(_)) {
+                ty = TypeRef::Nullable(Box::new(ty));
+            }
             let fname = match cur.ident() {
                 Some(n) => n,
                 None => {
@@ -649,7 +649,8 @@ pub fn parse_aidl(source: &str) -> Result<ParsedAidl, Vec<Simple<char>>> {
     };
 
     while cur.peek().is_some() {
-        let backing = eat_annotations_capturing_backing(&mut cur);
+        let top_annot = eat_annotations(&mut cur);
+        let backing = top_annot.backing;
 
         if cur.eat_kw("interface") {
             let name = cur
@@ -663,7 +664,7 @@ pub fn parse_aidl(source: &str) -> Result<ParsedAidl, Vec<Simple<char>>> {
             }
             let mut methods: Vec<Method> = Vec::new();
             loop {
-                cur.skip_annotations();
+                eat_annotations(&mut cur); // skip method-level annotations (@oneway etc.); @nullable on return types is not captured (replies aren't decoded yet)
                 match cur.peek() {
                     Some(Token::Punct('}')) => {
                         cur.pos += 1;
@@ -739,7 +740,7 @@ pub fn parse_aidl(source: &str) -> Result<ParsedAidl, Vec<Simple<char>>> {
                         }
                         let mut params = Vec::new();
                         while !matches!(cur.peek(), Some(Token::Punct(')'))) {
-                            cur.skip_annotations();
+                            let pre = eat_annotations(&mut cur);
                             let direction = if cur.eat_kw("in") {
                                 Direction::In
                             } else if cur.eat_kw("out") {
@@ -749,9 +750,14 @@ pub fn parse_aidl(source: &str) -> Result<ParsedAidl, Vec<Simple<char>>> {
                             } else {
                                 Direction::In
                             };
-                            let ty = cur
+                            let mut ty = cur
                                 .parse_type()
                                 .ok_or_else(|| vec![Simple::custom(0..0, "expected param type")])?;
+                            // @nullable before direction (`@nullable in Foo x`) or after it
+                            // (consumed by parse_type) both wrap the type.
+                            if pre.nullable && !matches!(ty, TypeRef::Nullable(_)) {
+                                ty = TypeRef::Nullable(Box::new(ty));
+                            }
                             let pname = cur.ident().unwrap_or_default();
                             params.push(Parameter {
                                 name: pname,
@@ -1222,5 +1228,42 @@ mod tests {
         assert_eq!(p.interfaces[0].fqn, "a.IFoo");
         assert_eq!(p.enums.len(), 1);
         assert_eq!(p.parcelables.len(), 1);
+    }
+
+    #[test]
+    fn captures_nullable_param_after_direction() {
+        let src = "package a; interface I { void f(in @nullable Foo x); }";
+        let p = parse_aidl(src).unwrap();
+        let ty = &p.interfaces[0].methods[0].params[0].ty;
+        assert!(
+            matches!(ty, TypeRef::Nullable(inner) if matches!(**inner, TypeRef::UserDefined(_)))
+        );
+    }
+
+    #[test]
+    fn captures_nullable_param_before_direction() {
+        let src = "package a; interface I { void f(@nullable in Foo x); }";
+        let p = parse_aidl(src).unwrap();
+        let ty = &p.interfaces[0].methods[0].params[0].ty;
+        assert!(matches!(ty, TypeRef::Nullable(_)));
+    }
+
+    #[test]
+    fn captures_nullable_field() {
+        let src = "package a; parcelable P { @nullable Foo f; int g; }";
+        let p = parse_aidl(src).unwrap();
+        let pc = p.parcelables.iter().find(|p| p.fqn == "a.P").unwrap();
+        assert!(matches!(pc.fields[0].ty, TypeRef::Nullable(_)));
+        assert!(matches!(pc.fields[1].ty, TypeRef::Primitive(Prim::I32))); // non-null unaffected
+    }
+
+    #[test]
+    fn non_nullable_param_unwrapped() {
+        let src = "package a; interface I { void f(in Foo x); }";
+        let p = parse_aidl(src).unwrap();
+        assert!(matches!(
+            p.interfaces[0].methods[0].params[0].ty,
+            TypeRef::UserDefined(_)
+        ));
     }
 }
