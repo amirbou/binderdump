@@ -187,45 +187,17 @@ fn render_value(
         // field is its own dotted dynamic field (leaf.<field>). null -> no children.
         // (mirrors the existing Array arm's subtree + null-title shape.)
         DecodedValue::Parcelable { fqn, null } => {
-            let title = if *null {
-                format!("{}: null", node.name)
-            } else {
-                format!("{}: {}", node.name, fqn)
-            };
-            let ett = manager
-                .get_handle("binderdump.ioctl_data.bwr.transaction.parcel")
-                .unwrap_or(-1);
-            // "<invalid>" is a literal with no interior NUL, so this unwrap can't fail.
-            let title_c =
-                CString::new(title).unwrap_or_else(|_| CString::new("<invalid>").unwrap());
-            let sub = unsafe {
-                epan::proto_tree_add_subtree(
-                    tree,
-                    tvb,
-                    off,
-                    len,
-                    ett,
-                    std::ptr::null_mut(),
-                    title_c.as_ptr(),
-                )
-            };
-            for child in &node.children {
-                let child_leaf = if child.name.is_empty() {
-                    leaf_name.to_string()
-                } else {
-                    format!("{}.{}", leaf_name, child.name)
-                };
-                render_value(
-                    manager,
-                    sub,
-                    tvb,
-                    data_off,
-                    iface,
-                    method,
-                    &child_leaf,
-                    child,
-                )?;
-            }
+            render_struct_subtree(
+                manager, tree, tvb, data_off, iface, method, leaf_name, node, off, len, fqn, *null,
+            )?;
+        }
+
+        // union: identical render shape to parcelable — a titled subtree with
+        // a single dotted-leaf child for the active member (empty if null).
+        DecodedValue::Union { fqn, null } => {
+            render_struct_subtree(
+                manager, tree, tvb, data_off, iface, method, leaf_name, node, off, len, fqn, *null,
+            )?;
         }
 
         // enum: per-param field with a val64_string so wireshark shows NAME (n).
@@ -247,6 +219,63 @@ fn render_value(
         }
     }
 
+    Ok(())
+}
+
+// render a parcelable/union as a titled subtree whose children are dotted
+// per-(iface,method,field) dynamic fields. shared by the Parcelable and Union arms.
+fn render_struct_subtree(
+    manager: &HeaderFieldsManager<EventProtocol>,
+    tree: *mut epan::proto_node,
+    tvb: *mut epan::tvbuff,
+    data_off: usize,
+    iface: &str,
+    method: &str,
+    leaf_name: &str,
+    node: &DecodedNode,
+    off: c_int,
+    len: c_int,
+    fqn: &str,
+    null: bool,
+) -> anyhow::Result<()> {
+    let title = if null {
+        format!("{}: null", node.name)
+    } else {
+        format!("{}: {}", node.name, fqn)
+    };
+    let ett = manager
+        .get_handle("binderdump.ioctl_data.bwr.transaction.parcel")
+        .unwrap_or(-1);
+    // "<invalid>" is a literal with no interior NUL, so this unwrap can't fail.
+    let title_c = CString::new(title).unwrap_or_else(|_| CString::new("<invalid>").unwrap());
+    let sub = unsafe {
+        epan::proto_tree_add_subtree(
+            tree,
+            tvb,
+            off,
+            len,
+            ett,
+            std::ptr::null_mut(),
+            title_c.as_ptr(),
+        )
+    };
+    for child in &node.children {
+        let child_leaf = if child.name.is_empty() {
+            leaf_name.to_string()
+        } else {
+            format!("{}.{}", leaf_name, child.name)
+        };
+        render_value(
+            manager,
+            sub,
+            tvb,
+            data_off,
+            iface,
+            method,
+            &child_leaf,
+            child,
+        )?;
+    }
     Ok(())
 }
 
@@ -286,7 +315,8 @@ fn add_typed(
         | DecodedValue::Bytes
         | DecodedValue::Array { .. }
         | DecodedValue::Enum { .. }
-        | DecodedValue::Parcelable { .. } => {}
+        | DecodedValue::Parcelable { .. }
+        | DecodedValue::Union { .. } => {}
     }
 }
 

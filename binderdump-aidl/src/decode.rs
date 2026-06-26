@@ -111,6 +111,10 @@ pub enum DecodedValue {
         fqn: String,
         null: bool,
     }, // children = decoded fields (+ optional raw remainder)
+    Union {
+        fqn: String,
+        null: bool,
+    }, // single child = active member (none if null)
     Raw,
 }
 
@@ -221,8 +225,10 @@ fn decode_value(
                     cur.pos - start,
                     vec![],
                 ))
-            } else {
+            } else if reg.parcelable_def(sdk, fqn).is_some() {
                 decode_parcelable(reg, sdk, cur, fqn, start)
+            } else {
+                decode_union(reg, sdk, cur, fqn, start)
             }
         }
         TypeRef::Array(el) | TypeRef::List(el) => decode_array(reg, sdk, cur, el, start),
@@ -305,29 +311,71 @@ fn decode_nullable(
     start: usize,
 ) -> Option<DecodedNode> {
     if let TypeRef::UserDefined(fqn) = inner {
-        let is_structured_parcelable = reg.enum_def(sdk, fqn).is_none()
+        let is_struct_parcelable = reg.enum_def(sdk, fqn).is_none()
             && reg
                 .parcelable_def(sdk, fqn)
                 .is_some_and(|p| !p.fields.is_empty());
-        if is_structured_parcelable {
+        let is_union = !is_struct_parcelable
+            && reg
+                .union_def(sdk, fqn)
+                .is_some_and(|u| !u.fields.is_empty());
+        if is_struct_parcelable || is_union {
             let present = cur.read_i32()?;
             if present == 0 {
-                return Some(node(
+                let v = if is_union {
+                    DecodedValue::Union {
+                        fqn: fqn.clone(),
+                        null: true,
+                    }
+                } else {
                     DecodedValue::Parcelable {
                         fqn: fqn.clone(),
                         null: true,
-                    },
-                    fqn,
-                    start,
-                    cur.pos - start,
-                    vec![],
-                ));
+                    }
+                };
+                return Some(node(v, fqn, start, cur.pos - start, vec![]));
             }
-            // block starts after the flag
-            return decode_parcelable(reg, sdk, cur, fqn, cur.pos);
+            return if is_union {
+                decode_union(reg, sdk, cur, fqn, cur.pos)
+            } else {
+                decode_parcelable(reg, sdk, cur, fqn, cur.pos)
+            };
         }
     }
     decode_value(reg, sdk, cur, inner) // inline-null types
+}
+
+// union: int32 tag (0-based field index) then the selected member. no size header,
+// so an out-of-range tag or an undecodable member is undecodable here — the caller
+// stops (top level) or resyncs (a parcelable field, via its own size boundary).
+fn decode_union(
+    reg: &Registry,
+    sdk: u32,
+    cur: &mut ParcelCursor,
+    fqn: &str,
+    start: usize,
+) -> Option<DecodedNode> {
+    let u = reg.union_def(sdk, fqn)?;
+    if u.fields.is_empty() {
+        return None;
+    }
+    let fields = u.fields.clone(); // release the reg borrow before &mut cur
+    let ufqn = u.fqn.clone();
+    let tag = cur.read_i32()?;
+    let idx = usize::try_from(tag).ok()?;
+    let field = fields.get(idx)?; // out-of-range tag -> None
+    let mut child = decode_value(reg, sdk, cur, &field.ty)?; // member undecodable -> None
+    child.name = field.name.clone();
+    Some(node(
+        DecodedValue::Union {
+            fqn: ufqn,
+            null: false,
+        },
+        fqn,
+        start,
+        cur.pos - start,
+        vec![child],
+    ))
 }
 
 // decode a structured AIDL parcelable: int32 size (incl. itself), fields in
@@ -425,6 +473,7 @@ mod tests {
             interfaces: Default::default(),
             enums: Default::default(),
             parcelables: Default::default(),
+            unions: Default::default(),
         };
         o.parcelables.insert(
             fqn.into(),
@@ -557,6 +606,7 @@ mod tests {
             interfaces: Default::default(),
             enums: Default::default(),
             parcelables: Default::default(),
+            unions: Default::default(),
         };
         o.parcelables.insert(
             "a.Inner".into(),
@@ -651,6 +701,7 @@ mod tests {
             interfaces: Default::default(),
             enums: Default::default(),
             parcelables: Default::default(),
+            unions: Default::default(),
         };
         o.enums.insert(
             fqn.into(),
@@ -935,6 +986,207 @@ mod tests {
         let buf = [0u8; 2];
         let mut c = ParcelCursor::new(&buf, 0);
         assert_eq!(c.read_i32(), None);
+    }
+
+    fn reg_with_union(fqn: &str, fields: Vec<(&str, TypeRef)>) -> Registry {
+        use crate::model::{Field, Union};
+        let mut o = OverlayLayer {
+            source_path: "t".into(),
+            interfaces: Default::default(),
+            enums: Default::default(),
+            parcelables: Default::default(),
+            unions: Default::default(),
+        };
+        o.unions.insert(
+            fqn.into(),
+            Union {
+                fqn: fqn.into(),
+                fields: fields
+                    .into_iter()
+                    .map(|(n, ty)| Field {
+                        name: n.to_string(),
+                        ty,
+                    })
+                    .collect(),
+            },
+        );
+        Registry::from_parts(vec![o], None, HashMap::new())
+    }
+
+    #[test]
+    fn decodes_union_int_member() {
+        let reg = reg_with_union(
+            "a.U",
+            vec![("n", TypeRef::Primitive(Prim::I32)), ("s", TypeRef::String)],
+        );
+        let m = method(vec![in_param("u", TypeRef::UserDefined("a.U".into()))]);
+        let mut buf = 0i32.to_le_bytes().to_vec(); // tag 0 -> n
+        buf.extend_from_slice(&42i32.to_le_bytes());
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert!(
+            matches!(&nodes[0].value, DecodedValue::Union { fqn, null: false } if fqn == "a.U")
+        );
+        assert_eq!(nodes[0].children.len(), 1);
+        assert_eq!(nodes[0].children[0].name, "n");
+        assert!(matches!(nodes[0].children[0].value, DecodedValue::I64(42)));
+    }
+
+    #[test]
+    fn decodes_union_string_member() {
+        let reg = reg_with_union(
+            "a.U",
+            vec![("n", TypeRef::Primitive(Prim::I32)), ("s", TypeRef::String)],
+        );
+        let m = method(vec![in_param("u", TypeRef::UserDefined("a.U".into()))]);
+        let mut buf = 1i32.to_le_bytes().to_vec(); // tag 1 -> s
+        buf.extend_from_slice(&2i32.to_le_bytes()); // "hi"
+        buf.extend_from_slice(&(b'h' as u16).to_le_bytes());
+        buf.extend_from_slice(&(b'i' as u16).to_le_bytes());
+        buf.extend_from_slice(&[0, 0, 0, 0]);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert_eq!(nodes[0].children[0].name, "s");
+        assert!(matches!(&nodes[0].children[0].value, DecodedValue::Str(Some(s)) if s == "hi"));
+    }
+
+    #[test]
+    fn union_out_of_range_tag_is_raw() {
+        let reg = reg_with_union("a.U", vec![("n", TypeRef::Primitive(Prim::I32))]);
+        let m = method(vec![in_param("u", TypeRef::UserDefined("a.U".into()))]);
+        let buf = 5i32.to_le_bytes().to_vec(); // tag 5, only field 0 exists
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert!(matches!(nodes[0].value, DecodedValue::Raw));
+    }
+
+    #[test]
+    fn nullable_union_present_and_null() {
+        let reg = reg_with_union("a.U", vec![("n", TypeRef::Primitive(Prim::I32))]);
+        let nty = TypeRef::Nullable(Box::new(TypeRef::UserDefined("a.U".into())));
+        // present: flag=1, tag 0, value
+        let m = method(vec![
+            in_param("u", nty.clone()),
+            in_param("after", TypeRef::Primitive(Prim::I32)),
+        ]);
+        let mut buf = 1i32.to_le_bytes().to_vec(); // present
+        buf.extend_from_slice(&0i32.to_le_bytes()); // tag 0
+        buf.extend_from_slice(&7i32.to_le_bytes()); // n=7
+        buf.extend_from_slice(&9i32.to_le_bytes()); // after=9
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert!(matches!(
+            &nodes[0].value,
+            DecodedValue::Union { null: false, .. }
+        ));
+        assert!(matches!(nodes[0].children[0].value, DecodedValue::I64(7)));
+        assert!(matches!(nodes[1].value, DecodedValue::I64(9)));
+        // null: flag=0, following int decodes right after the flag
+        let m2 = method(vec![
+            in_param("u", nty),
+            in_param("after", TypeRef::Primitive(Prim::I32)),
+        ]);
+        let mut buf2 = 0i32.to_le_bytes().to_vec(); // null
+        buf2.extend_from_slice(&9i32.to_le_bytes());
+        let nodes2 = decode_aidl_params(&reg, 34, &m2, &buf2, 0);
+        assert!(matches!(
+            &nodes2[0].value,
+            DecodedValue::Union { null: true, .. }
+        ));
+        assert!(nodes2[0].children.is_empty());
+        assert!(matches!(nodes2[1].value, DecodedValue::I64(9)));
+    }
+
+    #[test]
+    fn union_field_in_parcelable_resyncs_on_bad_tag() {
+        // a union field with an out-of-range tag -> parent parcelable emits raw remainder
+        // + resyncs, so a following param still decodes.
+        use crate::model::{Field, Parcelable, Union};
+        let mut o = OverlayLayer {
+            source_path: "t".into(),
+            interfaces: Default::default(),
+            enums: Default::default(),
+            parcelables: Default::default(),
+            unions: Default::default(),
+        };
+        o.unions.insert(
+            "a.U".into(),
+            Union {
+                fqn: "a.U".into(),
+                fields: vec![Field {
+                    name: "n".into(),
+                    ty: TypeRef::Primitive(Prim::I32),
+                }],
+            },
+        );
+        o.parcelables.insert(
+            "a.P".into(),
+            Parcelable {
+                fqn: "a.P".into(),
+                fields: vec![Field {
+                    name: "u".into(),
+                    ty: TypeRef::UserDefined("a.U".into()),
+                }],
+            },
+        );
+        let reg = Registry::from_parts(vec![o], None, HashMap::new());
+        let m = method(vec![
+            in_param("p", TypeRef::UserDefined("a.P".into())),
+            in_param("after", TypeRef::Primitive(Prim::I32)),
+        ]);
+        // P block: size, then union field = bad tag 9 + 4 junk bytes
+        let mut body = 9i32.to_le_bytes().to_vec(); // union tag 9 (out of range)
+        body.extend_from_slice(&[1, 2, 3, 4]);
+        let size = (body.len() + 4) as i32;
+        let mut buf = size.to_le_bytes().to_vec();
+        buf.extend_from_slice(&body);
+        buf.extend_from_slice(&9i32.to_le_bytes()); // after=9
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert!(matches!(&nodes[0].value, DecodedValue::Parcelable { .. }));
+        assert!(matches!(
+            nodes[0].children.last().unwrap().value,
+            DecodedValue::Bytes
+        )); // raw remainder
+        assert!(matches!(nodes[1].value, DecodedValue::I64(9)));
+    }
+
+    #[test]
+    fn list_of_parcelable_decodes() {
+        // verifies array recursion already handles parcelable elements (2b side effect).
+        use crate::model::{Field, Parcelable};
+        let mut o = OverlayLayer {
+            source_path: "t".into(),
+            interfaces: Default::default(),
+            enums: Default::default(),
+            parcelables: Default::default(),
+            unions: Default::default(),
+        };
+        o.parcelables.insert(
+            "a.P".into(),
+            Parcelable {
+                fqn: "a.P".into(),
+                fields: vec![Field {
+                    name: "v".into(),
+                    ty: TypeRef::Primitive(Prim::I32),
+                }],
+            },
+        );
+        let reg = Registry::from_parts(vec![o], None, HashMap::new());
+        let m = method(vec![in_param(
+            "ps",
+            TypeRef::Array(Box::new(TypeRef::UserDefined("a.P".into()))),
+        )]);
+        let mut buf = 2i32.to_le_bytes().to_vec(); // count 2
+        for v in [5i32, 6] {
+            let body = v.to_le_bytes();
+            buf.extend_from_slice(&((body.len() + 4) as i32).to_le_bytes()); // P size=8
+            buf.extend_from_slice(&body);
+        }
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert!(matches!(nodes[0].value, DecodedValue::Array { len: 2, .. }));
+        assert!(
+            matches!(&nodes[0].children[0].value, DecodedValue::Parcelable { fqn, .. } if fqn == "a.P")
+        );
+        assert!(matches!(
+            nodes[0].children[1].children[0].value,
+            DecodedValue::I64(6)
+        ));
     }
 
     // end-to-end: resolve a real AOSP interface+method whose param is an enum from

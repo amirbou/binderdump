@@ -132,6 +132,7 @@ pub struct OverlayLayer {
     pub interfaces: std::collections::HashMap<String, Interface>,
     pub enums: std::collections::HashMap<String, EnumDef>,
     pub parcelables: std::collections::HashMap<String, Parcelable>,
+    pub unions: std::collections::HashMap<String, Union>,
 }
 
 #[cfg(test)]
