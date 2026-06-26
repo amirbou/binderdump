@@ -41,7 +41,8 @@ pub enum TypeRef {
     Array(Box<TypeRef>),
     List(Box<TypeRef>),
     Map(Box<TypeRef>, Box<TypeRef>),
-    UserDefined(String), // fqn of enum/parcelable/interface, resolved later
+    UserDefined(String),    // fqn of enum/parcelable/interface, resolved later
+    Nullable(Box<TypeRef>), // `@nullable T`
 }
 
 impl TypeRef {

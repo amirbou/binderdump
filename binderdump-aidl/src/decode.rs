@@ -208,6 +208,7 @@ fn decode_value(
             ))
         }
         TypeRef::Array(el) | TypeRef::List(el) => decode_array(reg, sdk, cur, el, start),
+        TypeRef::Nullable(inner) => decode_value(reg, sdk, cur, inner),
         // Map and IBinder are not decodable here (2c / not a simple value).
         TypeRef::Map(_, _) | TypeRef::IBinder => None,
     }
