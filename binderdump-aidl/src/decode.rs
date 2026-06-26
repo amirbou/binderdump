@@ -305,6 +305,7 @@ mod tests {
             source_path: "t".into(),
             interfaces: Default::default(),
             enums: Default::default(),
+            parcelables: Default::default(),
         };
         o.enums.insert(
             fqn.into(),

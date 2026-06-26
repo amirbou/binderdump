@@ -130,6 +130,7 @@ pub struct OverlayLayer {
     pub source_path: PathBuf,
     pub interfaces: std::collections::HashMap<String, Interface>,
     pub enums: std::collections::HashMap<String, EnumDef>,
+    pub parcelables: std::collections::HashMap<String, Parcelable>,
 }
 
 #[cfg(test)]
