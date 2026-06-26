@@ -425,6 +425,7 @@ mod tests {
             interfaces: Default::default(),
             enums: Default::default(),
             parcelables: Default::default(),
+            unions: Default::default(),
         };
         o.parcelables.insert(
             fqn.into(),
@@ -557,6 +558,7 @@ mod tests {
             interfaces: Default::default(),
             enums: Default::default(),
             parcelables: Default::default(),
+            unions: Default::default(),
         };
         o.parcelables.insert(
             "a.Inner".into(),
@@ -651,6 +653,7 @@ mod tests {
             interfaces: Default::default(),
             enums: Default::default(),
             parcelables: Default::default(),
+            unions: Default::default(),
         };
         o.enums.insert(
             fqn.into(),

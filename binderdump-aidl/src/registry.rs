@@ -136,6 +136,7 @@ mod tests {
             interfaces: Default::default(),
             enums: Default::default(),
             parcelables: Default::default(),
+            unions: Default::default(),
         };
         overlay
             .interfaces
@@ -158,6 +159,7 @@ mod tests {
             interfaces: Default::default(),
             enums: Default::default(),
             parcelables: Default::default(),
+            unions: Default::default(),
         };
         // Even if an overlay declared a method at PING's value, special table wins.
         overlay
@@ -186,6 +188,7 @@ mod tests {
             interfaces: Default::default(),
             enums: Default::default(),
             parcelables: Default::default(),
+            unions: Default::default(),
         };
         overlay
             .interfaces
@@ -579,6 +582,7 @@ mod tests {
             interfaces: Default::default(),
             enums: Default::default(),
             parcelables: Default::default(),
+            unions: Default::default(),
         };
         overlay.parcelables.insert(
             "a.b.P".into(),
@@ -597,6 +601,32 @@ mod tests {
     }
 
     #[test]
+    fn union_def_loads_from_overlay() {
+        use crate::model::{Field, Prim, TypeRef, Union};
+        let mut overlay = OverlayLayer {
+            source_path: "x".into(),
+            interfaces: Default::default(),
+            enums: Default::default(),
+            parcelables: Default::default(),
+            unions: Default::default(),
+        };
+        overlay.unions.insert(
+            "a.b.U".into(),
+            Union {
+                fqn: "a.b.U".into(),
+                fields: vec![Field {
+                    name: "n".into(),
+                    ty: TypeRef::Primitive(Prim::I32),
+                }],
+            },
+        );
+        let reg = Registry::from_parts(vec![overlay], None, HashMap::new());
+        let u = reg.union_def(34, "a.b.U").expect("overlay union");
+        assert_eq!(u.fields.len(), 1);
+        assert!(reg.union_def(34, "a.b.Missing").is_none());
+    }
+
+    #[test]
     fn enum_def_loads_from_overlay_and_aosp() {
         // overlay-provided enum
         let mut overlay = OverlayLayer {
@@ -604,6 +634,7 @@ mod tests {
             interfaces: Default::default(),
             enums: Default::default(),
             parcelables: Default::default(),
+            unions: Default::default(),
         };
         overlay.enums.insert(
             "a.b.E".into(),
@@ -638,7 +669,7 @@ mod tests {
     }
 }
 
-use crate::model::{EnumDef, Interface, Method, OverlayLayer, Parcelable};
+use crate::model::{EnumDef, Interface, Method, OverlayLayer, Parcelable, Union};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
@@ -682,6 +713,8 @@ pub struct Registry {
     lazy_enum_cache: RwLock<HashMap<(u32, String), Option<&'static EnumDef>>>,
     /// same as lazy_cache but for parcelables; None slots cache negative lookups.
     lazy_parcelable_cache: RwLock<HashMap<(u32, String), Option<&'static Parcelable>>>,
+    /// same as lazy_cache but for unions; None slots cache negative lookups.
+    lazy_union_cache: RwLock<HashMap<(u32, String), Option<&'static Union>>>,
     /// fqn → file-path index, populated lazily once per SDK on first
     /// indirect lookup. The Option means we've populated for that SDK
     /// already (Some) or not yet (absent).
@@ -705,6 +738,7 @@ impl Registry {
             lazy_cache: RwLock::new(HashMap::new()),
             lazy_enum_cache: RwLock::new(HashMap::new()),
             lazy_parcelable_cache: RwLock::new(HashMap::new()),
+            lazy_union_cache: RwLock::new(HashMap::new()),
             fqn_index: RwLock::new(HashMap::new()),
         }
     }
@@ -952,60 +986,61 @@ impl Registry {
         leaked
     }
 
-    pub fn enum_def(&self, sdk: u32, fqn: &str) -> Option<&EnumDef> {
-        for overlay in self.overlays.iter().rev() {
-            if let Some(e) = overlay.enums.get(fqn) {
-                return Some(e);
-            }
-        }
-        if self.aosp_root.is_some() {
-            return self.lazy_enum(sdk, fqn);
-        }
-        None
-    }
-
-    fn lazy_enum(&self, sdk: u32, fqn: &str) -> Option<&'static EnumDef> {
+    // generic AOSP lazy load for a structured AIDL type: read-check the cache, else
+    // resolve the file (fast aidl_path + slow fqn_index + enclosing-type fallback),
+    // parse, `pick` the matching item, Box::leak to 'static, cache (None caches misses).
+    fn lazy_typed<T: 'static>(
+        &self,
+        cache: &RwLock<HashMap<(u32, String), Option<&'static T>>>,
+        sdk: u32,
+        fqn: &str,
+        pick: impl Fn(crate::parser::aidl::ParsedAidl) -> Option<T>,
+    ) -> Option<&'static T> {
         {
-            let cache = self.lazy_enum_cache.read().unwrap();
-            if let Some(slot) = cache.get(&(sdk, fqn.to_string())) {
+            let c = cache.read().unwrap();
+            if let Some(slot) = c.get(&(sdk, fqn.to_string())) {
                 return *slot;
             }
         }
-        let loaded = self.lazy_load_enum(sdk, fqn);
-        let leaked: Option<&'static EnumDef> = loaded.map(|e| &*Box::leak(Box::new(e)));
-        self.lazy_enum_cache
+        let loaded = self.lazy_load_typed(sdk, fqn, &pick);
+        let leaked: Option<&'static T> = loaded.map(|x| &*Box::leak(Box::new(x)));
+        cache
             .write()
             .unwrap()
             .insert((sdk, fqn.to_string()), leaked);
         leaked
     }
 
-    // parse the candidate aidl file(s) for `fqn` and return its EnumDef, if any.
-    // reuses the same path resolution as lazy_load_one (fast aidl_path + slow index).
-    fn lazy_load_enum(&self, sdk: u32, fqn: &str) -> Option<EnumDef> {
+    // parse the candidate aidl file(s) for `fqn` and `pick` the item, if any.
+    // fast aidl_path + slow fqn_index + enclosing-type fallback (for nested types).
+    fn lazy_load_typed<T>(
+        &self,
+        sdk: u32,
+        fqn: &str,
+        pick: &impl Fn(crate::parser::aidl::ParsedAidl) -> Option<T>,
+    ) -> Option<T> {
         let root = self.aosp_root.as_ref()?;
-        let find = |path: &Path| -> Option<EnumDef> {
-            let src = std::fs::read_to_string(path).ok()?;
+        let find = |path: &Path| -> Option<T> {
             if path.extension().and_then(|s| s.to_str()) != Some("aidl") {
                 return None;
             }
+            let src = std::fs::read_to_string(path).ok()?;
             match crate::parser::aidl::parse_aidl(&src) {
-                Ok(p) => p.enums.into_iter().find(|e| e.fqn == fqn),
+                Ok(p) => pick(p),
                 Err(_) => None,
             }
         };
         // fast path: dotted-fqn convention
-        if let Some(e) = find(&crate::aosp_layout::aidl_path(root, sdk, fqn)) {
-            return Some(e);
+        if let Some(x) = find(&crate::aosp_layout::aidl_path(root, sdk, fqn)) {
+            return Some(x);
         }
-        // slow path: per-sdk fqn->path index (enums can be nested in a differently
-        // named file, e.g. a.b.IFoo.Inner lives in IFoo.aidl).
+        // slow path: per-sdk fqn->path index (nested types live in the enclosing file,
+        // e.g. a.b.IFoo.Inner lives in IFoo.aidl).
         self.populate_fqn_index(sdk);
         let path = {
             let idx = self.fqn_index.read().unwrap();
             idx.get(&sdk).and_then(|m| m.get(fqn).cloned())
         };
-        // also try the enclosing type's file for a nested enum (strip last segment).
         let candidates = path
             .into_iter()
             .chain(fqn.rsplit_once('.').and_then(|(outer, _)| {
@@ -1013,9 +1048,24 @@ impl Registry {
                 idx.get(&sdk).and_then(|m| m.get(outer).cloned())
             }));
         for p in candidates {
-            if let Some(e) = find(&p) {
+            if let Some(x) = find(&p) {
+                return Some(x);
+            }
+        }
+        None
+    }
+
+    pub fn enum_def(&self, sdk: u32, fqn: &str) -> Option<&EnumDef> {
+        for overlay in self.overlays.iter().rev() {
+            if let Some(e) = overlay.enums.get(fqn) {
                 return Some(e);
             }
+        }
+        if self.aosp_root.is_some() {
+            let f = fqn.to_string();
+            return self.lazy_typed(&self.lazy_enum_cache, sdk, fqn, move |p| {
+                p.enums.into_iter().find(|e| e.fqn == f)
+            });
         }
         None
     }
@@ -1027,62 +1077,25 @@ impl Registry {
             }
         }
         if self.aosp_root.is_some() {
-            return self.lazy_parcelable(sdk, fqn);
+            let f = fqn.to_string();
+            return self.lazy_typed(&self.lazy_parcelable_cache, sdk, fqn, move |p| {
+                p.parcelables.into_iter().find(|pc| pc.fqn == f)
+            });
         }
         None
     }
 
-    fn lazy_parcelable(&self, sdk: u32, fqn: &str) -> Option<&'static Parcelable> {
-        {
-            let cache = self.lazy_parcelable_cache.read().unwrap();
-            if let Some(slot) = cache.get(&(sdk, fqn.to_string())) {
-                return *slot;
+    pub fn union_def(&self, sdk: u32, fqn: &str) -> Option<&Union> {
+        for overlay in self.overlays.iter().rev() {
+            if let Some(u) = overlay.unions.get(fqn) {
+                return Some(u);
             }
         }
-        let loaded = self.lazy_load_parcelable(sdk, fqn);
-        let leaked: Option<&'static Parcelable> = loaded.map(|p| &*Box::leak(Box::new(p)));
-        self.lazy_parcelable_cache
-            .write()
-            .unwrap()
-            .insert((sdk, fqn.to_string()), leaked);
-        leaked
-    }
-
-    // parse the candidate aidl file(s) for `fqn` and return its Parcelable, if any.
-    // same path resolution as lazy_load_enum (fast aidl_path + slow index + enclosing-type).
-    fn lazy_load_parcelable(&self, sdk: u32, fqn: &str) -> Option<Parcelable> {
-        let root = self.aosp_root.as_ref()?;
-        let find = |path: &Path| -> Option<Parcelable> {
-            let src = std::fs::read_to_string(path).ok()?;
-            if path.extension().and_then(|s| s.to_str()) != Some("aidl") {
-                return None;
-            }
-            match crate::parser::aidl::parse_aidl(&src) {
-                Ok(p) => p.parcelables.into_iter().find(|pc| pc.fqn == fqn),
-                Err(_) => None,
-            }
-        };
-        // fast path: dotted-fqn convention
-        if let Some(p) = find(&crate::aosp_layout::aidl_path(root, sdk, fqn)) {
-            return Some(p);
-        }
-        // slow path: per-sdk fqn->path index (parcelables can be nested in a
-        // differently named file, e.g. a.b.IFoo.Inner lives in IFoo.aidl).
-        self.populate_fqn_index(sdk);
-        let path = {
-            let idx = self.fqn_index.read().unwrap();
-            idx.get(&sdk).and_then(|m| m.get(fqn).cloned())
-        };
-        let candidates = path
-            .into_iter()
-            .chain(fqn.rsplit_once('.').and_then(|(outer, _)| {
-                let idx = self.fqn_index.read().unwrap();
-                idx.get(&sdk).and_then(|m| m.get(outer).cloned())
-            }));
-        for p in candidates {
-            if let Some(pc) = find(&p) {
-                return Some(pc);
-            }
+        if self.aosp_root.is_some() {
+            let f = fqn.to_string();
+            return self.lazy_typed(&self.lazy_union_cache, sdk, fqn, move |p| {
+                p.unions.into_iter().find(|u| u.fqn == f)
+            });
         }
         None
     }
@@ -1151,6 +1164,11 @@ impl Registry {
                                 .into_iter()
                                 .map(|p| (p.fqn.clone(), p))
                                 .collect(),
+                            unions: parsed
+                                .unions
+                                .into_iter()
+                                .map(|u| (u.fqn.clone(), u))
+                                .collect(),
                         });
                     }
                     Err(_) => {
@@ -1194,6 +1212,7 @@ impl Registry {
                             interfaces,
                             enums: Default::default(),
                             parcelables: Default::default(),
+                            unions: Default::default(),
                         });
                     }
                 }
