@@ -252,6 +252,17 @@ fn render_value(
             }
         }
 
+        // serializable: titled subtree over the opaque Java object stream.
+        DecodedValue::Serializable { class_name } => {
+            let cls = class_name.as_deref().unwrap_or("?");
+            let title = format!("{}: Serializable {}", node.name, cls);
+            let sub = open_subtree(manager, tree, tvb, off, len, &title);
+            let h = handle(manager, "raw")?;
+            unsafe {
+                epan::proto_tree_add_item(sub, h, tvb, off, len, epan::ENC_NA);
+            }
+        }
+
         // scalars: per-param field, typed add matching value_ftype.
         _ => {
             let fqn = fqn_handle(iface, method, leaf_name, node);
@@ -374,6 +385,7 @@ fn add_typed(
         | DecodedValue::Union { .. }
         | DecodedValue::Map { .. }
         | DecodedValue::Bundle { .. }
+        | DecodedValue::Serializable { .. }
         | DecodedValue::MapEntry => {}
     }
 }

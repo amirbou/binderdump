@@ -157,6 +157,9 @@ pub enum DecodedValue {
         len: usize,
         null: bool,
     }, // children = one node per entry, each named by its key
+    Serializable {
+        class_name: Option<String>,
+    }, // leaf; the Java object stream is opaque
     Raw,
 }
 
@@ -586,7 +589,8 @@ fn decode_parcel_value(
             val::PARCELABLEARRAY => decode_value_list(reg, sdk, cur, body_start, depth + 1),
             val::PARCELABLE => decode_value_parcelable(reg, sdk, cur, body_start, depth + 1),
             val::SPARSEARRAY => decode_sparse_array(reg, sdk, cur, body_start, depth + 1),
-            _ => None, // SERIALIZABLE + anything else: opaque blob
+            val::SERIALIZABLE => decode_value_serializable(cur, body_start, end, depth + 1),
+            _ => None, // anything else: opaque blob
         };
         // resync to block end regardless (best-effort containment)
         cur.seek(end)?;
@@ -968,6 +972,28 @@ fn decode_bundle_body(
         start,
         cur.pos - start,
         children,
+    ))
+}
+
+// VAL_SERIALIZABLE body: String16 class name + a byte[] of the Java object stream
+// (frameworks/base Parcel.writeSerializable). The stream is opaque; we surface only the
+// class name. Length-prefixed at the writeValue layer, so the caller resyncs to `end`.
+fn decode_value_serializable(
+    cur: &mut ParcelCursor,
+    start: usize,
+    end: usize,
+    depth: u32,
+) -> Option<DecodedNode> {
+    if depth_exceeded(depth) {
+        return None;
+    }
+    let class_name = cur.read_string16()?; // inner None = null class name
+    Some(node(
+        DecodedValue::Serializable { class_name },
+        "Serializable",
+        start,
+        end - start,
+        vec![],
     ))
 }
 
@@ -1839,6 +1865,46 @@ mod tests {
         let mut b = 3i32.to_le_bytes().to_vec(); // VAL_BUNDLE
         b.extend_from_slice(&bundle_body(entries, false));
         b
+    }
+
+    // VAL_SERIALIZABLE(21), length-prefixed: int32 len + [String16 className][byte[] blob].
+    fn val_serializable(class: &str, blob: &[u8]) -> Vec<u8> {
+        let mut body = string16(class);
+        body.extend_from_slice(&(blob.len() as i32).to_le_bytes()); // byte[] count
+        body.extend_from_slice(blob);
+        while body.len() % 4 != 0 {
+            body.push(0);
+        }
+        let mut b = 21i32.to_le_bytes().to_vec(); // VAL_SERIALIZABLE
+        b.extend_from_slice(&(body.len() as i32).to_le_bytes()); // length prefix
+        b.extend_from_slice(&body);
+        b
+    }
+
+    #[test]
+    fn labels_serializable_in_map() {
+        let reg = Registry::empty();
+        let m = method(vec![in_param(
+            "cfg",
+            TypeRef::Map(Box::new(TypeRef::String), Box::new(TypeRef::String)),
+        )]);
+        let mut buf = 2i32.to_le_bytes().to_vec(); // count 2
+        buf.extend_from_slice(&val_string("k1"));
+        buf.extend_from_slice(&val_serializable(
+            "java.lang.Integer",
+            &[0xAC, 0xED, 0x00, 0x05],
+        ));
+        buf.extend_from_slice(&val_string("k2"));
+        buf.extend_from_slice(&val_string("v2"));
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let e0 = &nodes[0].children[0];
+        assert!(matches!(
+            &e0.children[1].value,
+            DecodedValue::Serializable { class_name: Some(s) } if s == "java.lang.Integer"
+        ));
+        // following entry still decodes (length-prefix resync)
+        let e1 = &nodes[0].children[1];
+        assert!(matches!(&e1.children[1].value, DecodedValue::Str(Some(s)) if s == "v2"));
     }
 
     #[test]
