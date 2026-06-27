@@ -153,6 +153,10 @@ pub enum DecodedValue {
         null: bool,
     }, // children = MapEntry nodes
     MapEntry, // children = [key, value]
+    Bundle {
+        len: usize,
+        null: bool,
+    }, // children = one node per entry, each named by its key
     Raw,
 }
 
@@ -256,7 +260,9 @@ fn decode_value(
             ))
         }
         TypeRef::UserDefined(fqn) => {
-            if let Some(e) = reg.enum_def(sdk, fqn) {
+            if let Some(label) = bundle_label(fqn) {
+                decode_bundle_body(reg, sdk, cur, label, start, depth + 1)
+            } else if let Some(e) = reg.enum_def(sdk, fqn) {
                 let repr = read_backing(cur, e.backing)?;
                 let variants: Vec<(i64, String)> =
                     e.consts.iter().map(|(n, v)| (*v, n.clone())).collect();
@@ -594,7 +600,7 @@ fn decode_parcel_value(
             )
         }));
     }
-    decode_inline_value(reg, sdk, cur, tag, start)
+    decode_inline_value(reg, sdk, cur, tag, start, depth)
 }
 
 // VAL_LIST / VAL_OBJECTARRAY / VAL_PARCELABLEARRAY body: int32 count + count values.
@@ -705,8 +711,8 @@ fn decode_inline_value(
     cur: &mut ParcelCursor,
     tag: i32,
     start: usize,
+    depth: u32,
 ) -> Option<DecodedNode> {
-    let _ = (reg, sdk);
     let mk = |v, label, cur: &ParcelCursor| node(v, label, start, cur.pos - start, vec![]);
     match tag {
         val::NULL => Some(mk(DecodedValue::Str(None), "null", cur)),
@@ -767,27 +773,9 @@ fn decode_inline_value(
                 None
             }
         }
-        val::BUNDLE | val::PERSISTABLEBUNDLE => {
-            // Bundle/PersistableBundle write their own int32 byte-length after the tag
-            // (frameworks/base/core/java/android/os/BaseBundle.java writeToParcelInner);
-            // skip that span as a blob.
-            let blen = cur.read_i32()?;
-            if blen < 0 {
-                return Some(mk(DecodedValue::Bytes, "Bundle", cur));
-            }
-            let dstart = cur.pos;
-            let end = dstart.checked_add(blen as usize)?;
-            if end > cur.buf_len() {
-                return None;
-            }
-            cur.seek(end)?;
-            Some(node(
-                DecodedValue::Bytes,
-                "Bundle",
-                dstart,
-                blen as usize,
-                vec![],
-            ))
+        val::BUNDLE => decode_bundle_body(reg, sdk, cur, "Bundle", start, depth + 1),
+        val::PERSISTABLEBUNDLE => {
+            decode_bundle_body(reg, sdk, cur, "PersistableBundle", start, depth + 1)
         }
         val::SPARSEBOOLEANARRAY => {
             let n = cur.read_i32()?;
@@ -880,6 +868,107 @@ fn val_label(tag: i32) -> &'static str {
         val::SERIALIZABLE => "Serializable",
         _ => "value",
     }
+}
+
+// BUNDLE_MAGIC / BUNDLE_MAGIC_NATIVE from frameworks/base BaseBundle.java
+// ("BNDL" / "BNDN"); both are valid Bundle bodies.
+const BUNDLE_MAGIC: i32 = 0x4C44_4E42;
+const BUNDLE_MAGIC_NATIVE: i32 = 0x4C44_4E44;
+
+// android.os.Bundle / android.os.PersistableBundle, written via Parcel.writeBundle as
+// [int32 length][int32 magic][arraymap]. Matched by the simple class name: the parser
+// qualifies a bare `Bundle`/`PersistableBundle` by the using package, so the full fqn varies.
+fn bundle_label(fqn: &str) -> Option<&'static str> {
+    match fqn.rsplit('.').next().unwrap_or(fqn) {
+        "Bundle" => Some("Bundle"),
+        "PersistableBundle" => Some("PersistableBundle"),
+        _ => None,
+    }
+}
+
+// Decode a Bundle/PersistableBundle body. Cursor must be at the int32 length.
+// Wire (BaseBundle.writeToParcelInner): [int32 length][int32 magic][arraymap], where
+// length is the arraymap byte count only (excludes the 4-byte magic); length==0 is an
+// empty bundle with no magic; via writeBundle a null bundle is [int32 -1]. The arraymap
+// is [int32 N] + N x (String16 key, writeValue value). Best-effort: resync to the block
+// end regardless, so a later sibling value still decodes.
+fn decode_bundle_body(
+    reg: &Registry,
+    sdk: u32,
+    cur: &mut ParcelCursor,
+    label: &'static str,
+    start: usize,
+    depth: u32,
+) -> Option<DecodedNode> {
+    if depth_exceeded(depth) {
+        return None;
+    }
+    let length = cur.read_i32()?;
+    if length == -1 {
+        return Some(node(
+            DecodedValue::Bundle { len: 0, null: true },
+            label,
+            start,
+            cur.pos - start,
+            vec![],
+        ));
+    }
+    if length == 0 {
+        return Some(node(
+            DecodedValue::Bundle {
+                len: 0,
+                null: false,
+            },
+            label,
+            start,
+            cur.pos - start,
+            vec![],
+        ));
+    }
+    if length < 0 || length % 4 != 0 {
+        return None;
+    }
+    let magic = cur.read_i32()?;
+    if magic != BUNDLE_MAGIC && magic != BUNDLE_MAGIC_NATIVE {
+        return None;
+    }
+    let body_start = cur.pos;
+    let end = body_start.checked_add(length as usize)?;
+    if end > cur.buf_len() {
+        return None;
+    }
+    let count = cur.read_i32()?;
+    let mut children = Vec::with_capacity((count.max(0) as usize).min(1024));
+    if count >= 0 {
+        for _ in 0..count {
+            if cur.pos >= end {
+                break;
+            }
+            // a null key shouldn't occur; treat it as a stop and resync.
+            let key = match cur.read_string16()? {
+                Some(k) => k,
+                None => break,
+            };
+            match decode_parcel_value(reg, sdk, cur, depth + 1) {
+                Some(mut v) => {
+                    v.name = key;
+                    children.push(v);
+                }
+                None => break, // undecodable value: stop, resync below
+            }
+        }
+    }
+    cur.seek(end)?; // resync to block boundary regardless
+    Some(node(
+        DecodedValue::Bundle {
+            len: children.len(),
+            null: false,
+        },
+        label,
+        start,
+        cur.pos - start,
+        children,
+    ))
 }
 
 // Map<String,V> (writeMap): int32 count (-1 null) then count x (value key, value value).
@@ -1727,6 +1816,156 @@ mod tests {
         let mut b = 0i32.to_le_bytes().to_vec(); // VAL_STRING = 0
         b.extend_from_slice(&string16(s));
         b
+    }
+
+    // Bundle body: int32 length + int32 magic + arraymap(int32 count + per entry
+    // String16 key + value bytes). length covers the arraymap only.
+    fn bundle_body(entries: &[(&str, Vec<u8>)], native: bool) -> Vec<u8> {
+        let mut arraymap = (entries.len() as i32).to_le_bytes().to_vec();
+        for (k, v) in entries {
+            arraymap.extend_from_slice(&string16(k));
+            arraymap.extend_from_slice(v);
+        }
+        // BUNDLE_MAGIC=0x4C444E42, BUNDLE_MAGIC_NATIVE=0x4C444E44 (BaseBundle.java)
+        let magic: i32 = if native { 0x4C44_4E44 } else { 0x4C44_4E42 };
+        let mut b = (arraymap.len() as i32).to_le_bytes().to_vec();
+        b.extend_from_slice(&magic.to_le_bytes());
+        b.extend_from_slice(&arraymap);
+        b
+    }
+
+    // VAL_BUNDLE(3)-tagged value (the nested-in-map form): tag + bundle body.
+    fn val_bundle(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
+        let mut b = 3i32.to_le_bytes().to_vec(); // VAL_BUNDLE
+        b.extend_from_slice(&bundle_body(entries, false));
+        b
+    }
+
+    #[test]
+    fn decodes_empty_bundle_param() {
+        let reg = Registry::empty();
+        let m = method(vec![in_param(
+            "b",
+            TypeRef::UserDefined("android.os.Bundle".into()),
+        )]);
+        let buf = 0i32.to_le_bytes(); // length 0, no magic
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert!(matches!(
+            nodes[0].value,
+            DecodedValue::Bundle {
+                len: 0,
+                null: false
+            }
+        ));
+    }
+
+    #[test]
+    fn decodes_null_bundle_param() {
+        let reg = Registry::empty();
+        let m = method(vec![in_param(
+            "b",
+            TypeRef::UserDefined("android.os.Bundle".into()),
+        )]);
+        let buf = (-1i32).to_le_bytes(); // writeBundle(null)
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert!(matches!(
+            nodes[0].value,
+            DecodedValue::Bundle { len: 0, null: true }
+        ));
+    }
+
+    #[test]
+    fn decodes_populated_bundle_param() {
+        let reg = Registry::empty();
+        let m = method(vec![in_param(
+            "b",
+            TypeRef::UserDefined("android.os.Bundle".into()),
+        )]);
+        let buf = bundle_body(&[("k", val_i32(1, 42))], false); // VAL_INTEGER=1
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert!(matches!(
+            &nodes[0].value,
+            DecodedValue::Bundle {
+                len: 1,
+                null: false
+            }
+        ));
+        assert_eq!(nodes[0].children[0].name, "k");
+        assert!(matches!(nodes[0].children[0].value, DecodedValue::I64(42)));
+    }
+
+    #[test]
+    fn decodes_persistable_bundle_param() {
+        let reg = Registry::empty();
+        let m = method(vec![in_param(
+            "b",
+            TypeRef::UserDefined("android.os.PersistableBundle".into()),
+        )]);
+        let buf = bundle_body(&[("k", val_i32(1, 7))], true); // native magic
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert_eq!(nodes[0].type_label, "PersistableBundle");
+        assert!(matches!(
+            nodes[0].value,
+            DecodedValue::Bundle {
+                len: 1,
+                null: false
+            }
+        ));
+    }
+
+    #[test]
+    fn bundle_param_resyncs_and_next_param_decodes() {
+        // guards the historical off-by-4: a Bundle must consume length + 8 (length+magic).
+        let reg = Registry::empty();
+        let m = method(vec![
+            in_param("b", TypeRef::UserDefined("android.os.Bundle".into())),
+            in_param("after", TypeRef::Primitive(Prim::I32)),
+        ]);
+        let mut buf = bundle_body(&[("k", val_i32(1, 5))], false);
+        buf.extend_from_slice(&9i32.to_le_bytes());
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert!(matches!(
+            nodes[0].value,
+            DecodedValue::Bundle {
+                len: 1,
+                null: false
+            }
+        ));
+        assert_eq!(nodes[1].name, "after");
+        assert!(matches!(nodes[1].value, DecodedValue::I64(9)));
+    }
+
+    #[test]
+    fn decodes_bundle_nested_in_map() {
+        // Map<String, Bundle> via VAL_BUNDLE-tagged value, with a 2nd entry to prove resync.
+        let reg = Registry::empty();
+        let m = method(vec![in_param(
+            "cfg",
+            TypeRef::Map(Box::new(TypeRef::String), Box::new(TypeRef::String)),
+        )]);
+        let mut buf = 2i32.to_le_bytes().to_vec(); // count 2
+        buf.extend_from_slice(&val_string("k1"));
+        buf.extend_from_slice(&val_bundle(&[("inner", val_i32(1, 1))]));
+        buf.extend_from_slice(&val_string("k2"));
+        buf.extend_from_slice(&val_string("v2"));
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert!(matches!(
+            nodes[0].value,
+            DecodedValue::Map {
+                len: 2,
+                null: false
+            }
+        ));
+        let e0 = &nodes[0].children[0];
+        assert!(matches!(
+            e0.children[1].value,
+            DecodedValue::Bundle {
+                len: 1,
+                null: false
+            }
+        ));
+        let e1 = &nodes[0].children[1];
+        assert!(matches!(&e1.children[1].value, DecodedValue::Str(Some(s)) if s == "v2"));
     }
 
     #[test]

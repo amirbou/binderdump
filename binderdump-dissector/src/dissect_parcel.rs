@@ -181,6 +181,33 @@ fn render_value(
             }
         }
 
+        // bundle: subtree of key-named children (keys are plain strings, so each
+        // entry renders directly under its key rather than as an entry/key/value trio).
+        DecodedValue::Bundle { len: n, null } => {
+            let title = if *null {
+                format!("{}: null", node.name)
+            } else if *n == 0 {
+                format!("{}: 0 entries", node.name)
+            } else {
+                let s = if *n == 1 { "y" } else { "ies" };
+                format!("{}: {} entr{}", node.name, n, s)
+            };
+            let sub = open_subtree(manager, tree, tvb, off, len, &title);
+            for child in &node.children {
+                let child_leaf = format!("{}.{}", leaf_name, child.name);
+                render_value(
+                    manager,
+                    sub,
+                    tvb,
+                    data_off,
+                    iface,
+                    method,
+                    &child_leaf,
+                    child,
+                )?;
+            }
+        }
+
         DecodedValue::MapEntry => {
             let sub = open_subtree(manager, tree, tvb, off, len, "entry");
             for child in &node.children {
@@ -346,6 +373,7 @@ fn add_typed(
         | DecodedValue::Parcelable { .. }
         | DecodedValue::Union { .. }
         | DecodedValue::Map { .. }
+        | DecodedValue::Bundle { .. }
         | DecodedValue::MapEntry => {}
     }
 }
