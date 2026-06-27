@@ -86,6 +86,23 @@ impl<'a> ParcelCursor<'a> {
             .collect();
         Some(Some(String::from_utf16_lossy(&units)))
     }
+
+    // String8: int32 byte_len (-1 = null), then byte_len UTF-8 bytes + a u8 NUL,
+    // whole region padded to 4 bytes (Parcel::writeInplace). Outer None = overrun;
+    // inner None = null. frameworks/native/libs/binder/Parcel.cpp writeString8.
+    // Correct only because the cursor is 4-aligned here (every reader consumes a
+    // multiple of 4) — same invariant as read_string16.
+    pub fn read_string8(&mut self) -> Option<Option<String>> {
+        let byte_len = self.read_i32()?;
+        if byte_len < 0 {
+            return Some(None);
+        }
+        let n = byte_len as usize;
+        let padded = crate::token::pad_to_4(n.checked_add(1)?);
+        let bytes = self.take(n)?;
+        self.take(padded - n)?;
+        Some(Some(String::from_utf8_lossy(bytes).into_owned()))
+    }
 }
 
 use crate::model::{Direction, Method, Prim, TypeRef};
@@ -1449,6 +1466,33 @@ mod tests {
         let buf = (-1i32).to_le_bytes();
         let mut c = ParcelCursor::new(&buf, 0);
         assert_eq!(c.read_string16(), Some(None));
+    }
+
+    #[test]
+    fn reads_string8() {
+        // int32 len=5, "hello", NUL, pad to 4
+        let mut buf = 5i32.to_le_bytes().to_vec();
+        buf.extend_from_slice(b"hello\0");
+        while buf.len() % 4 != 0 {
+            buf.push(0);
+        }
+        let mut cur = ParcelCursor::new(&buf, 0);
+        assert_eq!(cur.read_string8(), Some(Some("hello".to_string())));
+        assert_eq!(cur.pos, buf.len());
+    }
+
+    #[test]
+    fn reads_string8_null() {
+        let buf = (-1i32).to_le_bytes();
+        let mut cur = ParcelCursor::new(&buf, 0);
+        assert_eq!(cur.read_string8(), Some(None));
+    }
+
+    #[test]
+    fn reads_string8_overrun() {
+        let buf = 9i32.to_le_bytes(); // claims 9 bytes, none follow
+        let mut cur = ParcelCursor::new(&buf, 0);
+        assert_eq!(cur.read_string8(), None);
     }
 
     #[test]
