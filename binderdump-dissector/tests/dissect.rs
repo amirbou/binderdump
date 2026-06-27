@@ -1218,6 +1218,47 @@ fn parcel_union_renders_from_committed_corpus() {
     );
 }
 
+// Asserts the map render path against a dedicated fixture. map.pcapng captures
+// IPackageManager.notifyDexLoad(String, in Map<String,String> classLoaderContextMap,
+// String) calls (driven via `service call package 110 ... i32 <count> i32 0 s16 key
+// i32 0 s16 value ...`); the dissector reads the self-describing writeMap (count +
+// VAL_*-tagged key/value) and renders each entry as a key/value subtree. Kept separate
+// from the other fixtures so their values stay stable.
+// Regenerate with binderdump-dissector/tests/regen_map_fixture.sh.
+#[test]
+fn parcel_map_renders_from_committed_corpus() {
+    ensure_dissector_loaded();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/map.pcapng");
+    let path = fixture.to_str().unwrap();
+    let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../binderdump-aidl/data/aosp");
+    let corpus_pref = format!(
+        "binderdump.aosp_corpus_dir:{}",
+        corpus_dir.to_str().unwrap()
+    );
+    let pfx = "binderdump.ioctl_data.bwr.transaction";
+
+    let out = tshark(&[
+        "-r",
+        path,
+        "-o",
+        &corpus_pref,
+        "-Y",
+        &format!("{pfx}.interface==\"android.content.pm.IPackageManager\""),
+        "-V",
+    ]);
+    // the map subtree title + a decoded entry (key "ck" -> value "cv") prove the
+    // writeMap count + per-entry VAL_STRING key/value decode.
+    assert!(
+        out.contains("classLoaderContextMap: 1 entry"),
+        "expected Map<String,String> subtree title; got tree without it"
+    );
+    assert!(
+        out.contains("classLoaderContextMap.key: ck")
+            && out.contains("classLoaderContextMap.value: cv"),
+        "expected decoded map entry 'ck' -> 'cv'; got tree without it"
+    );
+}
+
 #[test]
 fn follow_via_stream_id_zero() {
     ensure_dissector_loaded();

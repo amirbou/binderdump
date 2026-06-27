@@ -161,25 +161,40 @@ fn render_value(
                 let s = if *elem_count == 1 { "" } else { "s" };
                 format!("{}: {} item{}", node.name, elem_count, s)
             };
-            let ett = manager
-                .get_handle("binderdump.ioctl_data.bwr.transaction.parcel")
-                .unwrap_or(-1);
-            // "<invalid>" is a literal with no interior NUL, so this unwrap can't fail.
-            let title_c =
-                CString::new(title).unwrap_or_else(|_| CString::new("<invalid>").unwrap());
-            let sub = unsafe {
-                epan::proto_tree_add_subtree(
-                    tree,
-                    tvb,
-                    off,
-                    len,
-                    ett,
-                    std::ptr::null_mut(),
-                    title_c.as_ptr(),
-                )
-            };
+            let sub = open_subtree(manager, tree, tvb, off, len, &title);
             for child in &node.children {
                 render_value(manager, sub, tvb, data_off, iface, method, leaf_name, child)?;
+            }
+        }
+
+        // map: subtree of entry subtrees, each with a key and value child.
+        DecodedValue::Map { len: map_len, null } => {
+            let title = if *null {
+                format!("{}: null", node.name)
+            } else {
+                let s = if *map_len == 1 { "y" } else { "ies" };
+                format!("{}: {} entr{}", node.name, map_len, s)
+            };
+            let sub = open_subtree(manager, tree, tvb, off, len, &title);
+            for child in &node.children {
+                render_value(manager, sub, tvb, data_off, iface, method, leaf_name, child)?;
+            }
+        }
+
+        DecodedValue::MapEntry => {
+            let sub = open_subtree(manager, tree, tvb, off, len, "entry");
+            for child in &node.children {
+                let child_leaf = format!("{}.{}", leaf_name, child.name);
+                render_value(
+                    manager,
+                    sub,
+                    tvb,
+                    data_off,
+                    iface,
+                    method,
+                    &child_leaf,
+                    child,
+                )?;
             }
         }
 
@@ -224,6 +239,34 @@ fn render_value(
 
 // render a parcelable/union as a titled subtree whose children are dotted
 // per-(iface,method,field) dynamic fields. shared by the Parcelable and Union arms.
+// open a child subtree under the parcel ett with the given title. shared by the
+// array/map/mapentry/parcelable/union render arms.
+fn open_subtree(
+    manager: &HeaderFieldsManager<EventProtocol>,
+    tree: *mut epan::proto_node,
+    tvb: *mut epan::tvbuff,
+    off: c_int,
+    len: c_int,
+    title: &str,
+) -> *mut epan::proto_tree {
+    let ett = manager
+        .get_handle("binderdump.ioctl_data.bwr.transaction.parcel")
+        .unwrap_or(-1);
+    // "<invalid>" is a literal with no interior NUL, so this unwrap can't fail.
+    let title_c = CString::new(title).unwrap_or_else(|_| CString::new("<invalid>").unwrap());
+    unsafe {
+        epan::proto_tree_add_subtree(
+            tree,
+            tvb,
+            off,
+            len,
+            ett,
+            std::ptr::null_mut(),
+            title_c.as_ptr(),
+        )
+    }
+}
+
 fn render_struct_subtree(
     manager: &HeaderFieldsManager<EventProtocol>,
     tree: *mut epan::proto_node,
@@ -243,22 +286,7 @@ fn render_struct_subtree(
     } else {
         format!("{}: {}", node.name, fqn)
     };
-    let ett = manager
-        .get_handle("binderdump.ioctl_data.bwr.transaction.parcel")
-        .unwrap_or(-1);
-    // "<invalid>" is a literal with no interior NUL, so this unwrap can't fail.
-    let title_c = CString::new(title).unwrap_or_else(|_| CString::new("<invalid>").unwrap());
-    let sub = unsafe {
-        epan::proto_tree_add_subtree(
-            tree,
-            tvb,
-            off,
-            len,
-            ett,
-            std::ptr::null_mut(),
-            title_c.as_ptr(),
-        )
-    };
+    let sub = open_subtree(manager, tree, tvb, off, len, &title);
     for child in &node.children {
         let child_leaf = if child.name.is_empty() {
             leaf_name.to_string()
@@ -316,7 +344,9 @@ fn add_typed(
         | DecodedValue::Array { .. }
         | DecodedValue::Enum { .. }
         | DecodedValue::Parcelable { .. }
-        | DecodedValue::Union { .. } => {}
+        | DecodedValue::Union { .. }
+        | DecodedValue::Map { .. }
+        | DecodedValue::MapEntry => {}
     }
 }
 
