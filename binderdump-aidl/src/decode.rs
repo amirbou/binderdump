@@ -512,18 +512,118 @@ fn decode_parcel_value(reg: &Registry, sdk: u32, cur: &mut ParcelCursor) -> Opti
         if end > cur.buf_len() {
             return None;
         }
-        // TODO - Task 2 recurses MAP/LIST/PARCELABLE/... here; Task 1 skips as raw.
-        let data_start = cur.pos;
+        let body_start = cur.pos;
+        let decoded = match tag {
+            val::MAP => decode_map(reg, sdk, cur, body_start),
+            val::LIST | val::OBJECTARRAY => decode_value_list(reg, sdk, cur, body_start),
+            val::PARCELABLEARRAY => decode_value_list(reg, sdk, cur, body_start),
+            val::PARCELABLE => decode_value_parcelable(reg, sdk, cur, body_start),
+            val::SPARSEARRAY => decode_sparse_array(reg, sdk, cur, body_start),
+            _ => None, // SERIALIZABLE + anything else: opaque blob
+        };
+        // resync to block end regardless (best-effort containment)
         cur.seek(end)?;
+        return Some(decoded.unwrap_or_else(|| {
+            node(
+                DecodedValue::Bytes,
+                val_label(tag),
+                body_start,
+                end - body_start,
+                vec![],
+            )
+        }));
+    }
+    decode_inline_value(reg, sdk, cur, tag, start)
+}
+
+// VAL_LIST / VAL_OBJECTARRAY / VAL_PARCELABLEARRAY body: int32 count + count values.
+fn decode_value_list(
+    reg: &Registry,
+    sdk: u32,
+    cur: &mut ParcelCursor,
+    start: usize,
+) -> Option<DecodedNode> {
+    let n = cur.read_i32()?;
+    if n < 0 {
         return Some(node(
-            DecodedValue::Bytes,
-            val_label(tag),
-            data_start,
-            end - data_start,
+            DecodedValue::Array { len: 0, null: true },
+            "list",
+            start,
+            cur.pos - start,
             vec![],
         ));
     }
-    decode_inline_value(reg, sdk, cur, tag, start)
+    let mut children = Vec::with_capacity((n as usize).min(1024));
+    for _ in 0..n {
+        children.push(decode_parcel_value(reg, sdk, cur)?);
+    }
+    Some(node(
+        DecodedValue::Array {
+            len: n as usize,
+            null: false,
+        },
+        "list",
+        start,
+        cur.pos - start,
+        children,
+    ))
+}
+
+// VAL_PARCELABLE body: String16 class-name (Parcel.writeString, no tag prefix) then structured block.
+fn decode_value_parcelable(
+    reg: &Registry,
+    sdk: u32,
+    cur: &mut ParcelCursor,
+    _start: usize,
+) -> Option<DecodedNode> {
+    // outer None = overrun; inner None = null class name -> undecodable
+    let name = cur.read_string16()??;
+    let pstart = cur.pos;
+    decode_parcelable(reg, sdk, cur, &name, pstart)
+}
+
+// VAL_SPARSEARRAY body: int32 count + count x (int32 key, writeValue value).
+fn decode_sparse_array(
+    reg: &Registry,
+    sdk: u32,
+    cur: &mut ParcelCursor,
+    start: usize,
+) -> Option<DecodedNode> {
+    let n = cur.read_i32()?;
+    if n < 0 {
+        return Some(node(
+            DecodedValue::Map { len: 0, null: true },
+            "SparseArray",
+            start,
+            cur.pos - start,
+            vec![],
+        ));
+    }
+    let mut entries = Vec::with_capacity((n as usize).min(1024));
+    for _ in 0..n {
+        let epos = cur.pos;
+        let key = cur.read_i32()?;
+        let mut v = decode_parcel_value(reg, sdk, cur)?;
+        v.name = "value".to_string();
+        let k = node(DecodedValue::I64(key as i64), "key", epos, 4, vec![]);
+        entries.push(node(
+            DecodedValue::MapEntry,
+            "entry",
+            epos,
+            cur.pos - epos,
+            vec![k, v],
+        ));
+    }
+    Some(node(
+        DecodedValue::Map {
+            len: n as usize,
+            null: false,
+        },
+        "SparseArray",
+        start,
+        cur.pos - start,
+        entries,
+    ))
 }
 
 fn decode_inline_value(
@@ -533,7 +633,7 @@ fn decode_inline_value(
     tag: i32,
     start: usize,
 ) -> Option<DecodedNode> {
-    let _ = (reg, sdk); // used by Task 2 for nested decode
+    let _ = (reg, sdk);
     let mk = |v, label, cur: &ParcelCursor| node(v, label, start, cur.pos - start, vec![]);
     match tag {
         val::NULL => Some(mk(DecodedValue::Str(None), "null", cur)),
@@ -582,8 +682,76 @@ fn decode_inline_value(
         | val::CHARARRAY
         | val::FLOATARRAY
         | val::STRINGARRAY => decode_value_array(cur, tag, start),
-        // inline tags Task 2 fills in (CHARSEQUENCE, BUNDLE/PERSISTABLEBUNDLE,
-        // IBINDER, SPARSEBOOLEANARRAY): undecodable for now -> None.
+        val::CHARSEQUENCE => {
+            // CharSequence via frameworks/base/core/java/android/text/TextUtils.java writeToParcel:
+            // int32 kind, then (kind 0) a plain String16. spans (kind != 0) aren't decodable
+            // without the span format -> undecodable.
+            let kind = cur.read_i32()?;
+            if kind == 0 {
+                let s = cur.read_string16()?;
+                Some(mk(DecodedValue::Str(s), "CharSequence", cur))
+            } else {
+                None
+            }
+        }
+        val::BUNDLE | val::PERSISTABLEBUNDLE => {
+            // Bundle/PersistableBundle write their own int32 byte-length after the tag
+            // (frameworks/base/core/java/android/os/BaseBundle.java writeToParcelInner);
+            // skip that span as a blob.
+            let blen = cur.read_i32()?;
+            if blen < 0 {
+                return Some(mk(DecodedValue::Bytes, "Bundle", cur));
+            }
+            let dstart = cur.pos;
+            let end = dstart.checked_add(blen as usize)?;
+            if end > cur.buf_len() {
+                return None;
+            }
+            cur.seek(end)?;
+            Some(node(
+                DecodedValue::Bytes,
+                "Bundle",
+                dstart,
+                blen as usize,
+                vec![],
+            ))
+        }
+        val::SPARSEBOOLEANARRAY => {
+            let n = cur.read_i32()?;
+            if n < 0 {
+                return Some(mk(
+                    DecodedValue::Array { len: 0, null: true },
+                    "SparseBooleanArray",
+                    cur,
+                ));
+            }
+            let mut entries = Vec::with_capacity((n as usize).min(1024));
+            for _ in 0..n {
+                let epos = cur.pos;
+                let key = cur.read_i32()?;
+                let b = cur.read_i32()? != 0;
+                let k = node(DecodedValue::I64(key as i64), "key", epos, 4, vec![]);
+                let v = node(DecodedValue::Bool(b), "value", epos + 4, 4, vec![]);
+                entries.push(node(
+                    DecodedValue::MapEntry,
+                    "entry",
+                    epos,
+                    cur.pos - epos,
+                    vec![k, v],
+                ));
+            }
+            Some(node(
+                DecodedValue::Map {
+                    len: n as usize,
+                    null: false,
+                },
+                "SparseBooleanArray",
+                start,
+                cur.pos - start,
+                entries,
+            ))
+        }
+        // VAL_IBINDER (flat binder object) is undecodable here.
         _ => None,
     }
 }
@@ -1437,10 +1605,10 @@ mod tests {
         b
     }
 
-    fn val_string(s: &str) -> Vec<u8> {
-        let mut b = 0i32.to_le_bytes().to_vec(); // VAL_STRING = 0
+    // raw String16 (no tag prefix): int32 char_count + UTF-16 chars + u16 NUL, padded to 4.
+    fn string16(s: &str) -> Vec<u8> {
         let utf16: Vec<u16> = s.encode_utf16().collect();
-        b.extend_from_slice(&(utf16.len() as i32).to_le_bytes());
+        let mut b = (utf16.len() as i32).to_le_bytes().to_vec();
         for u in &utf16 {
             b.extend_from_slice(&u.to_le_bytes());
         }
@@ -1448,6 +1616,12 @@ mod tests {
         while b.len() % 4 != 0 {
             b.push(0);
         }
+        b
+    }
+
+    fn val_string(s: &str) -> Vec<u8> {
+        let mut b = 0i32.to_le_bytes().to_vec(); // VAL_STRING = 0
+        b.extend_from_slice(&string16(s));
         b
     }
 
@@ -1511,8 +1685,9 @@ mod tests {
     }
 
     #[test]
-    fn map_length_prefixed_value_skipped_as_raw() {
-        // value is a length-prefixed tag we don't recurse yet (VAL_LIST=11): skip via length.
+    fn map_length_prefixed_value_resyncs_on_bad_body() {
+        // VAL_LIST with a body whose count field is negative: decode_value_list
+        // returns a null array, resync moves to block end; map is fully consumed.
         let reg = Registry::empty();
         let m = method(vec![in_param(
             "cfg",
@@ -1520,18 +1695,103 @@ mod tests {
         )]);
         let mut buf = 1i32.to_le_bytes().to_vec(); // count 1
         buf.extend_from_slice(&val_string("k"));
-        // VAL_LIST tag + int32 length(8) + 8 opaque bytes
+        // VAL_LIST tag + int32 length(8) + 8 bytes whose first i32 is negative
         buf.extend_from_slice(&11i32.to_le_bytes());
         buf.extend_from_slice(&8i32.to_le_bytes());
         buf.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef, 1, 2, 3, 4]);
         let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
         let entry = &nodes[0].children[0];
-        // value rendered as a raw blob (Bytes), cursor resynced past it
+        // negative count -> null array; cursor resynced past the block
         assert!(matches!(
             entry.children[1].value,
-            DecodedValue::Bytes | DecodedValue::Raw
+            DecodedValue::Array { null: true, .. }
         ));
         assert_eq!(nodes.len(), 1); // map fully consumed, no trailing Raw stop
+    }
+
+    #[test]
+    fn map_value_is_nested_list() {
+        let reg = Registry::empty();
+        let m = method(vec![in_param(
+            "cfg",
+            TypeRef::Map(Box::new(TypeRef::String), Box::new(TypeRef::String)),
+        )]);
+        let mut buf = 1i32.to_le_bytes().to_vec(); // count 1
+        buf.extend_from_slice(&val_string("k"));
+        // value = VAL_LIST length-prefixed: int32 len, then [count 2, VAL_INTEGER 7, VAL_INTEGER 8]
+        let mut list_body = 2i32.to_le_bytes().to_vec();
+        list_body.extend_from_slice(&val_i32(1, 7));
+        list_body.extend_from_slice(&val_i32(1, 8));
+        buf.extend_from_slice(&11i32.to_le_bytes()); // VAL_LIST tag
+        buf.extend_from_slice(&(list_body.len() as i32).to_le_bytes()); // length
+        buf.extend_from_slice(&list_body);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let val = &nodes[0].children[0].children[1];
+        assert!(matches!(val.value, DecodedValue::Array { len: 2, .. }));
+        assert!(matches!(val.children[1].value, DecodedValue::I64(8)));
+    }
+
+    #[test]
+    fn map_value_is_parcelable() {
+        use crate::model::{Field, Parcelable};
+        let mut o = OverlayLayer {
+            source_path: "t".into(),
+            interfaces: Default::default(),
+            enums: Default::default(),
+            parcelables: Default::default(),
+            unions: Default::default(),
+        };
+        o.parcelables.insert(
+            "a.P".into(),
+            Parcelable {
+                fqn: "a.P".into(),
+                fields: vec![Field {
+                    name: "v".into(),
+                    ty: TypeRef::Primitive(Prim::I32),
+                }],
+            },
+        );
+        let reg = Registry::from_parts(vec![o], None, std::collections::HashMap::new());
+        let m = method(vec![in_param(
+            "cfg",
+            TypeRef::Map(Box::new(TypeRef::String), Box::new(TypeRef::String)),
+        )]);
+        let mut buf = 1i32.to_le_bytes().to_vec();
+        buf.extend_from_slice(&val_string("k"));
+        // value = VAL_PARCELABLE: length-prefixed [ String16 "a.P" (no tag), structured block ]
+        // class name is a raw String16 (Parcel.writeString, no tag prefix)
+        let mut pbody = string16("a.P");
+        // structured parcelable block: int32 size(=8, incl itself) + int32 v(=5)
+        pbody.extend_from_slice(&8i32.to_le_bytes());
+        pbody.extend_from_slice(&5i32.to_le_bytes());
+        buf.extend_from_slice(&4i32.to_le_bytes()); // VAL_PARCELABLE tag
+        buf.extend_from_slice(&(pbody.len() as i32).to_le_bytes()); // length
+        buf.extend_from_slice(&pbody);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let val = &nodes[0].children[0].children[1];
+        assert!(matches!(&val.value, DecodedValue::Parcelable { fqn, .. } if fqn == "a.P"));
+        assert!(matches!(val.children[0].value, DecodedValue::I64(5)));
+    }
+
+    #[test]
+    fn map_value_is_nested_map() {
+        let reg = Registry::empty();
+        let m = method(vec![in_param(
+            "cfg",
+            TypeRef::Map(Box::new(TypeRef::String), Box::new(TypeRef::String)),
+        )]);
+        let mut buf = 1i32.to_le_bytes().to_vec();
+        buf.extend_from_slice(&val_string("k"));
+        // value = VAL_MAP: length-prefixed [ count 1, VAL_STRING "ik", VAL_INTEGER 9 ]
+        let mut inner = 1i32.to_le_bytes().to_vec();
+        inner.extend_from_slice(&val_string("ik"));
+        inner.extend_from_slice(&val_i32(1, 9));
+        buf.extend_from_slice(&2i32.to_le_bytes()); // VAL_MAP tag
+        buf.extend_from_slice(&(inner.len() as i32).to_le_bytes());
+        buf.extend_from_slice(&inner);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let val = &nodes[0].children[0].children[1];
+        assert!(matches!(val.value, DecodedValue::Map { len: 1, .. }));
     }
 
     // end-to-end: resolve a real AOSP interface+method whose param is an enum from
