@@ -1259,6 +1259,68 @@ fn parcel_map_renders_from_committed_corpus() {
     );
 }
 
+// Asserts the Bundle render path against a dedicated fixture. bundle.pcapng captures
+// IAppWidgetService.updateAppWidgetOptions(String callingPackage, int appWidgetId,
+// in Bundle extras) calls (driven via `service call appwidget 12 ...`); the dissector
+// reads the Bundle length+magic+count+entries and renders each entry as a key-named
+// child. The Bundle carries four entries covering every new Java-only value type:
+//   "n"   (VAL_INTEGER=1):          int 42
+//   "cs"  (VAL_CHARSEQUENCE=10):    plain String "hi" (kind=1 + String8)
+//   "pb"  (VAL_PERSISTABLEBUNDLE=25): nested PersistableBundle {"x": 7}
+//   "ser" (VAL_SERIALIZABLE=21):    java.lang.Integer with 4-byte Java object stream
+// Kept separate from the other fixtures so their values stay stable.
+// Regenerate with binderdump-dissector/tests/regen_bundle_fixture.sh.
+#[test]
+fn parcel_bundle_renders_from_committed_corpus() {
+    ensure_dissector_loaded();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bundle.pcapng");
+    let path = fixture.to_str().unwrap();
+    let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../binderdump-aidl/data/aosp");
+    let corpus_pref = format!(
+        "binderdump.aosp_corpus_dir:{}",
+        corpus_dir.to_str().unwrap()
+    );
+    let pfx = "binderdump.ioctl_data.bwr.transaction";
+
+    // Fixture: a real IApplicationThread.setCoreSettings(Bundle) frame captured
+    // while system_server propagated a debug_view_attributes settings change to
+    // a running Java process.  Bundle is the only AIDL parameter — nothing
+    // before it can block decode — and the bytes were written by real framework
+    // Java (not service call hand-crafting).
+    let out = tshark(&[
+        "-r",
+        path,
+        "-o",
+        &corpus_pref,
+        "-Y",
+        &format!("{pfx}.interface==\"android.app.IApplicationThread\""),
+        "-V",
+    ]);
+    // Method resolved and Bundle parameter decoded.
+    assert!(
+        out.contains("Method: setCoreSettings"),
+        "expected method name 'setCoreSettings'; got:\n{out}"
+    );
+    // Bundle header: at least one entry (actual count is device-dependent;
+    // the fixture was captured with 14 entries but do not hard-code that).
+    assert!(
+        out.contains("coreSettings:"),
+        "expected Bundle parameter 'coreSettings:'; got:\n{out}"
+    );
+    // debug_view_attributes is always present in coreSettings; we toggled it
+    // to 1 to trigger the capture, so the value is guaranteed to be 1.
+    assert!(
+        out.contains("coreSettings.debug_view_attributes: 1"),
+        "expected Bundle entry 'coreSettings.debug_view_attributes: 1'; got:\n{out}"
+    );
+    // long_press_timeout is a stable system default (400 ms) present in every
+    // coreSettings Bundle regardless of which settings were recently changed.
+    assert!(
+        out.contains("coreSettings.long_press_timeout: 400"),
+        "expected Bundle entry 'coreSettings.long_press_timeout: 400'; got:\n{out}"
+    );
+}
+
 #[test]
 fn follow_via_stream_id_zero() {
     ensure_dissector_loaded();

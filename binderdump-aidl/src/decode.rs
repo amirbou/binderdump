@@ -264,7 +264,23 @@ fn decode_value(
         }
         TypeRef::UserDefined(fqn) => {
             if let Some(label) = bundle_label(fqn) {
-                decode_bundle_body(reg, sdk, cur, label, start, depth + 1)
+                // AIDL Java backend writes a Bundle/PersistableBundle arg (or struct field)
+                // via Parcel.writeTypedObject: int32 presence (0=null, 1=present) then
+                // writeToParcel (system/tools/aidl aidl_to_java.cpp, SDK 23+). Bundle is a
+                // Java-only type, so this is always the wire form. (The nested-in-Map path
+                // uses writeValue -> writeBundle, which has no flag, and is handled in
+                // decode_inline_value.)
+                match cur.read_i32()? {
+                    0 => Some(node(
+                        DecodedValue::Bundle { len: 0, null: true },
+                        label,
+                        start,
+                        cur.pos - start,
+                        vec![],
+                    )),
+                    1 => decode_bundle_body(reg, sdk, cur, label, start, depth + 1),
+                    _ => None,
+                }
             } else if let Some(e) = reg.enum_def(sdk, fqn) {
                 let repr = read_backing(cur, e.backing)?;
                 let variants: Vec<(i64, String)> =
@@ -277,7 +293,7 @@ fn decode_value(
                     vec![],
                 ))
             } else if reg.parcelable_def(sdk, fqn).is_some() {
-                decode_parcelable(reg, sdk, cur, fqn, start, depth + 1)
+                decode_parcelable_arg(reg, sdk, cur, fqn, start, depth + 1)
             } else {
                 decode_union(reg, sdk, cur, fqn, start, depth + 1)
             }
@@ -439,6 +455,49 @@ fn decode_union(
         cur.pos - start,
         vec![child],
     ))
+}
+
+// A structured parcelable passed as an AIDL arg or struct field. The Java backend
+// writes it via Parcel.writeTypedObject (int32 presence flag 0=null/1=present, identical
+// for @nullable and non-null); the C++ backend writes a non-null parcelable directly with
+// no flag. A structured parcelable's size header is always >= 4 (decode_parcelable rejects
+// < 4), so a leading 0 or 1 is unambiguously a presence flag and a leading >= 4 is the size
+// itself — letting us accept both wire forms without per-interface backend metadata.
+// (system/tools/aidl aidl_to_java.cpp writeTypedObject; decode_parcelable size>=4 invariant.)
+fn decode_parcelable_arg(
+    reg: &Registry,
+    sdk: u32,
+    cur: &mut ParcelCursor,
+    fqn: &str,
+    start: usize,
+    depth: u32,
+) -> Option<DecodedNode> {
+    let p = reg.parcelable_def(sdk, fqn)?;
+    // unstructured / forward-declared parcelables have no size header to lean on; defer to
+    // decode_parcelable, which returns None for them.
+    if p.fields.is_empty() {
+        return decode_parcelable(reg, sdk, cur, fqn, start, depth);
+    }
+    let save = cur.pos;
+    match cur.read_i32()? {
+        0 => Some(node(
+            DecodedValue::Parcelable {
+                fqn: p.fqn.clone(),
+                null: true,
+            },
+            fqn,
+            start,
+            cur.pos - start,
+            vec![],
+        )),
+        // presence flag = present: the size header is the next int (start at cur.pos).
+        1 => decode_parcelable(reg, sdk, cur, fqn, cur.pos, depth),
+        // no flag: the int we read is the size header itself; rewind and decode in place.
+        _ => {
+            cur.pos = save;
+            decode_parcelable(reg, sdk, cur, fqn, save, depth)
+        }
+    }
 }
 
 // decode a structured AIDL parcelable: int32 size (incl. itself), fields in
@@ -1129,6 +1188,40 @@ mod tests {
         assert_eq!(nodes[0].children[0].name, "id");
         assert!(matches!(nodes[0].children[0].value, DecodedValue::I64(7)));
         assert!(matches!(&nodes[0].children[1].value, DecodedValue::Str(Some(s)) if s == "hi"));
+    }
+
+    #[test]
+    fn decodes_java_backend_parcelable_arg() {
+        // AIDL Java writeTypedObject prepends an int32 presence flag (1) before the
+        // parcelable's size header; the size>=4 invariant disambiguates it, and the next
+        // param must still decode (resync past flag + block).
+        let reg = reg_with_parcelable("a.P", vec![("id", TypeRef::Primitive(Prim::I32))]);
+        let m = method(vec![
+            in_param("p", TypeRef::UserDefined("a.P".into())),
+            in_param("after", TypeRef::Primitive(Prim::I32)),
+        ]);
+        let mut buf = 1i32.to_le_bytes().to_vec(); // presence = present
+        buf.extend_from_slice(&parcelable_block(&7i32.to_le_bytes())); // [size][id=7]
+        buf.extend_from_slice(&9i32.to_le_bytes());
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert!(
+            matches!(&nodes[0].value, DecodedValue::Parcelable { fqn, null: false } if fqn == "a.P")
+        );
+        assert!(matches!(nodes[0].children[0].value, DecodedValue::I64(7)));
+        assert_eq!(nodes[1].name, "after");
+        assert!(matches!(nodes[1].value, DecodedValue::I64(9)));
+    }
+
+    #[test]
+    fn decodes_null_parcelable_arg() {
+        // writeTypedObject(null) is a bare int32 0.
+        let reg = reg_with_parcelable("a.P", vec![("id", TypeRef::Primitive(Prim::I32))]);
+        let m = method(vec![in_param("p", TypeRef::UserDefined("a.P".into()))]);
+        let buf = 0i32.to_le_bytes();
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert!(
+            matches!(&nodes[0].value, DecodedValue::Parcelable { fqn, null: true } if fqn == "a.P")
+        );
     }
 
     #[test]
@@ -1959,6 +2052,13 @@ mod tests {
         assert!(matches!(&e1.children[1].value, DecodedValue::Str(Some(s)) if s == "v2"));
     }
 
+    // a Bundle direct-param on the wire: AIDL Java writeTypedObject presence flag (1) + body.
+    fn typed_bundle(entries: &[(&str, Vec<u8>)], native: bool) -> Vec<u8> {
+        let mut b = 1i32.to_le_bytes().to_vec(); // presence = present
+        b.extend_from_slice(&bundle_body(entries, native));
+        b
+    }
+
     #[test]
     fn decodes_empty_bundle_param() {
         let reg = Registry::empty();
@@ -1966,7 +2066,9 @@ mod tests {
             "b",
             TypeRef::UserDefined("android.os.Bundle".into()),
         )]);
-        let buf = 0i32.to_le_bytes(); // length 0, no magic
+        // presence=1, then an empty bundle body (length 0, no magic).
+        let mut buf = 1i32.to_le_bytes().to_vec();
+        buf.extend_from_slice(&0i32.to_le_bytes());
         let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
         assert!(matches!(
             nodes[0].value,
@@ -1984,7 +2086,7 @@ mod tests {
             "b",
             TypeRef::UserDefined("android.os.Bundle".into()),
         )]);
-        let buf = (-1i32).to_le_bytes(); // writeBundle(null)
+        let buf = 0i32.to_le_bytes(); // writeTypedObject presence = null
         let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
         assert!(matches!(
             nodes[0].value,
@@ -1999,7 +2101,7 @@ mod tests {
             "b",
             TypeRef::UserDefined("android.os.Bundle".into()),
         )]);
-        let buf = bundle_body(&[("k", val_i32(1, 42))], false); // VAL_INTEGER=1
+        let buf = typed_bundle(&[("k", val_i32(1, 42))], false); // VAL_INTEGER=1
         let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
         assert!(matches!(
             &nodes[0].value,
@@ -2019,7 +2121,7 @@ mod tests {
             "b",
             TypeRef::UserDefined("android.os.PersistableBundle".into()),
         )]);
-        let buf = bundle_body(&[("k", val_i32(1, 7))], true); // native magic
+        let buf = typed_bundle(&[("k", val_i32(1, 7))], true); // native magic
         let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
         assert_eq!(nodes[0].type_label, "PersistableBundle");
         assert!(matches!(
@@ -2033,13 +2135,14 @@ mod tests {
 
     #[test]
     fn bundle_param_resyncs_and_next_param_decodes() {
-        // guards the historical off-by-4: a Bundle must consume length + 8 (length+magic).
+        // a Bundle param consumes presence(4) + length(4) + magic(4) + arraymap; this guards
+        // both the writeTypedObject flag and the length/magic boundary (the historical off-by-4).
         let reg = Registry::empty();
         let m = method(vec![
             in_param("b", TypeRef::UserDefined("android.os.Bundle".into())),
             in_param("after", TypeRef::Primitive(Prim::I32)),
         ]);
-        let mut buf = bundle_body(&[("k", val_i32(1, 5))], false);
+        let mut buf = typed_bundle(&[("k", val_i32(1, 5))], false);
         buf.extend_from_slice(&9i32.to_le_bytes());
         let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
         assert!(matches!(
