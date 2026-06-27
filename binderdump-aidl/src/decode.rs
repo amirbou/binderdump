@@ -91,6 +91,22 @@ impl<'a> ParcelCursor<'a> {
 use crate::model::{Direction, Method, Prim, TypeRef};
 use crate::registry::Registry;
 
+// cap decoder recursion so a crafted/corrupt parcel (deeply nested maps/lists/parcelables)
+// can't overflow the host stack and crash tshark. counts every recursive frame, not logical nesting.
+const MAX_DECODE_DEPTH: u32 = 128;
+
+// true if we've recursed too deep. warns once at the boundary so a truncated decode is
+// visible rather than silently swallowed (a real parcel never approaches the cap).
+fn depth_exceeded(depth: u32) -> bool {
+    if depth >= MAX_DECODE_DEPTH {
+        eprintln!(
+            "binderdump: parcel decode recursion cap ({MAX_DECODE_DEPTH}) hit; truncating (likely a malformed parcel)"
+        );
+        return true;
+    }
+    false
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum DecodedValue {
     I64(i64),
@@ -152,7 +168,7 @@ pub fn decode_aidl_params(
             continue;
         }
         let before = cur.pos;
-        match decode_value(reg, sdk, &mut cur, &param.ty) {
+        match decode_value(reg, sdk, &mut cur, &param.ty, 0) {
             Some(mut node) => {
                 node.name = param.name.clone();
                 nodes.push(node);
@@ -201,7 +217,11 @@ fn decode_value(
     sdk: u32,
     cur: &mut ParcelCursor,
     ty: &TypeRef,
+    depth: u32,
 ) -> Option<DecodedNode> {
+    if depth_exceeded(depth) {
+        return None;
+    }
     let start = cur.pos;
     match ty {
         TypeRef::Primitive(p) => {
@@ -231,14 +251,14 @@ fn decode_value(
                     vec![],
                 ))
             } else if reg.parcelable_def(sdk, fqn).is_some() {
-                decode_parcelable(reg, sdk, cur, fqn, start)
+                decode_parcelable(reg, sdk, cur, fqn, start, depth + 1)
             } else {
-                decode_union(reg, sdk, cur, fqn, start)
+                decode_union(reg, sdk, cur, fqn, start, depth + 1)
             }
         }
-        TypeRef::Array(el) | TypeRef::List(el) => decode_array(reg, sdk, cur, el, start),
-        TypeRef::Nullable(inner) => decode_nullable(reg, sdk, cur, inner, start),
-        TypeRef::Map(_, _) => decode_map(reg, sdk, cur, start),
+        TypeRef::Array(el) | TypeRef::List(el) => decode_array(reg, sdk, cur, el, start, depth + 1),
+        TypeRef::Nullable(inner) => decode_nullable(reg, sdk, cur, inner, start, depth + 1),
+        TypeRef::Map(_, _) => decode_map(reg, sdk, cur, start, depth + 1),
         TypeRef::IBinder => None,
     }
 }
@@ -266,7 +286,11 @@ fn decode_array(
     cur: &mut ParcelCursor,
     el: &TypeRef,
     arr_start: usize,
+    depth: u32,
 ) -> Option<DecodedNode> {
+    if depth_exceeded(depth) {
+        return None;
+    }
     let count = cur.read_i32()?;
     if count < 0 {
         return Some(node(
@@ -288,7 +312,7 @@ fn decode_array(
     }
     let mut children = Vec::with_capacity(n.min(1024));
     for _ in 0..n {
-        match decode_value(reg, sdk, cur, el) {
+        match decode_value(reg, sdk, cur, el, depth + 1) {
             Some(child) => children.push(child),
             // truncate + stop the whole param walk (best-effort)
             None => return None,
@@ -314,7 +338,11 @@ fn decode_nullable(
     cur: &mut ParcelCursor,
     inner: &TypeRef,
     start: usize,
+    depth: u32,
 ) -> Option<DecodedNode> {
+    if depth_exceeded(depth) {
+        return None;
+    }
     if let TypeRef::UserDefined(fqn) = inner {
         let is_struct_parcelable = reg.enum_def(sdk, fqn).is_none()
             && reg
@@ -341,13 +369,13 @@ fn decode_nullable(
                 return Some(node(v, fqn, start, cur.pos - start, vec![]));
             }
             return if is_union {
-                decode_union(reg, sdk, cur, fqn, cur.pos)
+                decode_union(reg, sdk, cur, fqn, cur.pos, depth + 1)
             } else {
-                decode_parcelable(reg, sdk, cur, fqn, cur.pos)
+                decode_parcelable(reg, sdk, cur, fqn, cur.pos, depth + 1)
             };
         }
     }
-    decode_value(reg, sdk, cur, inner) // inline-null types
+    decode_value(reg, sdk, cur, inner, depth + 1) // inline-null types
 }
 
 // union: int32 tag (0-based field index) then the selected member. no size header,
@@ -359,7 +387,11 @@ fn decode_union(
     cur: &mut ParcelCursor,
     fqn: &str,
     start: usize,
+    depth: u32,
 ) -> Option<DecodedNode> {
+    if depth_exceeded(depth) {
+        return None;
+    }
     let u = reg.union_def(sdk, fqn)?;
     if u.fields.is_empty() {
         return None;
@@ -369,7 +401,7 @@ fn decode_union(
     let tag = cur.read_i32()?;
     let idx = usize::try_from(tag).ok()?;
     let field = fields.get(idx)?; // out-of-range tag -> None
-    let mut child = decode_value(reg, sdk, cur, &field.ty)?; // member undecodable -> None
+    let mut child = decode_value(reg, sdk, cur, &field.ty, depth + 1)?; // member undecodable -> None
     child.name = field.name.clone();
     Some(node(
         DecodedValue::Union {
@@ -391,7 +423,11 @@ fn decode_parcelable(
     cur: &mut ParcelCursor,
     fqn: &str,
     start: usize,
+    depth: u32,
 ) -> Option<DecodedNode> {
+    if depth_exceeded(depth) {
+        return None;
+    }
     let p = reg.parcelable_def(sdk, fqn)?;
     if p.fields.is_empty() {
         return None; // unstructured / forward-declared: no size header on the wire
@@ -413,7 +449,7 @@ fn decode_parcelable(
         if cur.pos - start >= size {
             break; // boundary: trailing fields absent (older sender)
         }
-        match decode_value(reg, sdk, cur, &field.ty) {
+        match decode_value(reg, sdk, cur, &field.ty, depth + 1) {
             Some(mut n) => {
                 n.name = field.name.clone();
                 children.push(n);
@@ -500,7 +536,15 @@ fn is_length_prefixed(tag: i32) -> bool {
 
 // read one self-describing Parcel.writeValue: int32 tag + payload.
 // name is left empty (caller sets key/value/element).
-fn decode_parcel_value(reg: &Registry, sdk: u32, cur: &mut ParcelCursor) -> Option<DecodedNode> {
+fn decode_parcel_value(
+    reg: &Registry,
+    sdk: u32,
+    cur: &mut ParcelCursor,
+    depth: u32,
+) -> Option<DecodedNode> {
+    if depth_exceeded(depth) {
+        return None;
+    }
     let start = cur.pos;
     let tag = cur.read_i32()?;
     if is_length_prefixed(tag) {
@@ -514,11 +558,11 @@ fn decode_parcel_value(reg: &Registry, sdk: u32, cur: &mut ParcelCursor) -> Opti
         }
         let body_start = cur.pos;
         let decoded = match tag {
-            val::MAP => decode_map(reg, sdk, cur, body_start),
-            val::LIST | val::OBJECTARRAY => decode_value_list(reg, sdk, cur, body_start),
-            val::PARCELABLEARRAY => decode_value_list(reg, sdk, cur, body_start),
-            val::PARCELABLE => decode_value_parcelable(reg, sdk, cur, body_start),
-            val::SPARSEARRAY => decode_sparse_array(reg, sdk, cur, body_start),
+            val::MAP => decode_map(reg, sdk, cur, body_start, depth + 1),
+            val::LIST | val::OBJECTARRAY => decode_value_list(reg, sdk, cur, body_start, depth + 1),
+            val::PARCELABLEARRAY => decode_value_list(reg, sdk, cur, body_start, depth + 1),
+            val::PARCELABLE => decode_value_parcelable(reg, sdk, cur, body_start, depth + 1),
+            val::SPARSEARRAY => decode_sparse_array(reg, sdk, cur, body_start, depth + 1),
             _ => None, // SERIALIZABLE + anything else: opaque blob
         };
         // resync to block end regardless (best-effort containment)
@@ -542,7 +586,11 @@ fn decode_value_list(
     sdk: u32,
     cur: &mut ParcelCursor,
     start: usize,
+    depth: u32,
 ) -> Option<DecodedNode> {
+    if depth_exceeded(depth) {
+        return None;
+    }
     let n = cur.read_i32()?;
     if n < 0 {
         return Some(node(
@@ -555,7 +603,7 @@ fn decode_value_list(
     }
     let mut children = Vec::with_capacity((n as usize).min(1024));
     for _ in 0..n {
-        children.push(decode_parcel_value(reg, sdk, cur)?);
+        children.push(decode_parcel_value(reg, sdk, cur, depth + 1)?);
     }
     Some(node(
         DecodedValue::Array {
@@ -575,11 +623,15 @@ fn decode_value_parcelable(
     sdk: u32,
     cur: &mut ParcelCursor,
     _start: usize,
+    depth: u32,
 ) -> Option<DecodedNode> {
+    if depth_exceeded(depth) {
+        return None;
+    }
     // outer None = overrun; inner None = null class name -> undecodable
     let name = cur.read_string16()??;
     let pstart = cur.pos;
-    decode_parcelable(reg, sdk, cur, &name, pstart)
+    decode_parcelable(reg, sdk, cur, &name, pstart, depth + 1)
 }
 
 // VAL_SPARSEARRAY body: int32 count + count x (int32 key, writeValue value).
@@ -588,7 +640,11 @@ fn decode_sparse_array(
     sdk: u32,
     cur: &mut ParcelCursor,
     start: usize,
+    depth: u32,
 ) -> Option<DecodedNode> {
+    if depth_exceeded(depth) {
+        return None;
+    }
     let n = cur.read_i32()?;
     if n < 0 {
         return Some(node(
@@ -603,7 +659,7 @@ fn decode_sparse_array(
     for _ in 0..n {
         let epos = cur.pos;
         let key = cur.read_i32()?;
-        let mut v = decode_parcel_value(reg, sdk, cur)?;
+        let mut v = decode_parcel_value(reg, sdk, cur, depth + 1)?;
         v.name = "value".to_string();
         let k = node(DecodedValue::I64(key as i64), "key", epos, 4, vec![]);
         entries.push(node(
@@ -815,7 +871,11 @@ fn decode_map(
     sdk: u32,
     cur: &mut ParcelCursor,
     start: usize,
+    depth: u32,
 ) -> Option<DecodedNode> {
+    if depth_exceeded(depth) {
+        return None;
+    }
     let count = cur.read_i32()?;
     if count < 0 {
         return Some(node(
@@ -829,9 +889,9 @@ fn decode_map(
     let mut entries = Vec::with_capacity((count as usize).min(1024));
     for _ in 0..count {
         let epos = cur.pos;
-        let mut k = decode_parcel_value(reg, sdk, cur)?;
+        let mut k = decode_parcel_value(reg, sdk, cur, depth + 1)?;
         k.name = "key".to_string();
-        let mut v = decode_parcel_value(reg, sdk, cur)?;
+        let mut v = decode_parcel_value(reg, sdk, cur, depth + 1)?;
         v.name = "value".to_string();
         entries.push(node(
             DecodedValue::MapEntry,
@@ -1792,6 +1852,38 @@ mod tests {
         let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
         let val = &nodes[0].children[0].children[1];
         assert!(matches!(val.value, DecodedValue::Map { len: 1, .. }));
+    }
+
+    #[test]
+    fn deeply_nested_map_does_not_overflow() {
+        // 300 nested VAL_MAP values, each ~8 bytes/level; exceeds MAX_DECODE_DEPTH (128).
+        // build inner-out so each layer wraps the previous.
+        let reg = Registry::empty();
+        // innermost value = VAL_INTEGER 0
+        let mut inner = 1i32.to_le_bytes().to_vec();
+        inner.extend_from_slice(&0i32.to_le_bytes());
+        for _ in 0..300 {
+            // a map entry: count=1, key=VAL_STRING "k", value=<inner>
+            let mut body = 1i32.to_le_bytes().to_vec(); // count
+            body.extend_from_slice(&val_string("k")); // key
+            body.extend_from_slice(&inner); // value (prev layer)
+                                            // wrap as VAL_MAP: tag 2 + int32 len + body
+            let mut wrapped = 2i32.to_le_bytes().to_vec();
+            wrapped.extend_from_slice(&(body.len() as i32).to_le_bytes());
+            wrapped.extend_from_slice(&body);
+            inner = wrapped;
+        }
+        // top-level param is a Map<String,String>; count=1, key=VAL_STRING "top", value=300-deep nest
+        let m = method(vec![in_param(
+            "cfg",
+            TypeRef::Map(Box::new(TypeRef::String), Box::new(TypeRef::String)),
+        )]);
+        let mut buf = 1i32.to_le_bytes().to_vec(); // top count 1
+        buf.extend_from_slice(&val_string("top")); // key
+        buf.extend_from_slice(&inner); // value = deep nest
+                                       // must not stack-overflow; returns without panic.
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert!(!nodes.is_empty());
     }
 
     // end-to-end: resolve a real AOSP interface+method whose param is an enum from
