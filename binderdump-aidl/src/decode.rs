@@ -766,16 +766,18 @@ fn decode_inline_value(
         | val::FLOATARRAY
         | val::STRINGARRAY => decode_value_array(cur, tag, start),
         val::CHARSEQUENCE => {
-            // CharSequence via frameworks/base/core/java/android/text/TextUtils.java writeToParcel:
-            // int32 kind, then (kind 0) a plain String16. spans (kind != 0) aren't decodable
-            // without the span format -> undecodable.
+            // frameworks/base/core/java/android/text/TextUtils.java writeToParcel:
+            // int32 kind, then writeString8(text). kind==1 plain; kind==0 Spanned, where
+            // opaque ParcelableSpans (no length prefix) follow the text. String8 here since
+            // SDK 33 (verified android13-release, our floor). We decode the plain case; a
+            // styled CharSequence is undecodable, so we bail before consuming anything past
+            // the kind so the caller resyncs cleanly.
             let kind = cur.read_i32()?;
-            if kind == 0 {
-                let s = cur.read_string16()?;
-                Some(mk(DecodedValue::Str(s), "CharSequence", cur))
-            } else {
-                None
+            if kind != 1 {
+                return None;
             }
+            let s = cur.read_string8()?;
+            Some(mk(DecodedValue::Str(s), "CharSequence", cur))
         }
         val::BUNDLE => decode_bundle_body(reg, sdk, cur, "Bundle", start, depth + 1),
         val::PERSISTABLEBUNDLE => {
@@ -1858,6 +1860,56 @@ mod tests {
         b.extend_from_slice(&magic.to_le_bytes());
         b.extend_from_slice(&arraymap);
         b
+    }
+
+    // raw String8 (no tag): int32 byte_count + UTF-8 bytes + u8 NUL, padded to 4.
+    fn string8(s: &str) -> Vec<u8> {
+        let mut b = (s.len() as i32).to_le_bytes().to_vec();
+        b.extend_from_slice(s.as_bytes());
+        b.push(0); // NUL
+        while b.len() % 4 != 0 {
+            b.push(0);
+        }
+        b
+    }
+
+    // VAL_CHARSEQUENCE(10): int32 kind + writeString8(text).
+    fn val_charsequence(kind: i32, text: &str) -> Vec<u8> {
+        let mut b = 10i32.to_le_bytes().to_vec(); // VAL_CHARSEQUENCE
+        b.extend_from_slice(&kind.to_le_bytes());
+        b.extend_from_slice(&string8(text));
+        b
+    }
+
+    #[test]
+    fn decodes_plain_charsequence_in_map() {
+        let reg = Registry::empty();
+        let m = method(vec![in_param(
+            "cfg",
+            TypeRef::Map(Box::new(TypeRef::String), Box::new(TypeRef::String)),
+        )]);
+        let mut buf = 1i32.to_le_bytes().to_vec(); // count 1
+        buf.extend_from_slice(&val_string("k"));
+        buf.extend_from_slice(&val_charsequence(1, "hello")); // kind 1 = plain
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let entry = &nodes[0].children[0];
+        assert!(matches!(&entry.children[1].value, DecodedValue::Str(Some(s)) if s == "hello"));
+    }
+
+    #[test]
+    fn styled_charsequence_bails_safely() {
+        // kind 0 = Spanned: spans are opaque, so the value is undecodable. The single-entry
+        // map then fails wholesale and the param walk surfaces a raw tail (no panic, no corruption).
+        let reg = Registry::empty();
+        let m = method(vec![in_param(
+            "cfg",
+            TypeRef::Map(Box::new(TypeRef::String), Box::new(TypeRef::String)),
+        )]);
+        let mut buf = 1i32.to_le_bytes().to_vec(); // count 1
+        buf.extend_from_slice(&val_string("k"));
+        buf.extend_from_slice(&val_charsequence(0, "styled")); // kind 0 = spanned
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        assert!(matches!(nodes[0].value, DecodedValue::Raw));
     }
 
     // VAL_BUNDLE(3)-tagged value (the nested-in-map form): tag + bundle body.
