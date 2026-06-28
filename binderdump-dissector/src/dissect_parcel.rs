@@ -74,6 +74,7 @@ pub fn dissect_transaction_data(
             method,
             &txn.data,
             0,
+            &txn.offsets,
         );
         if nodes.is_empty() {
             return Ok(());
@@ -118,6 +119,7 @@ pub fn dissect_transaction_data(
         method,
         &txn.data,
         start,
+        &txn.offsets,
     );
     if nodes.is_empty() {
         return Ok(());
@@ -419,6 +421,18 @@ fn add_typed(
                 epan::proto_tree_add_string(tree, hf, tvb, off, len, c.as_ptr());
             }
         }
+        DecodedValue::Binder { handle, strong } => {
+            let s = format!(
+                "{} 0x{:x}",
+                if *strong { "binder" } else { "handle" },
+                handle
+            );
+            // "<invalid>" is a literal with no interior NUL, so this unwrap can't fail.
+            let c = CString::new(s).unwrap_or_else(|_| CString::new("<invalid>").unwrap());
+            unsafe {
+                epan::proto_tree_add_string(tree, hf, tvb, off, len, c.as_ptr());
+            }
+        }
         // these variants are handled by render_value before add_typed is called.
         DecodedValue::Raw
         | DecodedValue::Bytes
@@ -449,6 +463,7 @@ fn value_ftype(
         DecodedValue::U64(_) => (ftenum::FT_UINT64, field_display_e::BASE_DEC),
         DecodedValue::F64(_) => (ftenum::FT_DOUBLE, field_display_e::BASE_NONE),
         DecodedValue::Str(_) => (ftenum::FT_STRING, field_display_e::BASE_NONE),
+        DecodedValue::Binder { .. } => (ftenum::FT_STRING, field_display_e::BASE_NONE),
         // Raw/Bytes/Array/Enum go through dedicated render paths, not this fn.
         _ => (ftenum::FT_BYTES, field_display_e::BASE_NONE),
     }

@@ -5,6 +5,7 @@
 // can map (interface, code) back to a method name.
 
 pub mod aosp_layout;
+pub mod binder_object;
 pub mod decode;
 pub mod model;
 pub mod native_interfaces;
