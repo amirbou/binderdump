@@ -712,7 +712,7 @@ mod tests {
         buf.extend_from_slice(&2i32.to_le_bytes()); // driver
         buf.extend_from_slice(&1i32.to_le_bytes()); // isDriverLoaded (writeBool -> int32 1)
         buf.extend_from_slice(&300i64.to_le_bytes()); // driverLoadingTime
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 9);
         assert_eq!(nodes[0].name, "driverPackageName");
         assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "pkg"));
@@ -736,7 +736,7 @@ mod tests {
         buf.extend_from_slice(&50i64.to_le_bytes()); // driverVersionCode
         buf.extend_from_slice(&3i32.to_le_bytes()); // stats
         buf.extend_from_slice(&99i64.to_le_bytes()); // value
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 4);
         assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "app"));
         assert!(matches!(nodes[1].value, DecodedValue::I64(50)));
@@ -752,7 +752,7 @@ mod tests {
         assert_eq!(method.name, "getUpdatableDriverPath");
         // native reply: bare String16, NO status header.
         let buf = s16("/vendor/lib/egl");
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "driverPath");
         assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "/vendor/lib/egl"));
@@ -766,7 +766,7 @@ mod tests {
         let method = igpu_method(&reg, 35, 7);
         assert_eq!(method.name, "addVulkanEngineName");
         assert!(method.params.is_empty());
-        let nodes = decode_aidl_params(&reg, 35, method, &[], 0);
+        let nodes = decode_aidl_params(&reg, 35, method, &[], 0, &[]);
         assert!(nodes.is_empty());
     }
 
@@ -793,7 +793,7 @@ mod tests {
         let mut buf = Vec::new();
         buf.extend_from_slice(&5000i32.to_le_bytes()); // msec
         buf.extend_from_slice(&2i32.to_le_bytes()); // mode
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0].name, "msec");
         assert!(matches!(nodes[0].value, DecodedValue::I64(5000)));
@@ -813,7 +813,7 @@ mod tests {
         buf.extend_from_slice(&0i32.to_le_bytes()); // status = OK
         buf.extend_from_slice(&1000i32.to_le_bytes()); // initialMarkMs
         buf.extend_from_slice(&2000i32.to_le_bytes()); // resumePlaybackMarkMs
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 3);
         assert_eq!(nodes[0].name, "status");
         assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
@@ -835,7 +835,7 @@ mod tests {
         buf.extend_from_slice(&1.0f32.to_le_bytes()); // pitch
         buf.extend_from_slice(&0i32.to_le_bytes()); // fallbackMode
         buf.extend_from_slice(&1i32.to_le_bytes()); // stretchMode
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 4);
         assert_eq!(nodes[0].name, "speed");
         assert!(matches!(nodes[0].value, DecodedValue::F64(v) if (v - 1.5f64).abs() < 1e-5));
@@ -855,7 +855,7 @@ mod tests {
         let mut buf = Vec::new();
         buf.extend_from_slice(&1920i32.to_le_bytes()); // width
         buf.extend_from_slice(&1080i32.to_le_bytes()); // height
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0].name, "width");
         assert!(matches!(nodes[0].value, DecodedValue::I64(1920)));
@@ -874,7 +874,7 @@ mod tests {
         let mut buf = Vec::new();
         buf.extend_from_slice(&32767i32.to_le_bytes()); // max
         buf.extend_from_slice(&0i32.to_le_bytes()); // status = OK
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0].name, "max");
         assert!(matches!(nodes[0].value, DecodedValue::I64(32767)));
@@ -890,7 +890,7 @@ mod tests {
         let method = native_method(&reg, 34, "android.media.IMediaRecorder", 24);
         assert_eq!(method.name, "setClientName");
         let buf = s16("myapp");
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "clientName");
         assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "myapp"));
@@ -907,7 +907,7 @@ mod tests {
         let mut buf = Vec::new();
         buf.extend_from_slice(&0i32.to_le_bytes()); // status = OK
         buf.extend_from_slice(&12345678i64.to_le_bytes()); // bytes (readUint64 -> I64)
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0].name, "status");
         assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
@@ -923,7 +923,7 @@ mod tests {
         let method = native_method(&reg, 34, "android.media.IMediaPlayerService", 4);
         assert_eq!(method.name, "addBatteryData");
         let buf = 0x101i32.to_le_bytes().to_vec();
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "params");
         assert!(matches!(nodes[0].value, DecodedValue::I64(0x101)));
@@ -941,7 +941,7 @@ mod tests {
         buf.extend_from_slice(&7i32.to_le_bytes()); // msg = MEDIA_RECORDER_EVENT_INFO
         buf.extend_from_slice(&1i32.to_le_bytes()); // ext1
         buf.extend_from_slice(&0i32.to_le_bytes()); // ext2
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 3);
         assert_eq!(nodes[0].name, "msg");
         assert!(matches!(nodes[0].value, DecodedValue::I64(7)));
@@ -958,7 +958,7 @@ mod tests {
         // disconnect() = 1; no params, no out
         let method = native_method(&reg, 34, "android.media.IMediaMetadataRetriever", 1);
         assert_eq!(method.name, "disconnect");
-        let nodes = decode_aidl_params(&reg, 34, method, &[], 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &[], 0, &[]);
         assert!(nodes.is_empty());
     }
 
@@ -999,7 +999,7 @@ mod tests {
         // dispose(out int status) = 1; no in params
         let method = native_method(&reg, 34, "android.media.IRemoteDisplay", 1);
         assert_eq!(method.name, "dispose");
-        let nodes = decode_aidl_params(&reg, 34, method, &[], 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &[], 0, &[]);
         assert!(nodes.is_empty());
     }
 
@@ -1011,7 +1011,7 @@ mod tests {
         let method = native_method(&reg, 34, "android.media.IRemoteDisplay", 1);
         assert_eq!(method.name, "dispose");
         let buf = 0i32.to_le_bytes().to_vec();
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "status");
         assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
@@ -1025,7 +1025,7 @@ mod tests {
         let method = native_method(&reg, 34, "android.media.IRemoteDisplay", 3);
         assert_eq!(method.name, "resume");
         let buf = (-1i32).to_le_bytes().to_vec();
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "status");
         assert!(matches!(nodes[0].value, DecodedValue::I64(-1)));
@@ -1043,7 +1043,7 @@ mod tests {
         let mut buf = Vec::new();
         buf.extend_from_slice(&4096i64.to_le_bytes()); // offset
         buf.extend_from_slice(&512i64.to_le_bytes()); // size
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0].name, "offset");
         assert!(matches!(nodes[0].value, DecodedValue::I64(4096)));
@@ -1059,7 +1059,7 @@ mod tests {
         let method = native_method(&reg, 34, "android.media.IDataSource", 2);
         assert_eq!(method.name, "readAt");
         let buf = 512i64.to_le_bytes().to_vec();
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "result");
         assert!(matches!(nodes[0].value, DecodedValue::I64(512)));
@@ -1072,7 +1072,7 @@ mod tests {
         // close() = 4; no params, no reply
         let method = native_method(&reg, 34, "android.media.IDataSource", 4);
         assert_eq!(method.name, "close");
-        let nodes = decode_aidl_params(&reg, 34, method, &[], 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &[], 0, &[]);
         assert!(nodes.is_empty());
     }
 
@@ -1084,7 +1084,7 @@ mod tests {
         let method = native_method(&reg, 34, "android.media.IDataSource", 5);
         assert_eq!(method.name, "getFlags");
         let buf = 3u32.to_le_bytes().to_vec();
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "flags");
         assert!(matches!(nodes[0].value, DecodedValue::I64(3)));
@@ -1100,7 +1100,7 @@ mod tests {
         let method = native_method(&reg, 34, "android.media.IMediaExtractor", 1);
         assert_eq!(method.name, "countTracks");
         let buf = 4u32.to_le_bytes().to_vec();
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "count");
         assert!(matches!(nodes[0].value, DecodedValue::I64(4)));
@@ -1114,7 +1114,7 @@ mod tests {
         let method = native_method(&reg, 34, "android.media.IMediaExtractor", 5);
         assert_eq!(method.name, "flags");
         let buf = 1u32.to_le_bytes().to_vec();
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "flags");
         assert!(matches!(nodes[0].value, DecodedValue::I64(1)));
@@ -1128,7 +1128,7 @@ mod tests {
         let method = native_method(&reg, 34, "android.media.IMediaExtractor", 9);
         assert_eq!(method.name, "setEntryPoint");
         let buf = 2i32.to_le_bytes().to_vec();
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "entryPoint");
         assert!(matches!(nodes[0].value, DecodedValue::I64(2)));
@@ -1144,7 +1144,7 @@ mod tests {
         let method = native_method(&reg, 34, "android.media.IMediaCodecList", 2);
         assert_eq!(method.name, "countCodecs");
         let buf = 42i32.to_le_bytes().to_vec();
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "count");
         assert!(matches!(nodes[0].value, DecodedValue::I64(42)));
@@ -1159,7 +1159,7 @@ mod tests {
         // requestMergeWakeup() = 3; no params, no reply
         let method = native_method(&reg, 34, "android.media.IMediaLogService", 3);
         assert_eq!(method.name, "requestMergeWakeup");
-        let nodes = decode_aidl_params(&reg, 34, method, &[], 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &[], 0, &[]);
         assert!(nodes.is_empty());
     }
 
@@ -1173,7 +1173,7 @@ mod tests {
         let method = native_method(&reg, 34, "android.media.IRemoteDisplayClient", 2);
         assert_eq!(method.name, "onDisplayDisconnected");
         assert!(method.oneway);
-        let nodes = decode_aidl_params(&reg, 34, method, &[], 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &[], 0, &[]);
         assert!(nodes.is_empty());
     }
 
@@ -1186,7 +1186,7 @@ mod tests {
         assert_eq!(method.name, "onDisplayError");
         assert!(method.oneway);
         let buf = 5i32.to_le_bytes().to_vec();
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "error");
         assert!(matches!(nodes[0].value, DecodedValue::I64(5)));
@@ -1217,7 +1217,7 @@ mod tests {
         assert_eq!(method.name, "onFrameDequeued");
         assert!(method.oneway);
         let buf = 0x123456789abcdefu64.to_le_bytes().to_vec();
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "bufferId");
         assert!(matches!(nodes[0].value, DecodedValue::I64(v) if v == 0x123456789abcdefu64 as i64));
@@ -1232,7 +1232,7 @@ mod tests {
         assert_eq!(method.name, "onFrameCancelled");
         assert!(method.oneway);
         let buf = 42u64.to_le_bytes().to_vec();
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "bufferId");
         assert!(matches!(nodes[0].value, DecodedValue::I64(42)));
@@ -1248,7 +1248,7 @@ mod tests {
         let method = native_method(&reg, 34, "android.gui.IGraphicBufferConsumer", 2);
         assert_eq!(method.name, "detachBuffer");
         let buf = 3i32.to_le_bytes().to_vec();
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "slot");
         assert!(matches!(nodes[0].value, DecodedValue::I64(3)));
@@ -1261,7 +1261,7 @@ mod tests {
         // void detachBuffer(int slot, out int status) = 2; reply: readInt32() → status_t
         let method = native_method(&reg, 34, "android.gui.IGraphicBufferConsumer", 2);
         let buf = 0i32.to_le_bytes().to_vec();
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "status");
         assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
@@ -1278,7 +1278,7 @@ mod tests {
         let mut buf = Vec::new();
         buf.extend_from_slice(&0i32.to_le_bytes()); // status
         buf.extend_from_slice(&0b1010u64.to_le_bytes()); // slotMask
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0].name, "status");
         assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
@@ -1297,7 +1297,7 @@ mod tests {
         let mut buf = Vec::new();
         buf.extend_from_slice(&1920u32.to_le_bytes()); // width
         buf.extend_from_slice(&1080u32.to_le_bytes()); // height
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0].name, "width");
         assert!(matches!(nodes[0].value, DecodedValue::I64(1920)));
@@ -1313,7 +1313,7 @@ mod tests {
         let method = native_method(&reg, 34, "android.gui.IGraphicBufferConsumer", 14);
         assert_eq!(method.name, "setConsumerUsageBits");
         let buf = 0x300u64.to_le_bytes().to_vec(); // GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_RENDER
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "usage");
         assert!(matches!(nodes[0].value, DecodedValue::I64(0x300)));
@@ -1327,7 +1327,7 @@ mod tests {
         let method = native_method(&reg, 34, "android.gui.IGraphicBufferConsumer", 15);
         assert_eq!(method.name, "setConsumerIsProtected");
         let buf = 1i32.to_le_bytes().to_vec(); // true
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "isProtected");
         assert!(matches!(nodes[0].value, DecodedValue::Bool(true)));
@@ -1341,7 +1341,7 @@ mod tests {
         let method = native_method(&reg, 34, "android.gui.IGraphicBufferConsumer", 19);
         assert_eq!(method.name, "discardFreeBuffers");
         let buf = 0i32.to_le_bytes().to_vec();
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "status");
         assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
@@ -1361,7 +1361,7 @@ mod tests {
         let mut buf = Vec::new();
         buf.extend_from_slice(&7i32.to_le_bytes()); // id
         buf.extend_from_slice(&1i32.to_le_bytes()); // inTrustedPresentationState = true
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0].name, "id");
         assert!(matches!(nodes[0].value, DecodedValue::I64(7)));
@@ -1385,7 +1385,7 @@ mod tests {
         buf.extend_from_slice(&200_000_000i64.to_le_bytes()); // samplingPeriodNs = 200ms
         buf.extend_from_slice(&0i64.to_le_bytes()); // maxBatchReportLatencyNs
         buf.extend_from_slice(&0i32.to_le_bytes()); // reservedFlags
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 5);
         assert_eq!(nodes[0].name, "handle");
         assert!(matches!(nodes[0].value, DecodedValue::I64(42)));
@@ -1406,7 +1406,7 @@ mod tests {
         // reply: readInt32() → status_t
         let method = native_method(&reg, 34, "android.gui.SensorEventConnection", 2);
         let buf = 0i32.to_le_bytes().to_vec();
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "status");
         assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
@@ -1423,7 +1423,7 @@ mod tests {
         let mut buf = Vec::new();
         buf.extend_from_slice(&5i32.to_le_bytes()); // handle
         buf.extend_from_slice(&50_000_000i64.to_le_bytes()); // ns = 50ms
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0].name, "handle");
         assert!(matches!(nodes[0].value, DecodedValue::I64(5)));
@@ -1439,7 +1439,7 @@ mod tests {
         let method = native_method(&reg, 34, "android.gui.SensorEventConnection", 4);
         assert_eq!(method.name, "flushSensor");
         let buf = (-1i32).to_le_bytes().to_vec();
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "status");
         assert!(matches!(nodes[0].value, DecodedValue::I64(-1)));
@@ -1453,7 +1453,7 @@ mod tests {
         let method = native_method(&reg, 34, "android.gui.SensorEventConnection", 6);
         assert_eq!(method.name, "destroy");
         assert!(method.oneway);
-        let nodes = decode_aidl_params(&reg, 34, method, &[], 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &[], 0, &[]);
         assert!(nodes.is_empty());
     }
 
@@ -1467,7 +1467,7 @@ mod tests {
         let method = native_method(&reg, 34, "android.gui.SensorServer", 3);
         assert_eq!(method.name, "enableDataInjection");
         let buf = 1i32.to_le_bytes().to_vec(); // mode = 1 (enable)
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "mode");
         assert!(matches!(nodes[0].value, DecodedValue::I64(1)));
@@ -1480,7 +1480,7 @@ mod tests {
         // void enableDataInjection(int mode, out int status) = 3; reply: readInt32()
         let method = native_method(&reg, 34, "android.gui.SensorServer", 3);
         let buf = 0i32.to_le_bytes().to_vec();
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "status");
         assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
@@ -1494,7 +1494,7 @@ mod tests {
         let method = native_method(&reg, 35, "android.gui.SensorServer", 8);
         assert_eq!(method.name, "enableReplayDataInjection");
         let buf = 1i32.to_le_bytes().to_vec();
-        let nodes = decode_aidl_params(&reg, 35, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 35, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "mode");
         assert!(matches!(nodes[0].value, DecodedValue::I64(1)));
@@ -1534,7 +1534,7 @@ mod tests {
         let method = native_method(&reg, 34, "android.hardware.ICameraRecordingProxy", 1);
         assert_eq!(method.name, "startRecording");
         let buf = 0i32.to_le_bytes().to_vec();
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "status");
         assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
@@ -1547,7 +1547,7 @@ mod tests {
         // stopRecording() = 2; no in params, reply parcel is empty
         let method = native_method(&reg, 34, "android.hardware.ICameraRecordingProxy", 2);
         assert_eq!(method.name, "stopRecording");
-        let nodes = decode_aidl_params(&reg, 34, method, &[], 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &[], 0, &[]);
         assert!(nodes.is_empty());
     }
 
@@ -1572,7 +1572,7 @@ mod tests {
         buf.extend_from_slice(&1i32.to_le_bytes()); // msgType = CAMERA_MSG_VIDEO_FRAME
                                                     // imageData (IBinder) — undecodable; raw bytes follow
         buf.extend_from_slice(&[0u8; 4]); // placeholder binder bytes
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 3);
         assert_eq!(nodes[0].name, "timestamp");
         assert!(matches!(nodes[0].value, DecodedValue::I64(1_000_000_000)));
@@ -1593,7 +1593,7 @@ mod tests {
         assert_eq!(method.name, "onBufferAvailable");
         assert!(method.oneway);
         let buf = 2i64.to_le_bytes().to_vec();
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "index");
         assert!(matches!(nodes[0].value, DecodedValue::I64(2)));
@@ -1607,7 +1607,7 @@ mod tests {
         let method = native_method(&reg, 34, "android.hardware.IStreamSource", 4);
         assert_eq!(method.name, "flags");
         let buf = 3u32.to_le_bytes().to_vec();
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "flags");
         assert!(matches!(nodes[0].value, DecodedValue::I64(3)));
@@ -1624,7 +1624,7 @@ mod tests {
         let mut buf = Vec::new();
         buf.extend_from_slice(&3i64.to_le_bytes()); // count = 3
         buf.extend_from_slice(&[0u8; 16]); // placeholder binder data
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0].name, "count");
         assert!(matches!(nodes[0].value, DecodedValue::I64(3)));
@@ -1645,7 +1645,7 @@ mod tests {
         let mut buf = Vec::new();
         buf.extend_from_slice(&0i64.to_le_bytes()); // index = 0
         buf.extend_from_slice(&4096i64.to_le_bytes()); // size = 4096
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0].name, "index");
         assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
@@ -1664,7 +1664,7 @@ mod tests {
         assert_eq!(method.name, "enableVsyncInjections");
         assert!(method.oneway);
         let buf = 1i32.to_le_bytes(); // writeBool(true) -> int32 1
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "enable");
         assert!(matches!(nodes[0].value, DecodedValue::Bool(true)));
@@ -1679,7 +1679,7 @@ mod tests {
         assert_eq!(method.name, "injectVsync");
         assert!(method.oneway);
         let buf = 123_456_789i64.to_le_bytes();
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "when");
         assert!(matches!(nodes[0].value, DecodedValue::I64(123_456_789)));
@@ -1700,7 +1700,7 @@ mod tests {
         buf.extend_from_slice(&1i32.to_le_bytes()); // defaultPixelFormat
         buf.extend_from_slice(&144i32.to_le_bytes()); // wideColorGamutDataspace
         buf.extend_from_slice(&4i32.to_le_bytes()); // wideColorGamutPixelFormat
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 5);
         assert_eq!(nodes[0].name, "status");
         assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
@@ -1719,7 +1719,7 @@ mod tests {
         let method = native_method(&reg, 34, "android.ui.ISurfaceComposer", 28);
         assert_eq!(method.name, "getColorManagement");
         let buf = 1i32.to_le_bytes(); // writeBool(true) -> int32 1
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "colorManagement");
         assert!(matches!(nodes[0].value, DecodedValue::Bool(true)));
@@ -1745,7 +1745,7 @@ mod tests {
         buf.extend_from_slice(&30.0f32.to_le_bytes()); // appRequestRefreshRateMin
         buf.extend_from_slice(&120.0f32.to_le_bytes()); // appRequestRefreshRateMax
         buf.extend_from_slice(&0i32.to_le_bytes()); // status = OK
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 7);
         assert_eq!(nodes[0].name, "defaultMode");
         assert!(matches!(nodes[0].value, DecodedValue::I64(2)));
@@ -1767,7 +1767,7 @@ mod tests {
         let method = native_method(&reg, 34, "drm.IDrmManagerService", 20);
         assert_eq!(method.name, "removeAllRights");
         let buf = 99i32.to_le_bytes(); // uniqueId = 99
-        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "uniqueId");
         assert!(matches!(nodes[0].value, DecodedValue::I64(99)));
@@ -1782,7 +1782,7 @@ mod tests {
         let method = native_method(&reg, 34, "drm.IDrmManagerService", 1);
         assert_eq!(method.name, "addUniqueId");
         let buf = 7i32.to_le_bytes(); // uniqueId = 7
-        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "uniqueId");
         assert!(matches!(nodes[0].value, DecodedValue::I64(7)));

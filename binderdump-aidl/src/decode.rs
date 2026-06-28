@@ -427,8 +427,9 @@ pub fn decode_native_reply(
     method: &Method,
     buf: &[u8],
     start: usize,
+    offsets: &[u8],
 ) -> Vec<DecodedNode> {
-    let mut cur = ParcelCursor::new(buf, start);
+    let mut cur = ParcelCursor::new(buf, start).with_offsets(offsets);
     let mut nodes = Vec::new();
     for param in &method.params {
         if param.direction == Direction::In {
