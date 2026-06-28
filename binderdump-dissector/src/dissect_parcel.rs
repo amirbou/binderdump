@@ -12,7 +12,7 @@
 // dissection; the undecodable tail uses a static `parcel.raw` field, which is.
 
 use crate::header_fields_manager::HeaderFieldsManager;
-use binderdump_aidl::decode::decode_aidl_reply;
+use binderdump_aidl::decode::{decode_aidl_reply, decode_native_reply};
 use binderdump_aidl::{decode_aidl_params, DecodedNode, DecodedValue};
 use binderdump_epan_sys::epan;
 use binderdump_structs::binder_serde::FieldOffset;
@@ -68,14 +68,25 @@ pub fn dissect_transaction_data(
             return Ok(());
         };
         // reply payload starts at offset 0 (no interface token).
-        let nodes = decode_aidl_reply(
-            crate::aidl_resolve::registry(),
-            event.android_sdk(),
-            method,
-            &txn.data,
-            0,
-            &txn.offsets,
-        );
+        let nodes = if state.is_native {
+            decode_native_reply(
+                crate::aidl_resolve::registry(),
+                event.android_sdk(),
+                method,
+                &txn.data,
+                0,
+                &txn.offsets,
+            )
+        } else {
+            decode_aidl_reply(
+                crate::aidl_resolve::registry(),
+                event.android_sdk(),
+                method,
+                &txn.data,
+                0,
+                &txn.offsets,
+            )
+        };
         if nodes.is_empty() {
             return Ok(());
         }
