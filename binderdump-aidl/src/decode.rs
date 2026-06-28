@@ -3,16 +3,39 @@
 // first undecodable type (or any overrun) stops the walk and the remaining
 // bytes are surfaced raw by the caller.
 
+// binder object type tags, B_PACK_CHARS('s','b','*', B_TYPE_LARGE) form from
+// <linux/android/binder.h>. local binder vs remote handle, strong/weak.
+const fn b_pack_chars(c1: u8, c2: u8, c3: u8, c4: u8) -> u32 {
+    ((c1 as u32) << 24) | ((c2 as u32) << 16) | ((c3 as u32) << 8) | (c4 as u32)
+}
+const B_TYPE_LARGE: u8 = 0x85;
+const BINDER_TYPE_BINDER: u32 = b_pack_chars(b's', b'b', b'*', B_TYPE_LARGE);
+const BINDER_TYPE_WEAK_BINDER: u32 = b_pack_chars(b'w', b'b', b'*', B_TYPE_LARGE);
+const BINDER_TYPE_HANDLE: u32 = b_pack_chars(b's', b'h', b'*', B_TYPE_LARGE);
+const BINDER_TYPE_WEAK_HANDLE: u32 = b_pack_chars(b'w', b'h', b'*', B_TYPE_LARGE);
+
 // 4-byte-aligned cursor over a parcel buffer. AIDL aligns every write to 4
 // bytes; 64-bit values occupy 8. All readers return None on overrun.
 pub struct ParcelCursor<'a> {
     pub pos: usize,
     buf: &'a [u8],
+    offsets: &'a [u8],
 }
 
 impl<'a> ParcelCursor<'a> {
     pub fn new(buf: &'a [u8], start: usize) -> Self {
-        Self { pos: start, buf }
+        Self {
+            pos: start,
+            buf,
+            offsets: &[],
+        }
+    }
+
+    // attach the transaction offsets array (8-byte LE binder_size_t entries) so
+    // read_binder_object can locate inline flat_binder_objects.
+    pub fn with_offsets(mut self, offsets: &'a [u8]) -> Self {
+        self.offsets = offsets;
+        self
     }
 
     fn take(&mut self, n: usize) -> Option<&'a [u8]> {
@@ -62,6 +85,30 @@ impl<'a> ParcelCursor<'a> {
         }
         self.pos = pos;
         Some(())
+    }
+
+    // A strong-binder arg is a flat_binder_object written inline in the data buffer, its byte
+    // offset listed in the transaction offsets array. 64-bit kernel: 8-byte LE offset entries;
+    // flat_binder_object = [u32 type][u32 flags][u64 binder|handle][u64 cookie] = 24 bytes
+    // (<linux/android/binder.h>). If the cursor sits at a listed binder/handle object, returns
+    // (value, strong) and advances 24 bytes; otherwise None (caller halts).
+    pub fn read_binder_object(&mut self) -> Option<(u64, bool)> {
+        let pos = self.pos;
+        let at_object = self.offsets.chunks_exact(8).any(|c| {
+            u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]) as usize == pos
+        });
+        if !at_object {
+            return None;
+        }
+        let strong = match self.read_u32()? {
+            BINDER_TYPE_BINDER | BINDER_TYPE_WEAK_BINDER => true,
+            BINDER_TYPE_HANDLE | BINDER_TYPE_WEAK_HANDLE => false,
+            _ => return None, // fd/ptr/fda/unknown: not a plain IBinder
+        };
+        let _flags = self.read_u32()?;
+        let value = self.read_u64()?; // local binder ptr, or remote handle in the low 32 bits
+        let _cookie = self.read_u64()?;
+        Some((value, strong))
     }
 
     // String16: int32 char_count (-1 = null), then (char_count+1) char16_t
@@ -2666,6 +2713,37 @@ mod tests {
         let nodes = decode_aidl_reply(&reg, 34, &m, &buf, 0);
         assert_eq!(nodes[0].name, "return");
         assert!(matches!(nodes[0].value, DecodedValue::I64(5)));
+    }
+
+    #[test]
+    fn reads_binder_handle_object() {
+        // flat_binder_object: type=HANDLE, flags=0, handle=0x1f, cookie=0; offset entry [0].
+        let mut data = BINDER_TYPE_HANDLE.to_le_bytes().to_vec();
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&0x1fu64.to_le_bytes());
+        data.extend_from_slice(&0u64.to_le_bytes());
+        let offsets = 0u64.to_le_bytes();
+        let mut cur = ParcelCursor::new(&data, 0).with_offsets(&offsets);
+        assert_eq!(cur.read_binder_object(), Some((0x1f, false)));
+        assert_eq!(cur.pos, 24);
+    }
+
+    #[test]
+    fn reads_local_binder_object_is_strong() {
+        let mut data = BINDER_TYPE_BINDER.to_le_bytes().to_vec();
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&0xdead_0000u64.to_le_bytes());
+        data.extend_from_slice(&0u64.to_le_bytes());
+        let offsets = 0u64.to_le_bytes();
+        let mut cur = ParcelCursor::new(&data, 0).with_offsets(&offsets);
+        assert_eq!(cur.read_binder_object(), Some((0xdead_0000, true)));
+    }
+
+    #[test]
+    fn read_binder_object_none_without_offsets() {
+        let data = BINDER_TYPE_HANDLE.to_le_bytes();
+        let mut cur = ParcelCursor::new(&data, 0); // empty offsets
+        assert_eq!(cur.read_binder_object(), None);
     }
 
     // end-to-end: resolve a real AOSP interface+method whose param is an enum from
