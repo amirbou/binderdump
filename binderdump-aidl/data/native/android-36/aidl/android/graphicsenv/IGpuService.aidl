@@ -22,7 +22,7 @@ interface IGpuService {
     oneway void setGpuStats(in String driverPackageName, in String driverVersionName, long driverVersionCode, long driverBuildTime, in String appPackageName, int vulkanVersion, int driver, boolean isDriverLoaded, long driverLoadingTime) = 1;
     oneway void setTargetStats(in String appPackageName, long driverVersionCode, int stats, long value) = 2;
     oneway void setUpdatableDriverPath(in String driverPath) = 3;
-    String getUpdatableDriverPath() = 4;
+    void getUpdatableDriverPath(out String driverPath) = 4;
     oneway void toggleAngleAsSystemDriver(boolean enabled) = 5;
     IBinder setTargetStatsArray() = 6;
     IBinder addVulkanEngineName() = 7;
