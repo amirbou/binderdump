@@ -417,6 +417,38 @@ pub fn decode_aidl_reply(
     nodes
 }
 
+// Native (hand-written C++) interfaces write the reply with NO AIDL status header — the
+// BpXxx reads reply values directly, in a per-method order. Decode the method's out/inout
+// params in declaration order (the reply field order, including a synthetic `out int status`),
+// with no header and no return value. Best-effort: a field that fails appends a raw tail.
+pub fn decode_native_reply(
+    reg: &Registry,
+    sdk: u32,
+    method: &Method,
+    buf: &[u8],
+    start: usize,
+) -> Vec<DecodedNode> {
+    let mut cur = ParcelCursor::new(buf, start);
+    let mut nodes = Vec::new();
+    for param in &method.params {
+        if param.direction == Direction::In {
+            continue;
+        }
+        let before = cur.pos;
+        match decode_value(reg, sdk, &mut cur, &param.ty, 0) {
+            Some(mut n) => {
+                n.name = param.name.clone();
+                nodes.push(n);
+            }
+            None => {
+                nodes.push(raw_tail(param.name.clone(), before, buf.len()));
+                return nodes;
+            }
+        }
+    }
+    nodes
+}
+
 fn raw_tail(name: String, start: usize, buf_len: usize) -> DecodedNode {
     DecodedNode {
         name,
@@ -2789,6 +2821,54 @@ mod tests {
         buf.extend_from_slice(&1i32.to_le_bytes());
         let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]); // no offsets -> halt
         assert!(matches!(nodes[0].value, DecodedValue::Raw));
+    }
+
+    #[test]
+    fn native_reply_decodes_out_params_no_status_header() {
+        let reg = Registry::empty();
+        // getCurrentPosition-style native reply: [int32 msec][int32 status], NO header.
+        let mut m = method(vec![
+            out_param("msec", TypeRef::Primitive(Prim::I32)),
+            out_param("status", TypeRef::Primitive(Prim::I32)),
+        ]);
+        m.return_type = None;
+        let mut buf = 42i32.to_le_bytes().to_vec();
+        buf.extend_from_slice(&0i32.to_le_bytes());
+        let nodes = decode_native_reply(&reg, 34, &m, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].name, "msec");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(42)));
+        assert_eq!(nodes[1].name, "status");
+        assert!(matches!(nodes[1].value, DecodedValue::I64(0)));
+    }
+
+    #[test]
+    fn native_reply_skips_in_params() {
+        let reg = Registry::empty();
+        // a mixed method: `in` request fields are NOT in the reply; only `out` decode.
+        let mut m = method(vec![
+            in_param("left", TypeRef::Primitive(Prim::F32)),
+            in_param("right", TypeRef::Primitive(Prim::F32)),
+            out_param("status", TypeRef::Primitive(Prim::I32)),
+        ]);
+        m.return_type = None;
+        let buf = 0i32.to_le_bytes().to_vec(); // reply = just the status
+        let nodes = decode_native_reply(&reg, 34, &m, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "status");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
+    }
+
+    #[test]
+    fn native_reply_string_out() {
+        let reg = Registry::empty();
+        let mut m = method(vec![out_param("driverPath", TypeRef::String)]);
+        m.return_type = None;
+        let buf = string16("/vendor/lib/egl"); // reply = bare String16, no header
+        let nodes = decode_native_reply(&reg, 34, &m, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "driverPath");
+        assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "/vendor/lib/egl"));
     }
 
     // end-to-end: resolve a real AOSP interface+method whose param is an enum from
