@@ -967,10 +967,10 @@ mod tests {
         // android-37 inserted SET_VIDEO_SURFACETEXTURE_V2 at code 32, shifting 33-44.
         // Verify a few shifted methods resolve correctly by name.
         let reg = native_reg();
-        let setNextPlayer = native_method(&reg, 37, "android.media.IMediaPlayer", 37);
-        assert_eq!(setNextPlayer.name, "setNextPlayer");
-        let enableCb = native_method(&reg, 37, "android.media.IMediaPlayer", 44);
-        assert_eq!(enableCb.name, "enableAudioDeviceCallback");
+        let set_next_player = native_method(&reg, 37, "android.media.IMediaPlayer", 37);
+        assert_eq!(set_next_player.name, "setNextPlayer");
+        let enable_cb = native_method(&reg, 37, "android.media.IMediaPlayer", 44);
+        assert_eq!(enable_cb.name, "enableAudioDeviceCallback");
         // code 32 is the new STUB
         let stub = native_method(&reg, 37, "android.media.IMediaPlayer", 32);
         assert_eq!(stub.name, "setVideoSurfaceTextureV2");
