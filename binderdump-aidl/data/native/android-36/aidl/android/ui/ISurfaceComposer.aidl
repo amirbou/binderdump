@@ -87,7 +87,7 @@ interface ISurfaceComposer {
     void destroyDisplay(IBinder display) = 6;
     void getPhysicalDisplayToken(long displayId, out IBinder result) = 7;
     IBinder setTransactionState() = 8;
-    void authenticateSurface(IBinder bufferProducer, out int result) = 9;
+    void authenticateSurface(IBinder bufferProducer, out boolean result) = 9;
     void getSupportedFrameTimestamps(out int status) = 10;
     IBinder getDisplayModes() = 11;
     IBinder getActiveDisplayMode() = 12;
