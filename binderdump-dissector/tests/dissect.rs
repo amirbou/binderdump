@@ -1321,6 +1321,49 @@ fn parcel_bundle_renders_from_committed_corpus() {
     );
 }
 
+// Asserts the reply-decode path against a dedicated fixture. reply.pcapng captures
+// IInputManager.getMousePointerSpeed (code 9, no params) calls driven via
+// `service call input 9`. The pointer_speed setting is set to 3 before capture so
+// the reply carries a non-zero int return value. The fixture includes the request
+// frames and both reply halves (BC_REPLY write side and BR_REPLY read side), filtered
+// to the complete transaction streams via a two-pass tshark run. The dissector resolves
+// the method on the request frame, stores it in reply_correlation, then on each reply
+// frame looks it up (the BR_REPLY read side via the reply's own debug_id) and calls
+// decode_aidl_reply, rendering a "Reply" subtree with "return: 3" under it.
+// Regenerate with binderdump-dissector/tests/regen_reply_fixture.sh.
+#[test]
+fn parcel_reply_renders_from_committed_corpus() {
+    ensure_dissector_loaded();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reply.pcapng");
+    let path = fixture.to_str().unwrap();
+    let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../binderdump-aidl/data/aosp");
+    let corpus_pref = format!(
+        "binderdump.aosp_corpus_dir:{}",
+        corpus_dir.to_str().unwrap()
+    );
+
+    // two-pass so reply_correlation is populated before the reply frame is dissected.
+    let out = tshark(&["-2", "-r", path, "-o", &corpus_pref, "-V"]);
+    // the reply is decoded on BOTH halves of the round-trip: the BC_REPLY (write) frame
+    // (in_reply_to_debug_id stamped) and the BR_REPLY (read) frame (in_reply_to_debug_id
+    // == 0, resolved via the reply's own debug_id). pointer_speed was set to 3 before
+    // capture, so the int return value is 3. Split per frame so each side is checked
+    // against its own command/return marker, not the whole capture.
+    let frames: Vec<&str> = out.split("Frame ").collect();
+    assert!(
+        frames
+            .iter()
+            .any(|f| f.contains("BC_REPLY") && f.contains("return: 3")),
+        "expected the BC_REPLY (write side) frame to decode 'return: 3'; got:\n{out}"
+    );
+    assert!(
+        frames
+            .iter()
+            .any(|f| f.contains("BR_REPLY") && f.contains("return: 3")),
+        "expected the BR_REPLY (read side) frame to decode 'return: 3'; got:\n{out}"
+    );
+}
+
 #[test]
 fn follow_via_stream_id_zero() {
     ensure_dissector_loaded();

@@ -1,3 +1,4 @@
+use binderdump_aidl::model::Method;
 use binderdump_epan_sys as epan;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -15,6 +16,7 @@ pub struct TxnState {
     pub req_time: Option<epan::nstime_t>,
     pub interface: Option<String>,
     pub method_name: Option<String>,
+    pub method: Option<&'static Method>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -54,6 +56,7 @@ impl State {
         req_cmdline: Option<String>,
         interface: Option<String>,
         method_name: Option<String>,
+        method: Option<&'static Method>,
     ) {
         self.frames.insert(
             frame,
@@ -128,6 +131,7 @@ impl State {
                 entry.req_time = Some(abs_ts);
                 entry.interface = interface;
                 entry.method_name = method_name;
+                entry.method = method;
             }
             // caller tid/cmdline come only from the send (BC) frame. it is NOT
             // necessarily the first frame seen for this debug_id (the recv/BR frame
@@ -156,6 +160,18 @@ impl State {
             return None;
         }
         self.txns.get(&key).cloned()
+    }
+
+    // Resolve a reply frame to its originating request's TxnState. The kernel only
+    // stamps in_reply_to_debug_id (N) on the BC_REPLY (write) side; a BR_REPLY (read)
+    // frame carries in_reply_to_debug_id == 0 but its own reply debug_id (Y), so for
+    // those we walk n_by_rep_debug_id[Y] = N (recorded when the BC_REPLY was seen).
+    fn txn_for_reply(&self, in_reply_to_debug_id: i32, reply_debug_id: i32) -> Option<TxnState> {
+        if let Some(t) = self.lookup_txn(in_reply_to_debug_id) {
+            return Some(t);
+        }
+        let n = self.n_by_rep_debug_id.get(&reply_debug_id)?;
+        self.lookup_txn(*n)
     }
 
     // caller tid + cmdline for a transaction, recorded from its send frame.
@@ -245,6 +261,7 @@ pub fn record_frame(
     req_cmdline: Option<String>,
     interface: Option<String>,
     method_name: Option<String>,
+    method: Option<&'static Method>,
 ) {
     let Ok(mut s) = state().lock() else { return };
     s.record_frame(
@@ -258,6 +275,7 @@ pub fn record_frame(
         req_cmdline,
         interface,
         method_name,
+        method,
     );
 }
 
@@ -267,6 +285,14 @@ pub fn lookup_frame(frame: u32) -> Option<FrameMeta> {
 
 pub fn lookup_txn(key: i32) -> Option<TxnState> {
     state().lock().ok()?.lookup_txn(key)
+}
+
+// resolve a reply frame (BC_REPLY or orphan BR_REPLY) to its originating TxnState.
+pub fn txn_for_reply(in_reply_to_debug_id: i32, reply_debug_id: i32) -> Option<TxnState> {
+    state()
+        .lock()
+        .ok()?
+        .txn_for_reply(in_reply_to_debug_id, reply_debug_id)
 }
 
 pub fn caller_info(debug_id: i32) -> Option<(i32, String)> {
@@ -307,6 +333,7 @@ mod tests {
             None,
             Some("a.b.IFoo".into()),
             Some("hello".into()),
+            None,
         );
         let t = s.lookup_txn(42).expect("txn");
         assert_eq!(t.req_frame, 10);
@@ -319,8 +346,8 @@ mod tests {
     #[test]
     fn record_reply_then_lookup() {
         let mut s = State::default();
-        s.record_frame(5, ts(0, 0), 7, 0, 0, 0, 0, None, None, None);
-        s.record_frame(11, ts(0, 0), 99, 7, 1, 0, 0, None, None, None);
+        s.record_frame(5, ts(0, 0), 7, 0, 0, 0, 0, None, None, None, None);
+        s.record_frame(11, ts(0, 0), 99, 7, 1, 0, 0, None, None, None, None);
         let t = s.lookup_txn(7).expect("txn");
         assert_eq!(t.req_frame, 5);
         assert_eq!(t.rep_frame, 11);
@@ -343,6 +370,7 @@ mod tests {
             None,
             Some("first".into()),
             Some("a".into()),
+            None,
         );
         s.record_frame(
             2,
@@ -355,6 +383,7 @@ mod tests {
             None,
             Some("second".into()),
             Some("b".into()),
+            None,
         );
         let t = s.lookup_txn(5).expect("txn");
         assert_eq!(t.req_frame, 1);
@@ -364,7 +393,7 @@ mod tests {
     #[test]
     fn clear_wipes_both_maps() {
         let mut s = State::default();
-        s.record_frame(1, ts(0, 0), 1, 0, 0, 0, 0, None, None, None);
+        s.record_frame(1, ts(0, 0), 1, 0, 0, 0, 0, None, None, None, None);
         s.clear();
         assert!(s.lookup_txn(1).is_none());
         assert!(s.lookup_frame(1).is_none());
@@ -392,6 +421,7 @@ mod tests {
             None,
             Some("a.b.IFoo".into()),
             Some("hello".into()),
+            None,
         );
         let t = s.lookup_txn(42).expect("txn");
         assert_eq!(t.req_pid, 1234);
@@ -400,8 +430,8 @@ mod tests {
     #[test]
     fn req_pid_first_seen_wins() {
         let mut s = State::default();
-        s.record_frame(1, ts(0, 0), 5, 0, 0, 100, 0, None, None, None);
-        s.record_frame(2, ts(0, 0), 5, 0, 0, 999, 0, None, None, None);
+        s.record_frame(1, ts(0, 0), 5, 0, 0, 100, 0, None, None, None, None);
+        s.record_frame(2, ts(0, 0), 5, 0, 0, 999, 0, None, None, None, None);
         let t = s.lookup_txn(5).expect("txn");
         assert_eq!(t.req_pid, 100);
     }
@@ -410,9 +440,9 @@ mod tests {
     fn bc_reply_fills_rep_debug_id() {
         let mut s = State::default();
         // request: debug_id=10, no in_reply_to, reply=0
-        s.record_frame(1, ts(0, 0), 10, 0, 0, 100, 0, None, None, None);
+        s.record_frame(1, ts(0, 0), 10, 0, 0, 100, 0, None, None, None, None);
         // reply: debug_id=20, in_reply_to=10, reply=1
-        s.record_frame(2, ts(0, 0), 20, 10, 1, 0, 0, None, None, None);
+        s.record_frame(2, ts(0, 0), 20, 10, 1, 0, 0, None, None, None, None);
         let t = s.lookup_txn(10).expect("txn");
         assert_eq!(t.rep_debug_id, 20);
     }
@@ -420,10 +450,10 @@ mod tests {
     #[test]
     fn rep_debug_id_first_seen_wins() {
         let mut s = State::default();
-        s.record_frame(1, ts(0, 0), 10, 0, 0, 100, 0, None, None, None);
-        s.record_frame(2, ts(0, 0), 20, 10, 1, 0, 0, None, None, None);
+        s.record_frame(1, ts(0, 0), 10, 0, 0, 100, 0, None, None, None, None);
+        s.record_frame(2, ts(0, 0), 20, 10, 1, 0, 0, None, None, None, None);
         // a second reply event with same in_reply_to but different debug_id
-        s.record_frame(3, ts(0, 0), 99, 10, 1, 0, 0, None, None, None);
+        s.record_frame(3, ts(0, 0), 99, 10, 1, 0, 0, None, None, None, None);
         let t = s.lookup_txn(10).expect("txn");
         assert_eq!(t.rep_debug_id, 20);
     }
@@ -431,16 +461,16 @@ mod tests {
     #[test]
     fn stream_index_starts_at_zero() {
         let mut s = State::default();
-        s.record_frame(1, ts(0, 0), 42, 0, 0, 100, 0, None, None, None);
+        s.record_frame(1, ts(0, 0), 42, 0, 0, 100, 0, None, None, None, None);
         assert_eq!(s.stream_index_for_anchor(42), Some(0));
     }
 
     #[test]
     fn stream_index_is_monotonic() {
         let mut s = State::default();
-        s.record_frame(1, ts(0, 0), 10, 0, 0, 100, 0, None, None, None);
-        s.record_frame(2, ts(0, 0), 20, 0, 0, 101, 0, None, None, None);
-        s.record_frame(3, ts(0, 0), 30, 0, 0, 102, 0, None, None, None);
+        s.record_frame(1, ts(0, 0), 10, 0, 0, 100, 0, None, None, None, None);
+        s.record_frame(2, ts(0, 0), 20, 0, 0, 101, 0, None, None, None, None);
+        s.record_frame(3, ts(0, 0), 30, 0, 0, 102, 0, None, None, None, None);
         assert_eq!(s.stream_index_for_anchor(10), Some(0));
         assert_eq!(s.stream_index_for_anchor(20), Some(1));
         assert_eq!(s.stream_index_for_anchor(30), Some(2));
@@ -449,17 +479,17 @@ mod tests {
     #[test]
     fn same_anchor_reuses_index() {
         let mut s = State::default();
-        s.record_frame(1, ts(0, 0), 42, 0, 0, 100, 0, None, None, None);
-        s.record_frame(2, ts(0, 0), 42, 0, 0, 100, 0, None, None, None);
+        s.record_frame(1, ts(0, 0), 42, 0, 0, 100, 0, None, None, None, None);
+        s.record_frame(2, ts(0, 0), 42, 0, 0, 100, 0, None, None, None, None);
         assert_eq!(s.stream_index_for_anchor(42), Some(0));
     }
 
     #[test]
     fn clear_resets_counter() {
         let mut s = State::default();
-        s.record_frame(1, ts(0, 0), 42, 0, 0, 100, 0, None, None, None);
+        s.record_frame(1, ts(0, 0), 42, 0, 0, 100, 0, None, None, None, None);
         s.clear();
-        s.record_frame(1, ts(0, 0), 99, 0, 0, 100, 0, None, None, None);
+        s.record_frame(1, ts(0, 0), 99, 0, 0, 100, 0, None, None, None, None);
         assert_eq!(s.stream_index_for_anchor(99), Some(0));
     }
 
@@ -467,24 +497,24 @@ mod tests {
     fn bc_reply_aliases_y_to_n_when_orphan_seen_first() {
         let mut s = State::default();
         // Orphan BR_REPLY (no in_reply_to): anchor=Y=99, allocates index 0.
-        s.record_frame(1, ts(0, 0), 99, 0, 1, 0, 0, None, None, None);
+        s.record_frame(1, ts(0, 0), 99, 0, 1, 0, 0, None, None, None, None);
         assert_eq!(s.stream_index_for_anchor(99), Some(0));
         // BC_REPLY arrives later: debug_id=99 (Y), in_reply_to=10 (N).
         // Should NOT allocate a new index — should alias N→0.
-        s.record_frame(2, ts(0, 0), 99, 10, 1, 0, 0, None, None, None);
+        s.record_frame(2, ts(0, 0), 99, 10, 1, 0, 0, None, None, None, None);
         assert_eq!(s.stream_index_for_anchor(10), Some(0));
         assert_eq!(s.stream_index_for_anchor(99), Some(0));
         // next_stream_index should still be 1 (only one allocation total).
         // Record an unrelated request — gets index 1, proving counter is 1.
-        s.record_frame(3, ts(0, 0), 7, 0, 0, 50, 0, None, None, None);
+        s.record_frame(3, ts(0, 0), 7, 0, 0, 50, 0, None, None, None, None);
         assert_eq!(s.stream_index_for_anchor(7), Some(1));
     }
 
     #[test]
     fn n_by_rep_debug_id_populated_on_bc_reply() {
         let mut s = State::default();
-        s.record_frame(1, ts(0, 0), 10, 0, 0, 100, 0, None, None, None);
-        s.record_frame(2, ts(0, 0), 99, 10, 1, 0, 0, None, None, None);
+        s.record_frame(1, ts(0, 0), 10, 0, 0, 100, 0, None, None, None, None);
+        s.record_frame(2, ts(0, 0), 99, 10, 1, 0, 0, None, None, None, None);
         // Both anchors should map to the same index.
         assert_eq!(s.stream_index_for_anchor(10), s.stream_index_for_anchor(99));
     }
@@ -492,8 +522,8 @@ mod tests {
     #[test]
     fn stream_index_for_any_debug_id_resolves_via_y_to_n() {
         let mut s = State::default();
-        s.record_frame(1, ts(0, 0), 10, 0, 0, 100, 0, None, None, None);
-        s.record_frame(2, ts(0, 0), 99, 10, 1, 0, 0, None, None, None);
+        s.record_frame(1, ts(0, 0), 10, 0, 0, 100, 0, None, None, None, None);
+        s.record_frame(2, ts(0, 0), 99, 10, 1, 0, 0, None, None, None, None);
         let n_idx = s.stream_index_for_any_debug_id(10);
         let y_idx = s.stream_index_for_any_debug_id(99);
         assert!(n_idx.is_some());
@@ -503,7 +533,7 @@ mod tests {
     #[test]
     fn stream_index_for_frame_returns_index() {
         let mut s = State::default();
-        s.record_frame(7, ts(0, 0), 42, 0, 0, 100, 0, None, None, None);
+        s.record_frame(7, ts(0, 0), 42, 0, 0, 100, 0, None, None, None, None);
         assert_eq!(s.stream_index_for_frame(7), Some(0));
     }
 
@@ -517,12 +547,12 @@ mod tests {
     fn req_pid_for_frame_resolves_orphan_br_reply_via_y_to_n() {
         let mut s = State::default();
         // BC_TRANSACTION (party A=100 → kernel): anchor=N=10, req_pid=100.
-        s.record_frame(1, ts(0, 0), 10, 0, 0, 100, 0, None, None, None);
+        s.record_frame(1, ts(0, 0), 10, 0, 0, 100, 0, None, None, None, None);
         // BC_REPLY (party B sends; debug_id=Y=99, in_reply_to=N=10).
         // Aliases Y→N in n_by_rep_debug_id.
-        s.record_frame(2, ts(0, 0), 99, 10, 1, 200, 0, None, None, None);
+        s.record_frame(2, ts(0, 0), 99, 10, 1, 200, 0, None, None, None, None);
         // BR_REPLY (party A reads; debug_id=Y=99, in_reply_to=0 — orphan-shape).
-        s.record_frame(3, ts(0, 0), 99, 0, 1, 200, 0, None, None, None);
+        s.record_frame(3, ts(0, 0), 99, 0, 1, 200, 0, None, None, None, None);
         // Frame 3's anchor is Y=99 (orphan). Helper must walk Y→N=10 → req_pid=100.
         assert_eq!(s.req_pid_for_frame(3), Some(100));
         // Frame 1 (the request) resolves directly to its anchor.
@@ -545,6 +575,7 @@ mod tests {
             Some("com.example.app".into()),
             None,
             None,
+            None,
         );
         assert_eq!(s.caller_info(42), Some((1001, "com.example.app".into())));
     }
@@ -552,7 +583,7 @@ mod tests {
     #[test]
     fn caller_info_not_overwritten_by_recv_frame() {
         let mut s = State::default();
-        s.record_frame(1, ts(0, 0), 42, 0, 0, 0, 0, None, None, None);
+        s.record_frame(1, ts(0, 0), 42, 0, 0, 0, 0, None, None, None, None);
         assert_eq!(s.caller_info(42), None);
         s.record_frame(
             2,
@@ -563,6 +594,7 @@ mod tests {
             100,
             1001,
             Some("com.example.app".into()),
+            None,
             None,
             None,
         );
@@ -578,6 +610,7 @@ mod tests {
             Some("other".into()),
             None,
             None,
+            None,
         );
         assert_eq!(s.caller_info(42), Some((1001, "com.example.app".into())));
     }
@@ -587,5 +620,72 @@ mod tests {
         let s = State::default();
         assert_eq!(s.caller_info(0), None);
         assert_eq!(s.caller_info(999), None);
+    }
+
+    #[test]
+    fn stores_and_returns_originating_method() {
+        use binderdump_aidl::model::Method;
+        // 'static method (registry is a singleton in production; leak one for the test).
+        let m: &'static Method = Box::leak(Box::new(Method {
+            name: "doThing".to_string(),
+            params: vec![],
+            return_type: None,
+            oneway: false,
+            code: None,
+        }));
+        let mut s = State::default();
+        // request frame (reply == 0), debug_id 7, carries the method.
+        s.record_frame(
+            1,
+            ts(0, 0),
+            7,
+            0,
+            0,
+            0,
+            0,
+            None,
+            Some("a.IFoo".into()),
+            Some("doThing".into()),
+            Some(m),
+        );
+        // reply frame keyed by in_reply_to_debug_id = 7.
+        s.record_frame(2, ts(0, 0), 99, 7, 1, 0, 0, None, None, None, None);
+        let txn = s.lookup_txn(7).unwrap();
+        assert!(txn.method.is_some());
+        assert_eq!(txn.method.unwrap().name, "doThing");
+    }
+
+    #[test]
+    fn txn_for_reply_resolves_orphan_br_reply() {
+        use binderdump_aidl::model::Method;
+        let m: &'static Method = Box::leak(Box::new(Method {
+            name: "getThing".to_string(),
+            params: vec![],
+            return_type: None,
+            oneway: false,
+            code: None,
+        }));
+        let mut s = State::default();
+        // request: debug_id N = 10, carries the method.
+        s.record_frame(
+            1,
+            ts(0, 0),
+            10,
+            0,
+            0,
+            100,
+            0,
+            None,
+            Some("a.IFoo".into()),
+            Some("getThing".into()),
+            Some(m),
+        );
+        // BC_REPLY: own debug_id Y = 99, in_reply_to N = 10 -> records n_by_rep_debug_id[99]=10.
+        s.record_frame(2, ts(0, 0), 99, 10, 1, 0, 0, None, None, None, None);
+        // orphan BR_REPLY: in_reply_to == 0, own debug_id Y = 99 -> resolves via the fallback.
+        let txn = s.txn_for_reply(0, 99).unwrap();
+        assert_eq!(txn.method.unwrap().name, "getThing");
+        // BC_REPLY direct path (in_reply_to set) still resolves.
+        assert!(s.txn_for_reply(10, 99).unwrap().method.is_some());
     }
 }

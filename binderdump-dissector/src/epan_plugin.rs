@@ -825,6 +825,7 @@ fn handle_transaction_code(
             req_cmdline,
             r.interface.clone(),
             r.method_name.clone(),
+            r.method,
         );
 
         let td = crate::follow_stream::TapData {

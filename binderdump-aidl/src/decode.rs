@@ -206,6 +206,175 @@ pub fn decode_aidl_params(
     nodes
 }
 
+// Binder reply status (exception) codes — frameworks/native/libs/binder/Status.cpp
+// and frameworks/base Parcel.java. The reply payload begins with this header.
+#[allow(dead_code)]
+mod ex {
+    pub const NONE: i32 = 0;
+    pub const SERVICE_SPECIFIC: i32 = -8;
+    pub const PARCELABLE: i32 = -9;
+    pub const HAS_NOTED_APPOPS_REPLY_HEADER: i32 = -127;
+    pub const HAS_REPLY_HEADER: i32 = -128; // strict-mode "fat" reply header
+}
+
+fn ex_name(code: i32) -> &'static str {
+    match code {
+        -1 => "EX_SECURITY",
+        -2 => "EX_BAD_PARCELABLE",
+        -3 => "EX_ILLEGAL_ARGUMENT",
+        -4 => "EX_NULL_POINTER",
+        -5 => "EX_ILLEGAL_STATE",
+        -6 => "EX_NETWORK_MAIN_THREAD",
+        -7 => "EX_UNSUPPORTED_OPERATION",
+        -8 => "EX_SERVICE_SPECIFIC",
+        -9 => "EX_PARCELABLE",
+        -129 => "EX_TRANSACTION_FAILED",
+        _ => "EX_UNKNOWN",
+    }
+}
+
+// skip a reply header (Status::skipUnusedHeader): int32 size at the header start,
+// then advance to header_start + size (size counts from the size int itself).
+fn skip_reply_header(cur: &mut ParcelCursor) -> Option<()> {
+    let header_start = cur.pos;
+    let size = cur.read_i32()?;
+    if size < 4 {
+        return None; // a real header is at least the 4-byte size int
+    }
+    cur.seek(header_start.checked_add(size as usize)?)
+}
+
+// read the reply status header (Status::readFromParcel). Returns the exception code
+// (0 = success), skipping the appops/strict-mode reply headers. None on overrun.
+fn read_reply_status(cur: &mut ParcelCursor) -> Option<i32> {
+    let mut code = cur.read_i32()?;
+    if code == ex::HAS_NOTED_APPOPS_REPLY_HEADER {
+        skip_reply_header(cur)?;
+        code = cur.read_i32()?;
+    }
+    if code == ex::HAS_REPLY_HEADER {
+        skip_reply_header(cur)?;
+        code = ex::NONE; // fat reply headers only occur when there's no exception
+    }
+    Some(code)
+}
+
+// after a non-zero status: String16 message, a remote stack-trace header (int32 size,
+// skipped if non-zero), then an int32 service-specific code for EX_SERVICE_SPECIFIC.
+// best-effort: returns whatever it could decode. the status int is already consumed.
+fn decode_exception(cur: &mut ParcelCursor, code: i32) -> Vec<DecodedNode> {
+    let code_start = cur.pos.saturating_sub(4);
+    let mut n = node(
+        DecodedValue::Str(Some(ex_name(code).to_string())),
+        "exception",
+        code_start,
+        4,
+        vec![],
+    );
+    n.name = "exception".to_string();
+    let mut out = vec![n];
+    let mstart = cur.pos;
+    let Some(msg) = cur.read_string16() else {
+        return out;
+    };
+    let mut mn = node(
+        DecodedValue::Str(msg),
+        "exception.message",
+        mstart,
+        cur.pos - mstart,
+        vec![],
+    );
+    mn.name = "exception.message".to_string();
+    out.push(mn);
+    // remote stack-trace header: int32 size; skip `size` bytes from the size int if non-zero.
+    let rstart = cur.pos;
+    let Some(rsize) = cur.read_i32() else {
+        return out;
+    };
+    if rsize > 0 {
+        if let Some(end) = rstart.checked_add(rsize as usize) {
+            let _ = cur.seek(end);
+        }
+    }
+    if code == ex::SERVICE_SPECIFIC {
+        let sstart = cur.pos;
+        if let Some(svc) = cur.read_i32() {
+            let mut sn = node(
+                DecodedValue::I64(svc as i64),
+                "exception.serviceSpecific",
+                sstart,
+                4,
+                vec![],
+            );
+            sn.name = "exception.serviceSpecific".to_string();
+            out.push(sn);
+        }
+    }
+    out
+}
+
+// true if a method has a real return value (void parses to UserDefined("void")).
+fn has_return_value(method: &Method) -> bool {
+    match &method.return_type {
+        None => false,
+        Some(TypeRef::UserDefined(s)) if s == "void" => false,
+        Some(_) => true,
+    }
+}
+
+// decode an AIDL reply: status header, then on success the return value followed by
+// out/inout params in declaration order (complement of decode_aidl_params, which
+// decodes In/InOut args). Replies have no interface token, so `start` is 0.
+pub fn decode_aidl_reply(
+    reg: &Registry,
+    sdk: u32,
+    method: &Method,
+    buf: &[u8],
+    start: usize,
+) -> Vec<DecodedNode> {
+    let mut cur = ParcelCursor::new(buf, start);
+    let mut nodes = Vec::new();
+
+    let Some(code) = read_reply_status(&mut cur) else {
+        return nodes;
+    };
+    if code != ex::NONE {
+        return decode_exception(&mut cur, code);
+    }
+    if has_return_value(method) {
+        if let Some(rt) = &method.return_type {
+            let before = cur.pos;
+            match decode_value(reg, sdk, &mut cur, rt, 0) {
+                Some(mut n) => {
+                    n.name = "return".to_string();
+                    nodes.push(n);
+                }
+                None => {
+                    nodes.push(raw_tail("return".to_string(), before, buf.len()));
+                    return nodes;
+                }
+            }
+        }
+    }
+    for param in &method.params {
+        if param.direction == Direction::In {
+            continue;
+        }
+        let before = cur.pos;
+        match decode_value(reg, sdk, &mut cur, &param.ty, 0) {
+            Some(mut n) => {
+                n.name = param.name.clone();
+                nodes.push(n);
+            }
+            None => {
+                nodes.push(raw_tail(param.name.clone(), before, buf.len()));
+                return nodes;
+            }
+        }
+    }
+    nodes
+}
+
 fn raw_tail(name: String, start: usize, buf_len: usize) -> DecodedNode {
     DecodedNode {
         name,
@@ -1422,6 +1591,14 @@ mod tests {
         }
     }
 
+    fn out_param(name: &str, ty: TypeRef) -> Parameter {
+        Parameter {
+            name: name.to_string(),
+            ty,
+            direction: Direction::Out,
+        }
+    }
+
     fn method(params: Vec<Parameter>) -> Method {
         Method {
             name: "m".into(),
@@ -2388,6 +2565,107 @@ mod tests {
                                        // must not stack-overflow; returns without panic.
         let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
         assert!(!nodes.is_empty());
+    }
+
+    #[test]
+    fn reply_decodes_primitive_return() {
+        let reg = Registry::empty();
+        let mut m = method(vec![]);
+        m.return_type = Some(TypeRef::Primitive(Prim::I32));
+        let mut buf = 0i32.to_le_bytes().to_vec(); // status EX_NONE
+        buf.extend_from_slice(&42i32.to_le_bytes()); // return = 42
+        let nodes = decode_aidl_reply(&reg, 34, &m, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "return");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(42)));
+    }
+
+    #[test]
+    fn reply_decodes_out_param_and_skips_in() {
+        let reg = Registry::empty();
+        let mut m = method(vec![
+            in_param("x", TypeRef::Primitive(Prim::I32)),
+            out_param("y", TypeRef::Primitive(Prim::I32)),
+        ]);
+        m.return_type = None;
+        // reply carries only the out param y (in param x is request-only).
+        let mut buf = 0i32.to_le_bytes().to_vec(); // status
+        buf.extend_from_slice(&7i32.to_le_bytes()); // y = 7
+        let nodes = decode_aidl_reply(&reg, 34, &m, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "y");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(7)));
+    }
+
+    #[test]
+    fn reply_void_method_decodes_nothing() {
+        let reg = Registry::empty();
+        let mut m = method(vec![]);
+        m.return_type = Some(TypeRef::UserDefined("void".into())); // void parses to this
+        let buf = 0i32.to_le_bytes(); // status only
+        let nodes = decode_aidl_reply(&reg, 34, &m, &buf, 0);
+        assert!(nodes.is_empty());
+    }
+
+    #[test]
+    fn reply_decodes_security_exception() {
+        let reg = Registry::empty();
+        let m = method(vec![]);
+        let mut buf = (-1i32).to_le_bytes().to_vec(); // EX_SECURITY
+        buf.extend_from_slice(&string16("denied"));
+        buf.extend_from_slice(&0i32.to_le_bytes()); // remote stack-trace header size 0
+        let nodes = decode_aidl_reply(&reg, 34, &m, &buf, 0);
+        assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "EX_SECURITY"));
+        assert_eq!(nodes[0].name, "exception");
+        assert!(nodes.iter().any(|n| n.name == "exception.message"
+            && matches!(&n.value, DecodedValue::Str(Some(s)) if s == "denied")));
+    }
+
+    #[test]
+    fn reply_decodes_service_specific_exception() {
+        let reg = Registry::empty();
+        let m = method(vec![]);
+        let mut buf = (-8i32).to_le_bytes().to_vec(); // EX_SERVICE_SPECIFIC
+        buf.extend_from_slice(&string16("oops"));
+        buf.extend_from_slice(&0i32.to_le_bytes()); // stack-trace header size 0
+        buf.extend_from_slice(&42i32.to_le_bytes()); // service-specific code
+        let nodes = decode_aidl_reply(&reg, 34, &m, &buf, 0);
+        assert!(nodes
+            .iter()
+            .any(|n| n.name == "exception.serviceSpecific"
+                && matches!(n.value, DecodedValue::I64(42))));
+    }
+
+    #[test]
+    fn reply_skips_strictmode_reply_header() {
+        let reg = Registry::empty();
+        let mut m = method(vec![]);
+        m.return_type = Some(TypeRef::Primitive(Prim::I32));
+        // [-128][size=8][4 content bytes][status implied EX_NONE by -128][return=99]
+        let mut buf = (-128i32).to_le_bytes().to_vec();
+        buf.extend_from_slice(&8i32.to_le_bytes()); // header size (covers size int + 4 content)
+        buf.extend_from_slice(&[1, 2, 3, 4]); // header content
+        buf.extend_from_slice(&99i32.to_le_bytes()); // return value
+        let nodes = decode_aidl_reply(&reg, 34, &m, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "return");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(99)));
+    }
+
+    #[test]
+    fn reply_skips_appops_reply_header() {
+        let reg = Registry::empty();
+        let mut m = method(vec![]);
+        m.return_type = Some(TypeRef::Primitive(Prim::I32));
+        // [-127][size=8][4 content][status=0][return=5]
+        let mut buf = (-127i32).to_le_bytes().to_vec();
+        buf.extend_from_slice(&8i32.to_le_bytes());
+        buf.extend_from_slice(&[0, 0, 0, 0]);
+        buf.extend_from_slice(&0i32.to_le_bytes()); // re-read status = EX_NONE
+        buf.extend_from_slice(&5i32.to_le_bytes()); // return
+        let nodes = decode_aidl_reply(&reg, 34, &m, &buf, 0);
+        assert_eq!(nodes[0].name, "return");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(5)));
     }
 
     // end-to-end: resolve a real AOSP interface+method whose param is an enum from
