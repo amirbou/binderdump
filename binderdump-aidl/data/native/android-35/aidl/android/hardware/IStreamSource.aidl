@@ -9,13 +9,14 @@
 //
 // IStreamListener entries (5-6) share the same enum but belong to a separate interface.
 //
-// Parameter types are placeholders — payload decoding is out of scope.
+// Remaining IBinder methods are non-expressible stubs (IBinder loop without AIDL array header,
+// AMessage custom parcelable).
 
 package android.hardware;
 
 interface IStreamSource {
-    IBinder setListener() = 1;
-    IBinder setBuffers() = 2;
-    IBinder onBufferAvailable() = 3;
-    IBinder flags() = 4;
+    void setListener(in IBinder listener) = 1;
+    void setBuffers(long count, in IBinder buffers) = 2;
+    oneway void onBufferAvailable(long index) = 3;
+    void flags(out int flags) = 4;
 }
