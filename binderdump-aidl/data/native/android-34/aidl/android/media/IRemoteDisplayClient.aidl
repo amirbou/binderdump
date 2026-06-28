@@ -1,5 +1,5 @@
 // Synthetic AIDL stand-in for android::IRemoteDisplayClient.
-// Source: frameworks/av/media/libmedia/IRemoteDisplayClient.cpp (android13-release)
+// Source: frameworks/av/media/libmedia/IRemoteDisplayClient.cpp (android14-release)
 // (enum and BnRemoteDisplayClient::onTransact switch arms)
 //
 //   ON_DISPLAY_CONNECTED    = IBinder::FIRST_CALL_TRANSACTION  // 1

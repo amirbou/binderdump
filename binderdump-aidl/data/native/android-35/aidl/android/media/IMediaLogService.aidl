@@ -1,5 +1,5 @@
 // Synthetic AIDL stand-in for android::IMediaLogService.
-// Source: frameworks/av/services/medialog/IMediaLogService.cpp (android13-release)
+// Source: frameworks/av/services/medialog/IMediaLogService.cpp (android15-release)
 // (enum and BnMediaLogService::onTransact switch arms)
 //
 //   REGISTER_WRITER     = IBinder::FIRST_CALL_TRANSACTION  // 1
