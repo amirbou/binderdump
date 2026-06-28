@@ -1652,6 +1652,141 @@ mod tests {
         assert_eq!(nodes[1].name, "size");
         assert!(matches!(nodes[1].value, DecodedValue::I64(4096)));
     }
+
+    // ISurfaceComposer
+
+    #[test]
+    fn decodes_isurfacecomposer_enable_vsync_injections_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // oneway void enableVsyncInjections(boolean enable) = 24
+        let method = native_method(&reg, 34, "android.ui.ISurfaceComposer", 24);
+        assert_eq!(method.name, "enableVsyncInjections");
+        assert!(method.oneway);
+        let buf = 1i32.to_le_bytes(); // writeBool(true) -> int32 1
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "enable");
+        assert!(matches!(nodes[0].value, DecodedValue::Bool(true)));
+    }
+
+    #[test]
+    fn decodes_isurfacecomposer_inject_vsync_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // oneway void injectVsync(long when) = 25
+        let method = native_method(&reg, 34, "android.ui.ISurfaceComposer", 25);
+        assert_eq!(method.name, "injectVsync");
+        assert!(method.oneway);
+        let buf = 123_456_789i64.to_le_bytes();
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "when");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(123_456_789)));
+    }
+
+    #[test]
+    fn decodes_isurfacecomposer_get_composition_preference_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // void getCompositionPreference(out int status, out int defaultDataspace,
+        //   out int defaultPixelFormat, out int wideColorGamutDataspace,
+        //   out int wideColorGamutPixelFormat) = 27
+        let method = native_method(&reg, 34, "android.ui.ISurfaceComposer", 27);
+        assert_eq!(method.name, "getCompositionPreference");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0i32.to_le_bytes()); // status = OK
+        buf.extend_from_slice(&143i32.to_le_bytes()); // defaultDataspace
+        buf.extend_from_slice(&1i32.to_le_bytes()); // defaultPixelFormat
+        buf.extend_from_slice(&144i32.to_le_bytes()); // wideColorGamutDataspace
+        buf.extend_from_slice(&4i32.to_le_bytes()); // wideColorGamutPixelFormat
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 5);
+        assert_eq!(nodes[0].name, "status");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
+        assert_eq!(nodes[1].name, "defaultDataspace");
+        assert!(matches!(nodes[1].value, DecodedValue::I64(143)));
+        assert_eq!(nodes[2].name, "defaultPixelFormat");
+        assert_eq!(nodes[3].name, "wideColorGamutDataspace");
+        assert_eq!(nodes[4].name, "wideColorGamutPixelFormat");
+    }
+
+    #[test]
+    fn decodes_isurfacecomposer_get_color_management_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // void getColorManagement(out boolean colorManagement) = 28
+        let method = native_method(&reg, 34, "android.ui.ISurfaceComposer", 28);
+        assert_eq!(method.name, "getColorManagement");
+        let buf = 1i32.to_le_bytes(); // writeBool(true) -> int32 1
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "colorManagement");
+        assert!(matches!(nodes[0].value, DecodedValue::Bool(true)));
+    }
+
+    #[test]
+    fn decodes_isurfacecomposer_get_desired_display_mode_specs_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // void getDesiredDisplayModeSpecs(IBinder token,
+        //   out int defaultMode, out boolean allowGroupSwitching,
+        //   out float primaryRefreshRateMin, out float primaryRefreshRateMax,
+        //   out float appRequestRefreshRateMin, out float appRequestRefreshRateMax,
+        //   out int status) = 39
+        // reply wire: defaultMode, allowGroupSwitching, 4×float, status (status last per C++ source)
+        let method = native_method(&reg, 34, "android.ui.ISurfaceComposer", 39);
+        assert_eq!(method.name, "getDesiredDisplayModeSpecs");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&2i32.to_le_bytes()); // defaultMode = 2
+        buf.extend_from_slice(&0i32.to_le_bytes()); // allowGroupSwitching = false
+        buf.extend_from_slice(&60.0f32.to_le_bytes()); // primaryRefreshRateMin
+        buf.extend_from_slice(&120.0f32.to_le_bytes()); // primaryRefreshRateMax
+        buf.extend_from_slice(&30.0f32.to_le_bytes()); // appRequestRefreshRateMin
+        buf.extend_from_slice(&120.0f32.to_le_bytes()); // appRequestRefreshRateMax
+        buf.extend_from_slice(&0i32.to_le_bytes()); // status = OK
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 7);
+        assert_eq!(nodes[0].name, "defaultMode");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(2)));
+        assert_eq!(nodes[1].name, "allowGroupSwitching");
+        assert!(matches!(nodes[1].value, DecodedValue::Bool(false)));
+        assert_eq!(nodes[2].name, "primaryRefreshRateMin");
+        assert!(matches!(nodes[2].value, DecodedValue::F64(v) if (v - 60.0).abs() < 1e-3));
+        assert_eq!(nodes[6].name, "status");
+        assert!(matches!(nodes[6].value, DecodedValue::I64(0)));
+    }
+
+    // IDrmManagerService
+
+    #[test]
+    fn decodes_idrm_manager_service_remove_all_rights_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // void removeAllRights(int uniqueId, out int status) = 20
+        let method = native_method(&reg, 34, "drm.IDrmManagerService", 20);
+        assert_eq!(method.name, "removeAllRights");
+        let buf = 99i32.to_le_bytes(); // uniqueId = 99
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "uniqueId");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(99)));
+    }
+
+    #[test]
+    fn decodes_idrm_manager_service_add_unique_id_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // void addUniqueId(int isNative, out int uniqueId) = 1
+        // reply: readInt32 -> uniqueId
+        let method = native_method(&reg, 34, "drm.IDrmManagerService", 1);
+        assert_eq!(method.name, "addUniqueId");
+        let buf = 7i32.to_le_bytes(); // uniqueId = 7
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "uniqueId");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(7)));
+    }
 }
 
 use crate::model::{EnumDef, Interface, Method, OverlayLayer, Parcelable, Union};
