@@ -1205,6 +1205,324 @@ mod tests {
         let m3 = native_method(&reg, 37, "android.media.IRemoteDisplayClient", 3);
         assert_eq!(m3.name, "onDisplayError");
     }
+
+    // IConsumerListener
+
+    #[test]
+    fn decodes_iconsumerlistener_on_frame_dequeued_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // oneway onFrameDequeued(long bufferId) = 6; wire: writeUint64(bufferId)
+        let method = native_method(&reg, 34, "android.gui.IConsumerListener", 6);
+        assert_eq!(method.name, "onFrameDequeued");
+        assert!(method.oneway);
+        let buf = 0x123456789abcdefu64.to_le_bytes().to_vec();
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "bufferId");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(v) if v == 0x123456789abcdefu64 as i64));
+    }
+
+    #[test]
+    fn decodes_iconsumerlistener_on_frame_cancelled_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // oneway onFrameCancelled(long bufferId) = 7; wire: writeUint64(bufferId)
+        let method = native_method(&reg, 34, "android.gui.IConsumerListener", 7);
+        assert_eq!(method.name, "onFrameCancelled");
+        assert!(method.oneway);
+        let buf = 42u64.to_le_bytes().to_vec();
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "bufferId");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(42)));
+    }
+
+    // IGraphicBufferConsumer
+
+    #[test]
+    fn decodes_igraphicbufferconsumer_detach_buffer_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // void detachBuffer(int slot, out int status) = 2; req: writeInt32(slot)
+        let method = native_method(&reg, 34, "android.gui.IGraphicBufferConsumer", 2);
+        assert_eq!(method.name, "detachBuffer");
+        let buf = 3i32.to_le_bytes().to_vec();
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "slot");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(3)));
+    }
+
+    #[test]
+    fn decodes_igraphicbufferconsumer_detach_buffer_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // void detachBuffer(int slot, out int status) = 2; reply: readInt32() → status_t
+        let method = native_method(&reg, 34, "android.gui.IGraphicBufferConsumer", 2);
+        let buf = 0i32.to_le_bytes().to_vec();
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "status");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
+    }
+
+    #[test]
+    fn decodes_igraphicbufferconsumer_get_released_buffers_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // void getReleasedBuffers(out int status, out long slotMask) = 7
+        // reply wire: readInt32() status, readUint64(slotMask)
+        let method = native_method(&reg, 34, "android.gui.IGraphicBufferConsumer", 7);
+        assert_eq!(method.name, "getReleasedBuffers");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0i32.to_le_bytes()); // status
+        buf.extend_from_slice(&0b1010u64.to_le_bytes()); // slotMask
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].name, "status");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
+        assert_eq!(nodes[1].name, "slotMask");
+        assert!(matches!(nodes[1].value, DecodedValue::I64(0b1010)));
+    }
+
+    #[test]
+    fn decodes_igraphicbufferconsumer_set_default_buffer_size_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // void setDefaultBufferSize(int width, int height, out int status) = 8
+        // req: writeUint32(width), writeUint32(height)
+        let method = native_method(&reg, 34, "android.gui.IGraphicBufferConsumer", 8);
+        assert_eq!(method.name, "setDefaultBufferSize");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&1920u32.to_le_bytes()); // width
+        buf.extend_from_slice(&1080u32.to_le_bytes()); // height
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].name, "width");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(1920)));
+        assert_eq!(nodes[1].name, "height");
+        assert!(matches!(nodes[1].value, DecodedValue::I64(1080)));
+    }
+
+    #[test]
+    fn decodes_igraphicbufferconsumer_set_consumer_usage_bits_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // void setConsumerUsageBits(long usage, out int status) = 14; req: writeUint64(usage)
+        let method = native_method(&reg, 34, "android.gui.IGraphicBufferConsumer", 14);
+        assert_eq!(method.name, "setConsumerUsageBits");
+        let buf = 0x300u64.to_le_bytes().to_vec(); // GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_RENDER
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "usage");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(0x300)));
+    }
+
+    #[test]
+    fn decodes_igraphicbufferconsumer_set_consumer_is_protected_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // void setConsumerIsProtected(boolean isProtected, out int status) = 15; req: writeBool(isProtected)
+        let method = native_method(&reg, 34, "android.gui.IGraphicBufferConsumer", 15);
+        assert_eq!(method.name, "setConsumerIsProtected");
+        let buf = 1i32.to_le_bytes().to_vec(); // true
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "isProtected");
+        assert!(matches!(nodes[0].value, DecodedValue::Bool(true)));
+    }
+
+    #[test]
+    fn decodes_igraphicbufferconsumer_discard_free_buffers_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // void discardFreeBuffers(out int status) = 19; reply: readInt32() → status_t
+        let method = native_method(&reg, 34, "android.gui.IGraphicBufferConsumer", 19);
+        assert_eq!(method.name, "discardFreeBuffers");
+        let buf = 0i32.to_le_bytes().to_vec();
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "status");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
+    }
+
+    // ITransactionComposerListener
+
+    #[test]
+    fn decodes_itransactioncomposerlistener_on_trusted_presentation_changed_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // oneway onTrustedPresentationChanged(int id, boolean inTrustedPresentationState) = 4
+        // req: writeInt32(id), writeBool(inTrustedPresentationState); SDK 34+
+        let method = native_method(&reg, 34, "android.gui.ITransactionComposerListener", 4);
+        assert_eq!(method.name, "onTrustedPresentationChanged");
+        assert!(method.oneway);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&7i32.to_le_bytes()); // id
+        buf.extend_from_slice(&1i32.to_le_bytes()); // inTrustedPresentationState = true
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].name, "id");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(7)));
+        assert_eq!(nodes[1].name, "inTrustedPresentationState");
+        assert!(matches!(nodes[1].value, DecodedValue::Bool(true)));
+    }
+
+    // SensorEventConnection
+
+    #[test]
+    fn decodes_sensoreventconnection_enable_disable_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // void enableDisable(int handle, boolean enabled, long samplingPeriodNs,
+        //   long maxBatchReportLatencyNs, int reservedFlags, out int status) = 2
+        let method = native_method(&reg, 34, "android.gui.SensorEventConnection", 2);
+        assert_eq!(method.name, "enableDisable");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&42i32.to_le_bytes()); // handle
+        buf.extend_from_slice(&1i32.to_le_bytes()); // enabled = true (writeInt32)
+        buf.extend_from_slice(&200_000_000i64.to_le_bytes()); // samplingPeriodNs = 200ms
+        buf.extend_from_slice(&0i64.to_le_bytes()); // maxBatchReportLatencyNs
+        buf.extend_from_slice(&0i32.to_le_bytes()); // reservedFlags
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 5);
+        assert_eq!(nodes[0].name, "handle");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(42)));
+        assert_eq!(nodes[1].name, "enabled");
+        assert!(matches!(nodes[1].value, DecodedValue::Bool(true)));
+        assert_eq!(nodes[2].name, "samplingPeriodNs");
+        assert!(matches!(nodes[2].value, DecodedValue::I64(200_000_000)));
+        assert_eq!(nodes[3].name, "maxBatchReportLatencyNs");
+        assert!(matches!(nodes[3].value, DecodedValue::I64(0)));
+        assert_eq!(nodes[4].name, "reservedFlags");
+        assert!(matches!(nodes[4].value, DecodedValue::I64(0)));
+    }
+
+    #[test]
+    fn decodes_sensoreventconnection_enable_disable_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // reply: readInt32() → status_t
+        let method = native_method(&reg, 34, "android.gui.SensorEventConnection", 2);
+        let buf = 0i32.to_le_bytes().to_vec();
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "status");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
+    }
+
+    #[test]
+    fn decodes_sensoreventconnection_set_event_rate_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // void setEventRate(int handle, long ns, out int status) = 3
+        // req: writeInt32(handle), writeInt64(ns)
+        let method = native_method(&reg, 34, "android.gui.SensorEventConnection", 3);
+        assert_eq!(method.name, "setEventRate");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&5i32.to_le_bytes()); // handle
+        buf.extend_from_slice(&50_000_000i64.to_le_bytes()); // ns = 50ms
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].name, "handle");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(5)));
+        assert_eq!(nodes[1].name, "ns");
+        assert!(matches!(nodes[1].value, DecodedValue::I64(50_000_000)));
+    }
+
+    #[test]
+    fn decodes_sensoreventconnection_flush_sensor_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // void flushSensor(out int status) = 4; reply: readInt32()
+        let method = native_method(&reg, 34, "android.gui.SensorEventConnection", 4);
+        assert_eq!(method.name, "flushSensor");
+        let buf = (-1i32).to_le_bytes().to_vec();
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "status");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(-1)));
+    }
+
+    #[test]
+    fn decodes_sensoreventconnection_destroy_is_oneway_no_reply() {
+        use crate::decode::decode_aidl_params;
+        let reg = native_reg();
+        // oneway destroy() = 6; no params, no reply
+        let method = native_method(&reg, 34, "android.gui.SensorEventConnection", 6);
+        assert_eq!(method.name, "destroy");
+        assert!(method.oneway);
+        let nodes = decode_aidl_params(&reg, 34, method, &[], 0);
+        assert!(nodes.is_empty());
+    }
+
+    // SensorServer
+
+    #[test]
+    fn decodes_sensorserver_enable_data_injection_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // void enableDataInjection(int mode, out int status) = 3; req: writeInt32(mode)
+        let method = native_method(&reg, 34, "android.gui.SensorServer", 3);
+        assert_eq!(method.name, "enableDataInjection");
+        let buf = 1i32.to_le_bytes().to_vec(); // mode = 1 (enable)
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "mode");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(1)));
+    }
+
+    #[test]
+    fn decodes_sensorserver_enable_data_injection_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // void enableDataInjection(int mode, out int status) = 3; reply: readInt32()
+        let method = native_method(&reg, 34, "android.gui.SensorServer", 3);
+        let buf = 0i32.to_le_bytes().to_vec();
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "status");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
+    }
+
+    #[test]
+    fn decodes_sensorserver_enable_replay_data_injection_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // void enableReplayDataInjection(int mode, out int status) = 8; SDK 35+
+        let method = native_method(&reg, 35, "android.gui.SensorServer", 8);
+        assert_eq!(method.name, "enableReplayDataInjection");
+        let buf = 1i32.to_le_bytes().to_vec();
+        let nodes = decode_aidl_params(&reg, 35, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "mode");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(1)));
+    }
+
+    #[test]
+    fn sensorserver_sdk33_has_six_methods() {
+        let reg = native_reg();
+        // sdk 33 has codes 1–6; 7–9 absent
+        assert!(matches!(
+            reg.resolve(33, "android.gui.SensorServer", 6),
+            Lookup::Hit { .. }
+        ));
+        assert!(matches!(
+            reg.resolve(33, "android.gui.SensorServer", 7),
+            Lookup::UnknownCode { .. }
+        ));
+    }
+
+    #[test]
+    fn sensorserver_sdk35_has_nine_methods() {
+        let reg = native_reg();
+        // sdk 35 has codes 1–9
+        let m8 = native_method(&reg, 35, "android.gui.SensorServer", 8);
+        assert_eq!(m8.name, "enableReplayDataInjection");
+        let m9 = native_method(&reg, 35, "android.gui.SensorServer", 9);
+        assert_eq!(m9.name, "enableHalBypassReplayDataInjection");
+    }
 }
 
 use crate::model::{EnumDef, Interface, Method, OverlayLayer, Parcelable, Union};
