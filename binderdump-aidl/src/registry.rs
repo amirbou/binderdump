@@ -769,6 +769,226 @@ mod tests {
         let nodes = decode_aidl_params(&reg, 35, method, &[], 0);
         assert!(nodes.is_empty());
     }
+
+    fn native_method<'r>(
+        reg: &'r Registry,
+        sdk: u32,
+        fqn: &str,
+        code: u32,
+    ) -> &'r crate::model::Method {
+        match reg.resolve(sdk, fqn, code) {
+            Lookup::Hit { method, .. } => method,
+            other => panic!("expected Hit for {fqn} code={code} sdk={sdk}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decodes_native_imediaplayer_seek_to_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // seekTo(int msec, int mode, out int status) = 18
+        let method = native_method(&reg, 34, "android.media.IMediaPlayer", 18);
+        assert_eq!(method.name, "seekTo");
+        // request parcel: msec=5000, mode=2 (SEEK_CLOSEST); out int status skipped by decoder
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&5000i32.to_le_bytes()); // msec
+        buf.extend_from_slice(&2i32.to_le_bytes()); // mode
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].name, "msec");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(5000)));
+        assert_eq!(nodes[1].name, "mode");
+        assert!(matches!(nodes[1].value, DecodedValue::I64(2)));
+    }
+
+    #[test]
+    fn decodes_native_imediaplayer_get_buffering_settings_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // getBufferingSettings(out int status, out int initialMarkMs, out int resumePlaybackMarkMs) = 8
+        // reply wire order: status, initialMarkMs, resumePlaybackMarkMs
+        let method = native_method(&reg, 34, "android.media.IMediaPlayer", 8);
+        assert_eq!(method.name, "getBufferingSettings");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0i32.to_le_bytes()); // status = OK
+        buf.extend_from_slice(&1000i32.to_le_bytes()); // initialMarkMs
+        buf.extend_from_slice(&2000i32.to_le_bytes()); // resumePlaybackMarkMs
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].name, "status");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
+        assert_eq!(nodes[1].name, "initialMarkMs");
+        assert!(matches!(nodes[1].value, DecodedValue::I64(1000)));
+        assert_eq!(nodes[2].name, "resumePlaybackMarkMs");
+        assert!(matches!(nodes[2].value, DecodedValue::I64(2000)));
+    }
+
+    #[test]
+    fn decodes_native_imediaplayer_set_playback_settings_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // setPlaybackSettings(float speed, float pitch, int fallbackMode, int stretchMode, out int status) = 13
+        let method = native_method(&reg, 34, "android.media.IMediaPlayer", 13);
+        assert_eq!(method.name, "setPlaybackSettings");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&1.5f32.to_le_bytes()); // speed
+        buf.extend_from_slice(&1.0f32.to_le_bytes()); // pitch
+        buf.extend_from_slice(&0i32.to_le_bytes()); // fallbackMode
+        buf.extend_from_slice(&1i32.to_le_bytes()); // stretchMode
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 4);
+        assert_eq!(nodes[0].name, "speed");
+        assert!(matches!(nodes[0].value, DecodedValue::F64(v) if (v - 1.5f64).abs() < 1e-5));
+        assert_eq!(nodes[1].name, "pitch");
+        assert!(matches!(nodes[1].value, DecodedValue::F64(v) if (v - 1.0f64).abs() < 1e-5));
+        assert!(matches!(nodes[2].value, DecodedValue::I64(0)));
+        assert!(matches!(nodes[3].value, DecodedValue::I64(1)));
+    }
+
+    #[test]
+    fn decodes_native_imediarecorder_set_video_size_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // setVideoSize(int width, int height, out int status) = 18
+        let method = native_method(&reg, 34, "android.media.IMediaRecorder", 18);
+        assert_eq!(method.name, "setVideoSize");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&1920i32.to_le_bytes()); // width
+        buf.extend_from_slice(&1080i32.to_le_bytes()); // height
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].name, "width");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(1920)));
+        assert_eq!(nodes[1].name, "height");
+        assert!(matches!(nodes[1].value, DecodedValue::I64(1080)));
+    }
+
+    #[test]
+    fn decodes_native_imediarecorder_get_max_amplitude_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // getMaxAmplitude(out int max, out int status) = 10
+        // reply wire order: max, status
+        let method = native_method(&reg, 34, "android.media.IMediaRecorder", 10);
+        assert_eq!(method.name, "getMaxAmplitude");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&32767i32.to_le_bytes()); // max
+        buf.extend_from_slice(&0i32.to_le_bytes()); // status = OK
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].name, "max");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(32767)));
+        assert_eq!(nodes[1].name, "status");
+        assert!(matches!(nodes[1].value, DecodedValue::I64(0)));
+    }
+
+    #[test]
+    fn decodes_native_imediarecorder_set_client_name_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // setClientName(in String clientName, out int status) = 24
+        let method = native_method(&reg, 34, "android.media.IMediaRecorder", 24);
+        assert_eq!(method.name, "setClientName");
+        let buf = s16("myapp");
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "clientName");
+        assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "myapp"));
+    }
+
+    #[test]
+    fn decodes_native_imediarecorder_get_rtp_data_usage_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // getRtpDataUsage(out int status, out long bytes) = 33
+        // reply wire order: status, bytes (readUint64 -> long)
+        let method = native_method(&reg, 34, "android.media.IMediaRecorder", 33);
+        assert_eq!(method.name, "getRtpDataUsage");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0i32.to_le_bytes()); // status = OK
+        buf.extend_from_slice(&12345678i64.to_le_bytes()); // bytes (readUint64 -> I64)
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].name, "status");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
+        assert_eq!(nodes[1].name, "bytes");
+        assert!(matches!(nodes[1].value, DecodedValue::I64(12345678)));
+    }
+
+    #[test]
+    fn decodes_native_imediaplayerservice_add_battery_data_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // addBatteryData(int params) = 4; no out params
+        let method = native_method(&reg, 34, "android.media.IMediaPlayerService", 4);
+        assert_eq!(method.name, "addBatteryData");
+        let buf = 0x101i32.to_le_bytes().to_vec();
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "params");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(0x101)));
+    }
+
+    #[test]
+    fn decodes_native_imediarecorderclient_notify_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // oneway notify(int msg, int ext1, int ext2) = 1
+        let method = native_method(&reg, 34, "android.media.IMediaRecorderClient", 1);
+        assert_eq!(method.name, "notify");
+        assert!(method.oneway);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&7i32.to_le_bytes()); // msg = MEDIA_RECORDER_EVENT_INFO
+        buf.extend_from_slice(&1i32.to_le_bytes()); // ext1
+        buf.extend_from_slice(&0i32.to_le_bytes()); // ext2
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].name, "msg");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(7)));
+        assert_eq!(nodes[1].name, "ext1");
+        assert!(matches!(nodes[1].value, DecodedValue::I64(1)));
+        assert_eq!(nodes[2].name, "ext2");
+        assert!(matches!(nodes[2].value, DecodedValue::I64(0)));
+    }
+
+    #[test]
+    fn decodes_native_imediametadataretriever_disconnect_request() {
+        use crate::decode::decode_aidl_params;
+        let reg = native_reg();
+        // disconnect() = 1; no params, no out
+        let method = native_method(&reg, 34, "android.media.IMediaMetadataRetriever", 1);
+        assert_eq!(method.name, "disconnect");
+        let nodes = decode_aidl_params(&reg, 34, method, &[], 0);
+        assert!(nodes.is_empty());
+    }
+
+    #[test]
+    fn imediaplayer_android37_shifted_codes_resolve() {
+        // android-37 inserted SET_VIDEO_SURFACETEXTURE_V2 at code 32, shifting 33-44.
+        // Verify a few shifted methods resolve correctly by name.
+        let reg = native_reg();
+        let setNextPlayer = native_method(&reg, 37, "android.media.IMediaPlayer", 37);
+        assert_eq!(setNextPlayer.name, "setNextPlayer");
+        let enableCb = native_method(&reg, 37, "android.media.IMediaPlayer", 44);
+        assert_eq!(enableCb.name, "enableAudioDeviceCallback");
+        // code 32 is the new STUB
+        let stub = native_method(&reg, 37, "android.media.IMediaPlayer", 32);
+        assert_eq!(stub.name, "setVideoSurfaceTextureV2");
+        assert!(stub.params.is_empty());
+    }
+
+    #[test]
+    fn imediarecorder_android37_shifted_codes_resolve() {
+        // android-37 inserted QUERY_SURFACE_MEDIASOURCE_V2 at code 6 and SET_PREVIEW_SURFACE_V2 at code 23.
+        let reg = native_reg();
+        let reset = native_method(&reg, 37, "android.media.IMediaRecorder", 7);
+        assert_eq!(reset.name, "reset");
+        let setCamera = native_method(&reg, 37, "android.media.IMediaRecorder", 24);
+        assert_eq!(setCamera.name, "setCamera");
+        let v2 = native_method(&reg, 37, "android.media.IMediaRecorder", 23);
+        assert_eq!(v2.name, "setPreviewSurfaceV2");
+        assert!(v2.params.is_empty());
+    }
 }
 
 use crate::model::{EnumDef, Interface, Method, OverlayLayer, Parcelable, Union};
