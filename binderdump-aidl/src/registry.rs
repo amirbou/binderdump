@@ -989,6 +989,222 @@ mod tests {
         assert_eq!(v2.name, "setPreviewSurfaceV2");
         assert!(v2.params.is_empty());
     }
+
+    // IRemoteDisplay
+
+    #[test]
+    fn decodes_native_iremotedisplay_dispose_request() {
+        use crate::decode::decode_aidl_params;
+        let reg = native_reg();
+        // dispose(out int status) = 1; no in params
+        let method = native_method(&reg, 34, "android.media.IRemoteDisplay", 1);
+        assert_eq!(method.name, "dispose");
+        let nodes = decode_aidl_params(&reg, 34, method, &[], 0);
+        assert!(nodes.is_empty());
+    }
+
+    #[test]
+    fn decodes_native_iremotedisplay_dispose_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // dispose(out int status) = 1; reply: readInt32() (status_t)
+        let method = native_method(&reg, 34, "android.media.IRemoteDisplay", 1);
+        assert_eq!(method.name, "dispose");
+        let buf = 0i32.to_le_bytes().to_vec();
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "status");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
+    }
+
+    #[test]
+    fn decodes_native_iremotedisplay_resume_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // resume(out int status) = 3; reply: readInt32()
+        let method = native_method(&reg, 34, "android.media.IRemoteDisplay", 3);
+        assert_eq!(method.name, "resume");
+        let buf = (-1i32).to_le_bytes().to_vec();
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "status");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(-1)));
+    }
+
+    // IDataSource
+
+    #[test]
+    fn decodes_native_idatasource_read_at_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // readAt(long offset, long size, out long result) = 2
+        let method = native_method(&reg, 34, "android.media.IDataSource", 2);
+        assert_eq!(method.name, "readAt");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&4096i64.to_le_bytes()); // offset
+        buf.extend_from_slice(&512i64.to_le_bytes()); // size
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].name, "offset");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(4096)));
+        assert_eq!(nodes[1].name, "size");
+        assert!(matches!(nodes[1].value, DecodedValue::I64(512)));
+    }
+
+    #[test]
+    fn decodes_native_idatasource_read_at_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // readAt(long offset, long size, out long result) = 2; reply: readInt64() (ssize_t)
+        let method = native_method(&reg, 34, "android.media.IDataSource", 2);
+        assert_eq!(method.name, "readAt");
+        let buf = 512i64.to_le_bytes().to_vec();
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "result");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(512)));
+    }
+
+    #[test]
+    fn decodes_native_idatasource_close_request() {
+        use crate::decode::decode_aidl_params;
+        let reg = native_reg();
+        // close() = 4; no params, no reply
+        let method = native_method(&reg, 34, "android.media.IDataSource", 4);
+        assert_eq!(method.name, "close");
+        let nodes = decode_aidl_params(&reg, 34, method, &[], 0);
+        assert!(nodes.is_empty());
+    }
+
+    #[test]
+    fn decodes_native_idatasource_get_flags_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // getFlags(out int flags) = 5; reply: readUint32() -> int
+        let method = native_method(&reg, 34, "android.media.IDataSource", 5);
+        assert_eq!(method.name, "getFlags");
+        let buf = 3u32.to_le_bytes().to_vec();
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "flags");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(3)));
+    }
+
+    // IMediaExtractor
+
+    #[test]
+    fn decodes_native_imediaextractor_count_tracks_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // countTracks(out int count) = 1; reply: readUint32() truncated to int
+        let method = native_method(&reg, 34, "android.media.IMediaExtractor", 1);
+        assert_eq!(method.name, "countTracks");
+        let buf = 4u32.to_le_bytes().to_vec();
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "count");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(4)));
+    }
+
+    #[test]
+    fn decodes_native_imediaextractor_flags_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // flags(out int flags) = 5; reply: readUint32()
+        let method = native_method(&reg, 34, "android.media.IMediaExtractor", 5);
+        assert_eq!(method.name, "flags");
+        let buf = 1u32.to_le_bytes().to_vec();
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "flags");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(1)));
+    }
+
+    #[test]
+    fn decodes_native_imediaextractor_set_entry_point_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // setEntryPoint(int entryPoint) = 9; no reply reads
+        let method = native_method(&reg, 34, "android.media.IMediaExtractor", 9);
+        assert_eq!(method.name, "setEntryPoint");
+        let buf = 2i32.to_le_bytes().to_vec();
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "entryPoint");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(2)));
+    }
+
+    // IMediaCodecList
+
+    #[test]
+    fn decodes_native_imediacodeclist_count_codecs_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // countCodecs(out int count) = 2; reply: readInt32() clamped to INT32_MAX
+        let method = native_method(&reg, 34, "android.media.IMediaCodecList", 2);
+        assert_eq!(method.name, "countCodecs");
+        let buf = 42i32.to_le_bytes().to_vec();
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "count");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(42)));
+    }
+
+    // IMediaLogService
+
+    #[test]
+    fn decodes_native_imedialogservice_request_merge_wakeup_request() {
+        use crate::decode::decode_aidl_params;
+        let reg = native_reg();
+        // requestMergeWakeup() = 3; no params, no reply
+        let method = native_method(&reg, 34, "android.media.IMediaLogService", 3);
+        assert_eq!(method.name, "requestMergeWakeup");
+        let nodes = decode_aidl_params(&reg, 34, method, &[], 0);
+        assert!(nodes.is_empty());
+    }
+
+    // IRemoteDisplayClient
+
+    #[test]
+    fn decodes_native_iremotedisplayclient_on_display_disconnected_request() {
+        use crate::decode::decode_aidl_params;
+        let reg = native_reg();
+        // oneway onDisplayDisconnected() = 2; no params
+        let method = native_method(&reg, 34, "android.media.IRemoteDisplayClient", 2);
+        assert_eq!(method.name, "onDisplayDisconnected");
+        assert!(method.oneway);
+        let nodes = decode_aidl_params(&reg, 34, method, &[], 0);
+        assert!(nodes.is_empty());
+    }
+
+    #[test]
+    fn decodes_native_iremotedisplayclient_on_display_error_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // oneway onDisplayError(int error) = 3; request: writeInt32(error)
+        let method = native_method(&reg, 34, "android.media.IRemoteDisplayClient", 3);
+        assert_eq!(method.name, "onDisplayError");
+        assert!(method.oneway);
+        let buf = 5i32.to_le_bytes().to_vec();
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "error");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(5)));
+    }
+
+    #[test]
+    fn iremotedisplayclient_android37_has_four_methods() {
+        // android-37 adds ON_DISPLAY_CONNECTED_SURFACE (=4, STUB)
+        let reg = native_reg();
+        let m4 = native_method(&reg, 37, "android.media.IRemoteDisplayClient", 4);
+        assert_eq!(m4.name, "onDisplayConnectedSurface");
+        assert!(m4.params.is_empty()); // STUB
+                                       // methods 2 and 3 still present with same names
+        let m2 = native_method(&reg, 37, "android.media.IRemoteDisplayClient", 2);
+        assert_eq!(m2.name, "onDisplayDisconnected");
+        let m3 = native_method(&reg, 37, "android.media.IRemoteDisplayClient", 3);
+        assert_eq!(m3.name, "onDisplayError");
+    }
 }
 
 use crate::model::{EnumDef, Interface, Method, OverlayLayer, Parcelable, Union};
