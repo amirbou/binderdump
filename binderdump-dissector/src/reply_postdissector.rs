@@ -201,9 +201,10 @@ unsafe fn dissect_reply(
     root: *mut epan::proto_item,
     meta: &crate::reply_correlation::FrameMeta,
 ) {
-    let key = meta.in_reply_to_debug_id;
-    let txn = crate::reply_correlation::lookup_txn(key);
-    if key != 0 && txn.is_none() {
+    // BR_REPLY (read side) carries in_reply_to_debug_id == 0; fall back to the reply's
+    // own debug_id so the read side links to its request just like the write side.
+    let txn = crate::reply_correlation::txn_for_reply(meta.in_reply_to_debug_id, meta.debug_id);
+    if meta.in_reply_to_debug_id != 0 && txn.is_none() {
         // capture started mid-flight or the request frame was lost — flag
         // it so users can see why no link is present.
         epan::expert_add_info(pinfo, root, &raw mut EI_ORPHAN_REPLY);

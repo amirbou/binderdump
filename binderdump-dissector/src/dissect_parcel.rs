@@ -12,6 +12,7 @@
 // dissection; the undecodable tail uses a static `parcel.raw` field, which is.
 
 use crate::header_fields_manager::HeaderFieldsManager;
+use binderdump_aidl::decode::decode_aidl_reply;
 use binderdump_aidl::{decode_aidl_params, DecodedNode, DecodedValue};
 use binderdump_epan_sys::epan;
 use binderdump_structs::binder_serde::FieldOffset;
@@ -53,9 +54,51 @@ pub fn dissect_transaction_data(
         return Ok(());
     };
 
-    // request direction only; replies carry no writeInterfaceToken (later
-    // sub-project handles them via in_reply_to_debug_id correlation).
+    // replies carry no writeInterfaceToken; recover the originating method via
+    // reply correlation and decode the status header + return value + out params.
     if txn.reply != 0 {
+        // BR_REPLY (read side) carries in_reply_to_debug_id == 0, so fall back to the
+        // reply's own debug_id to find the originating request (see txn_for_reply).
+        let Some(state) =
+            crate::reply_correlation::txn_for_reply(txn.in_reply_to_debug_id, txn.debug_id)
+        else {
+            return Ok(());
+        };
+        let Some(method) = state.method else {
+            return Ok(());
+        };
+        // reply payload starts at offset 0 (no interface token).
+        let nodes = decode_aidl_reply(
+            crate::aidl_resolve::registry(),
+            event.android_sdk(),
+            method,
+            &txn.data,
+            0,
+        );
+        if nodes.is_empty() {
+            return Ok(());
+        }
+        let iface = state.interface.as_deref().unwrap_or("unknown");
+        let sub = open_subtree(
+            manager,
+            tree,
+            tvb,
+            data_off.try_into()?,
+            field.size.try_into()?,
+            "Reply",
+        );
+        for node in &nodes {
+            render_value(
+                manager,
+                sub,
+                tvb,
+                data_off,
+                iface,
+                &method.name,
+                &node.name,
+                node,
+            )?;
+        }
         return Ok(());
     }
 

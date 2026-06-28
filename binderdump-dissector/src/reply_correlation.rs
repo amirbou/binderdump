@@ -162,6 +162,18 @@ impl State {
         self.txns.get(&key).cloned()
     }
 
+    // Resolve a reply frame to its originating request's TxnState. The kernel only
+    // stamps in_reply_to_debug_id (N) on the BC_REPLY (write) side; a BR_REPLY (read)
+    // frame carries in_reply_to_debug_id == 0 but its own reply debug_id (Y), so for
+    // those we walk n_by_rep_debug_id[Y] = N (recorded when the BC_REPLY was seen).
+    fn txn_for_reply(&self, in_reply_to_debug_id: i32, reply_debug_id: i32) -> Option<TxnState> {
+        if let Some(t) = self.lookup_txn(in_reply_to_debug_id) {
+            return Some(t);
+        }
+        let n = self.n_by_rep_debug_id.get(&reply_debug_id)?;
+        self.lookup_txn(*n)
+    }
+
     // caller tid + cmdline for a transaction, recorded from its send frame.
     // none until the send frame has been seen.
     fn caller_info(&self, debug_id: i32) -> Option<(i32, String)> {
@@ -273,6 +285,14 @@ pub fn lookup_frame(frame: u32) -> Option<FrameMeta> {
 
 pub fn lookup_txn(key: i32) -> Option<TxnState> {
     state().lock().ok()?.lookup_txn(key)
+}
+
+// resolve a reply frame (BC_REPLY or orphan BR_REPLY) to its originating TxnState.
+pub fn txn_for_reply(in_reply_to_debug_id: i32, reply_debug_id: i32) -> Option<TxnState> {
+    state()
+        .lock()
+        .ok()?
+        .txn_for_reply(in_reply_to_debug_id, reply_debug_id)
 }
 
 pub fn caller_info(debug_id: i32) -> Option<(i32, String)> {
@@ -633,5 +653,39 @@ mod tests {
         let txn = s.lookup_txn(7).unwrap();
         assert!(txn.method.is_some());
         assert_eq!(txn.method.unwrap().name, "doThing");
+    }
+
+    #[test]
+    fn txn_for_reply_resolves_orphan_br_reply() {
+        use binderdump_aidl::model::Method;
+        let m: &'static Method = Box::leak(Box::new(Method {
+            name: "getThing".to_string(),
+            params: vec![],
+            return_type: None,
+            oneway: false,
+            code: None,
+        }));
+        let mut s = State::default();
+        // request: debug_id N = 10, carries the method.
+        s.record_frame(
+            1,
+            ts(0, 0),
+            10,
+            0,
+            0,
+            100,
+            0,
+            None,
+            Some("a.IFoo".into()),
+            Some("getThing".into()),
+            Some(m),
+        );
+        // BC_REPLY: own debug_id Y = 99, in_reply_to N = 10 -> records n_by_rep_debug_id[99]=10.
+        s.record_frame(2, ts(0, 0), 99, 10, 1, 0, 0, None, None, None, None);
+        // orphan BR_REPLY: in_reply_to == 0, own debug_id Y = 99 -> resolves via the fallback.
+        let txn = s.txn_for_reply(0, 99).unwrap();
+        assert_eq!(txn.method.unwrap().name, "getThing");
+        // BC_REPLY direct path (in_reply_to set) still resolves.
+        assert!(s.txn_for_reply(10, 99).unwrap().method.is_some());
     }
 }
