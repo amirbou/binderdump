@@ -3,16 +3,7 @@
 // first undecodable type (or any overrun) stops the walk and the remaining
 // bytes are surfaced raw by the caller.
 
-// binder object type tags, B_PACK_CHARS('s','b','*', B_TYPE_LARGE) form from
-// <linux/android/binder.h>. local binder vs remote handle, strong/weak.
-const fn b_pack_chars(c1: u8, c2: u8, c3: u8, c4: u8) -> u32 {
-    ((c1 as u32) << 24) | ((c2 as u32) << 16) | ((c3 as u32) << 8) | (c4 as u32)
-}
-const B_TYPE_LARGE: u8 = 0x85;
-const BINDER_TYPE_BINDER: u32 = b_pack_chars(b's', b'b', b'*', B_TYPE_LARGE);
-const BINDER_TYPE_WEAK_BINDER: u32 = b_pack_chars(b'w', b'b', b'*', B_TYPE_LARGE);
-const BINDER_TYPE_HANDLE: u32 = b_pack_chars(b's', b'h', b'*', B_TYPE_LARGE);
-const BINDER_TYPE_WEAK_HANDLE: u32 = b_pack_chars(b'w', b'h', b'*', B_TYPE_LARGE);
+use crate::binder_object;
 
 // 4-byte-aligned cursor over a parcel buffer. AIDL aligns every write to 4
 // bytes; 64-bit values occupy 8. All readers return None on overrun.
@@ -94,15 +85,13 @@ impl<'a> ParcelCursor<'a> {
     // (value, strong) and advances 24 bytes; otherwise None (caller halts).
     pub fn read_binder_object(&mut self) -> Option<(u64, bool)> {
         let pos = self.pos;
-        let at_object = self.offsets.chunks_exact(8).any(|c| {
-            u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]) as usize == pos
-        });
-        if !at_object {
+        if !binder_object::offset_entries(self.offsets).any(|o| o == pos) {
             return None;
         }
-        let strong = match self.read_u32()? {
-            BINDER_TYPE_BINDER | BINDER_TYPE_WEAK_BINDER => true,
-            BINDER_TYPE_HANDLE | BINDER_TYPE_WEAK_HANDLE => false,
+        let type_tag = self.read_u32()?;
+        let strong = match binder_object::classify(type_tag) {
+            binder_object::Kind::Binder => true,
+            binder_object::Kind::Handle => false,
             _ => return None, // fd/ptr/fda/unknown: not a plain IBinder
         };
         let _flags = self.read_u32()?;
@@ -2733,7 +2722,7 @@ mod tests {
     #[test]
     fn reads_binder_handle_object() {
         // flat_binder_object: type=HANDLE, flags=0, handle=0x1f, cookie=0; offset entry [0].
-        let mut data = BINDER_TYPE_HANDLE.to_le_bytes().to_vec();
+        let mut data = binder_object::HANDLE.to_le_bytes().to_vec();
         data.extend_from_slice(&0u32.to_le_bytes());
         data.extend_from_slice(&0x1fu64.to_le_bytes());
         data.extend_from_slice(&0u64.to_le_bytes());
@@ -2745,7 +2734,7 @@ mod tests {
 
     #[test]
     fn reads_local_binder_object_is_strong() {
-        let mut data = BINDER_TYPE_BINDER.to_le_bytes().to_vec();
+        let mut data = binder_object::BINDER.to_le_bytes().to_vec();
         data.extend_from_slice(&0u32.to_le_bytes());
         data.extend_from_slice(&0xdead_0000u64.to_le_bytes());
         data.extend_from_slice(&0u64.to_le_bytes());
@@ -2756,7 +2745,7 @@ mod tests {
 
     #[test]
     fn read_binder_object_none_without_offsets() {
-        let data = BINDER_TYPE_HANDLE.to_le_bytes();
+        let data = binder_object::HANDLE.to_le_bytes();
         let mut cur = ParcelCursor::new(&data, 0); // empty offsets
         assert_eq!(cur.read_binder_object(), None);
     }
@@ -2769,7 +2758,7 @@ mod tests {
             in_param("mode", TypeRef::Primitive(Prim::I32)),
         ]);
         // flat_binder_object (HANDLE, handle=2) then int32 mode=1; binder object at data offset 0.
-        let mut buf = BINDER_TYPE_HANDLE.to_le_bytes().to_vec();
+        let mut buf = binder_object::HANDLE.to_le_bytes().to_vec();
         buf.extend_from_slice(&0u32.to_le_bytes());
         buf.extend_from_slice(&2u64.to_le_bytes());
         buf.extend_from_slice(&0u64.to_le_bytes());

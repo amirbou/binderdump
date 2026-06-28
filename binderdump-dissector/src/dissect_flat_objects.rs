@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context};
+use binderdump_aidl::binder_object::{self, Kind};
 use binderdump_epan_sys::epan;
 use binderdump_structs::binder_serde::FieldOffset;
-use binderdump_structs::binder_types::binder_type;
 use binderdump_structs::bwr_layer::{PtrPayload, TransactionProtocol};
 use binderdump_structs::event_layer::EventProtocol;
 use std::ffi::{c_int, CString};
@@ -24,24 +24,11 @@ const FLAT_FD_PREFIX: &str = offsets_prefix!("entry.fd");
 const FLAT_PTR_PREFIX: &str = offsets_prefix!("entry.ptr");
 const FLAT_FDA_PREFIX: &str = offsets_prefix!("entry.fda");
 
-const SIZE_FLAT_BINDER: usize = 24;
-const SIZE_FLAT_FD: usize = 24;
-const SIZE_FLAT_PTR: usize = 40;
-const SIZE_FLAT_FDA: usize = 32;
-const ENTRY_SIZE: usize = 8;
 const PTR_SIZE: usize = 8;
 
 // Fixed-size header per PtrPayload before the variable-length `data` bytes:
 // offset_index(4) + buffer_addr(8) + total_size(8) + data_len(2).
 const PTR_PAYLOAD_FIXED_HEADER: usize = 4 + 8 + 8 + 2;
-
-const T_BINDER: u32 = binder_type::BINDER as u32;
-const T_WEAK_BINDER: u32 = binder_type::WEAK_BINDER as u32;
-const T_HANDLE: u32 = binder_type::HANDLE as u32;
-const T_WEAK_HANDLE: u32 = binder_type::WEAK_HANDLE as u32;
-const T_FD: u32 = binder_type::FD as u32;
-const T_PTR: u32 = binder_type::PTR as u32;
-const T_FDA: u32 = binder_type::FDA as u32;
 
 struct FieldRefs {
     type_hf: c_int,
@@ -135,16 +122,6 @@ fn collect_refs(manager: &HeaderFieldsManager<EventProtocol>) -> anyhow::Result<
     })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParsedEntry {
-    Binder,
-    Handle,
-    Fd,
-    Ptr,
-    Fda,
-    Unknown,
-}
-
 /// One step of walking `txn.offsets`: the entry's index within the offsets
 /// array, the byte position it points to inside `txn.data`, the raw type
 /// id read from those bytes, and the classified variant.
@@ -152,7 +129,7 @@ pub struct FlatObjectEntry {
     pub idx: usize,
     pub pos: usize,
     pub type_id: u32,
-    pub parsed: ParsedEntry,
+    pub parsed: Kind,
 }
 
 pub struct FlatObjectsIter<'a> {
@@ -166,14 +143,16 @@ impl<'a> Iterator for FlatObjectsIter<'a> {
     type Item = FlatObjectEntry;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.cursor + ENTRY_SIZE > self.offsets.len() {
+        if self.cursor + binder_object::ENTRY_SIZE > self.offsets.len() {
             return None;
         }
-        let bytes = self.offsets.get(self.cursor..self.cursor + ENTRY_SIZE)?;
-        self.cursor += ENTRY_SIZE;
+        let bytes = self
+            .offsets
+            .get(self.cursor..self.cursor + binder_object::ENTRY_SIZE)?;
+        self.cursor += binder_object::ENTRY_SIZE;
         let pos = u64::from_le_bytes(bytes.try_into().ok()?) as usize;
         let type_id = read_u32(self.data, pos)?;
-        let parsed = classify(type_id);
+        let parsed = binder_object::classify(type_id);
         let idx = self.idx;
         self.idx += 1;
         Some(FlatObjectEntry {
@@ -199,37 +178,16 @@ pub fn iter_flat_objects<'a>(data: &'a [u8], offsets: &'a [u8]) -> FlatObjectsIt
     }
 }
 
-fn classify(type_: u32) -> ParsedEntry {
-    match type_ {
-        T_BINDER | T_WEAK_BINDER => ParsedEntry::Binder,
-        T_HANDLE | T_WEAK_HANDLE => ParsedEntry::Handle,
-        T_FD => ParsedEntry::Fd,
-        T_PTR => ParsedEntry::Ptr,
-        T_FDA => ParsedEntry::Fda,
-        _ => ParsedEntry::Unknown,
-    }
-}
-
 fn variant_label(type_: u32) -> &'static str {
     match type_ {
-        T_BINDER => "BINDER",
-        T_WEAK_BINDER => "WEAK_BINDER",
-        T_HANDLE => "HANDLE",
-        T_WEAK_HANDLE => "WEAK_HANDLE",
-        T_FD => "FD",
-        T_PTR => "PTR",
-        T_FDA => "FDA",
+        binder_object::BINDER => "BINDER",
+        binder_object::WEAK_BINDER => "WEAK_BINDER",
+        binder_object::HANDLE => "HANDLE",
+        binder_object::WEAK_HANDLE => "WEAK_HANDLE",
+        binder_object::FD => "FD",
+        binder_object::PTR => "PTR",
+        binder_object::FDA => "FDA",
         _ => "UNKNOWN",
-    }
-}
-
-fn variant_size(entry: ParsedEntry) -> usize {
-    match entry {
-        ParsedEntry::Binder | ParsedEntry::Handle => SIZE_FLAT_BINDER,
-        ParsedEntry::Fd => SIZE_FLAT_FD,
-        ParsedEntry::Ptr => SIZE_FLAT_PTR,
-        ParsedEntry::Fda => SIZE_FLAT_FDA,
-        ParsedEntry::Unknown => 0,
     }
 }
 
@@ -290,14 +248,14 @@ pub fn dissect_offsets_array(
     let ett_offsets = ett;
     let ett_entry = lookup(manager, ENTRY_SUBTREE)?;
 
-    if txn.offsets.len() % ENTRY_SIZE != 0 {
+    if txn.offsets.len() % binder_object::ENTRY_SIZE != 0 {
         return Err(anyhow!(
             "offsets buffer not aligned: len={}, entry_size={}",
             txn.offsets.len(),
-            ENTRY_SIZE
+            binder_object::ENTRY_SIZE
         ));
     }
-    let entry_count = txn.offsets.len() / ENTRY_SIZE;
+    let entry_count = txn.offsets.len() / binder_object::ENTRY_SIZE;
 
     // Tvb byte position of `txn.data`. `field.offset` points at the offsets
     // bytes, which the serializer prefixes with a u32 length; the data bytes
@@ -335,7 +293,7 @@ pub fn dissect_offsets_array(
     } in iter_flat_objects(&txn.data, &txn.offsets)
     {
         walked += 1;
-        if matches!(parsed, ParsedEntry::Unknown) {
+        if matches!(parsed, Kind::Unknown) {
             return Err(anyhow!(
                 "unknown flat_binder_object type 0x{:x} at offsets[{}] pos {}",
                 type_id,
@@ -343,7 +301,7 @@ pub fn dissect_offsets_array(
                 entry
             ));
         }
-        let object_size = variant_size(parsed);
+        let object_size = parsed.flat_size().unwrap_or(0);
         let abs_off = data_tvb_off + entry;
 
         let label = format!("offsets[{}] {}", idx, variant_label(type_id));
@@ -374,16 +332,16 @@ pub fn dissect_offsets_array(
         }
 
         match parsed {
-            ParsedEntry::Binder => {
+            Kind::Binder => {
                 render_flat_binder(tvb, entry_tree, &refs.flat_binder, abs_off)?;
             }
-            ParsedEntry::Handle => {
+            Kind::Handle => {
                 render_flat_handle(tvb, entry_tree, &refs.flat_handle, abs_off)?;
             }
-            ParsedEntry::Fd => {
+            Kind::Fd => {
                 render_flat_fd(tvb, entry_tree, &refs.flat_fd, abs_off)?;
             }
-            ParsedEntry::Ptr => {
+            Kind::Ptr => {
                 let payload_idx = txn
                     .ptr_payloads
                     .iter()
@@ -398,7 +356,7 @@ pub fn dissect_offsets_array(
                     payload_data_pos.map(|(_, d)| d),
                 )?;
             }
-            ParsedEntry::Fda => {
+            Kind::Fda => {
                 render_flat_fda(
                     tvb,
                     entry_tree,
@@ -410,7 +368,7 @@ pub fn dissect_offsets_array(
                     &payload_tvb,
                 )?;
             }
-            ParsedEntry::Unknown => unreachable!("filtered above"),
+            Kind::Unknown => unreachable!("filtered above"),
         }
     }
 
@@ -751,7 +709,7 @@ fn decode_kind(
     data: &[u8],
     pos: usize,
     type_id: u32,
-    parsed: ParsedEntry,
+    parsed: Kind,
     entry_idx: usize,
     ptr_payloads: &[PtrPayload],
 ) -> anyhow::Result<OffsetKind> {
@@ -767,39 +725,39 @@ fn decode_kind(
         Ok(())
     };
     Ok(match parsed {
-        ParsedEntry::Binder => {
-            need(SIZE_FLAT_BINDER)?;
+        Kind::Binder => {
+            need(parsed.flat_size().unwrap())?;
             let ptr = read_u64(data, pos + 8).unwrap_or(0);
             let cookie = read_u64(data, pos + 16).unwrap_or(0);
             OffsetKind::Binder {
-                weak: type_id == T_WEAK_BINDER,
+                weak: type_id == binder_object::WEAK_BINDER,
                 ptr,
                 cookie,
             }
         }
-        ParsedEntry::Handle => {
-            need(SIZE_FLAT_BINDER)?;
+        Kind::Handle => {
+            need(parsed.flat_size().unwrap())?;
             let handle = read_u32(data, pos + 8).unwrap_or(0);
             let cookie = read_u64(data, pos + 16).unwrap_or(0);
             OffsetKind::Handle {
-                weak: type_id == T_WEAK_HANDLE,
+                weak: type_id == binder_object::WEAK_HANDLE,
                 handle,
                 cookie,
             }
         }
-        ParsedEntry::Fd => {
-            need(SIZE_FLAT_FD)?;
+        Kind::Fd => {
+            need(parsed.flat_size().unwrap())?;
             let fd = read_u32(data, pos + 8).unwrap_or(0) as i32;
             OffsetKind::Fd { fd }
         }
-        ParsedEntry::Fda => {
-            need(SIZE_FLAT_FDA)?;
+        Kind::Fda => {
+            need(parsed.flat_size().unwrap())?;
             let num_fds = read_u64(data, pos + 8).unwrap_or(0);
             let parent = read_u64(data, pos + 16).unwrap_or(0);
             OffsetKind::FdArray { num_fds, parent }
         }
-        ParsedEntry::Ptr => {
-            need(SIZE_FLAT_PTR)?;
+        Kind::Ptr => {
+            need(parsed.flat_size().unwrap())?;
             let buffer_addr = read_u64(data, pos + 8).unwrap_or(0);
             let size = read_u64(data, pos + 16).unwrap_or(0);
             let parent = read_u64(data, pos + 24).unwrap_or(0);
@@ -814,7 +772,7 @@ fn decode_kind(
                 payload,
             }
         }
-        ParsedEntry::Unknown => {
+        Kind::Unknown => {
             return Err(anyhow!(
                 "unknown flat_binder_object type 0x{:x} at pos {}",
                 type_id,
@@ -827,6 +785,7 @@ fn decode_kind(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use binderdump_structs::binder_types::binder_type;
 
     // Pure-logic walker wrapper used by the tests below. Yields just the
     // (pos, type_id) pairs the older tests assert against.
@@ -873,5 +832,19 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].1, binder_type::HANDLE as u32);
         assert_eq!(parsed[1].1, binder_type::WEAK_HANDLE as u32);
+    }
+
+    // verify that binder_object consts agree with the binderdump_structs binder_type enum
+    // so the two authoritative sources (bindgen'd kernel header and our hand-written table)
+    // can't silently diverge.
+    #[test]
+    fn binder_object_consts_agree_with_binder_type_enum() {
+        assert_eq!(binder_object::BINDER, binder_type::BINDER as u32);
+        assert_eq!(binder_object::WEAK_BINDER, binder_type::WEAK_BINDER as u32);
+        assert_eq!(binder_object::HANDLE, binder_type::HANDLE as u32);
+        assert_eq!(binder_object::WEAK_HANDLE, binder_type::WEAK_HANDLE as u32);
+        assert_eq!(binder_object::FD, binder_type::FD as u32);
+        assert_eq!(binder_object::PTR, binder_type::PTR as u32);
+        assert_eq!(binder_object::FDA, binder_type::FDA as u32);
     }
 }
