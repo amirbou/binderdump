@@ -181,6 +181,33 @@ fn render_value(
             }
         }
 
+        // bundle: subtree of key-named children (keys are plain strings, so each
+        // entry renders directly under its key rather than as an entry/key/value trio).
+        DecodedValue::Bundle { len: n, null } => {
+            let title = if *null {
+                format!("{}: null", node.name)
+            } else if *n == 0 {
+                format!("{}: 0 entries", node.name)
+            } else {
+                let s = if *n == 1 { "y" } else { "ies" };
+                format!("{}: {} entr{}", node.name, n, s)
+            };
+            let sub = open_subtree(manager, tree, tvb, off, len, &title);
+            for child in &node.children {
+                let child_leaf = format!("{}.{}", leaf_name, child.name);
+                render_value(
+                    manager,
+                    sub,
+                    tvb,
+                    data_off,
+                    iface,
+                    method,
+                    &child_leaf,
+                    child,
+                )?;
+            }
+        }
+
         DecodedValue::MapEntry => {
             let sub = open_subtree(manager, tree, tvb, off, len, "entry");
             for child in &node.children {
@@ -222,6 +249,17 @@ fn render_value(
                 unsafe {
                     epan::proto_tree_add_int64(tree, fqn, tvb, off, len, *repr);
                 }
+            }
+        }
+
+        // serializable: titled subtree over the opaque Java object stream.
+        DecodedValue::Serializable { class_name } => {
+            let cls = class_name.as_deref().unwrap_or("?");
+            let title = format!("{}: Serializable {}", node.name, cls);
+            let sub = open_subtree(manager, tree, tvb, off, len, &title);
+            let h = handle(manager, "raw")?;
+            unsafe {
+                epan::proto_tree_add_item(sub, h, tvb, off, len, epan::ENC_NA);
             }
         }
 
@@ -346,6 +384,8 @@ fn add_typed(
         | DecodedValue::Parcelable { .. }
         | DecodedValue::Union { .. }
         | DecodedValue::Map { .. }
+        | DecodedValue::Bundle { .. }
+        | DecodedValue::Serializable { .. }
         | DecodedValue::MapEntry => {}
     }
 }
