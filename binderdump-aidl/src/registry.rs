@@ -746,16 +746,15 @@ mod tests {
 
     #[test]
     fn decodes_native_igpuservice_get_updatable_driver_path_reply() {
-        use crate::decode::{decode_aidl_reply, DecodedValue};
+        use crate::decode::{decode_native_reply, DecodedValue};
         let reg = native_reg();
         let method = igpu_method(&reg, 34, 4);
         assert_eq!(method.name, "getUpdatableDriverPath");
-        // reply: status EX_NONE (0) then the String16 return value.
-        let mut buf = 0i32.to_le_bytes().to_vec();
-        buf.extend_from_slice(&s16("/vendor/lib/egl"));
-        let nodes = decode_aidl_reply(&reg, 34, method, &buf, 0);
+        // native reply: bare String16, NO status header.
+        let buf = s16("/vendor/lib/egl");
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
         assert_eq!(nodes.len(), 1);
-        assert_eq!(nodes[0].name, "return");
+        assert_eq!(nodes[0].name, "driverPath");
         assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "/vendor/lib/egl"));
     }
 
