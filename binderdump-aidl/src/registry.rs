@@ -667,6 +667,109 @@ mod tests {
             }
         }
     }
+
+    // raw String16 on the wire: int32 char_count + UTF-16 chars + u16 NUL, padded to 4.
+    // matches Parcel::writeUtf8AsUtf16 / writeString16.
+    fn s16(s: &str) -> Vec<u8> {
+        let utf16: Vec<u16> = s.encode_utf16().collect();
+        let mut b = (utf16.len() as i32).to_le_bytes().to_vec();
+        for u in &utf16 {
+            b.extend_from_slice(&u.to_le_bytes());
+        }
+        b.extend_from_slice(&[0, 0]); // u16 NUL
+        while b.len() % 4 != 0 {
+            b.push(0);
+        }
+        b
+    }
+
+    fn native_reg() -> Registry {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        Registry::empty().with_native_dir(&repo_root.join("data/native"))
+    }
+
+    fn igpu_method(reg: &Registry, sdk: u32, code: u32) -> &crate::model::Method {
+        match reg.resolve(sdk, "android.graphicsenv.IGpuService", code) {
+            Lookup::Hit { method, .. } => method,
+            other => panic!("expected Hit for code {code}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decodes_native_igpuservice_set_gpu_stats() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        let method = igpu_method(&reg, 34, 1);
+        assert_eq!(method.name, "setGpuStats");
+        // BpGpuService::setGpuStats wire order.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&s16("pkg"));
+        buf.extend_from_slice(&s16("1.2.3"));
+        buf.extend_from_slice(&100i64.to_le_bytes()); // driverVersionCode (writeUint64 -> long)
+        buf.extend_from_slice(&200i64.to_le_bytes()); // driverBuildTime
+        buf.extend_from_slice(&s16("app"));
+        buf.extend_from_slice(&7i32.to_le_bytes()); // vulkanVersion
+        buf.extend_from_slice(&2i32.to_le_bytes()); // driver
+        buf.extend_from_slice(&1i32.to_le_bytes()); // isDriverLoaded (writeBool -> int32 1)
+        buf.extend_from_slice(&300i64.to_le_bytes()); // driverLoadingTime
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 9);
+        assert_eq!(nodes[0].name, "driverPackageName");
+        assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "pkg"));
+        assert!(matches!(&nodes[1].value, DecodedValue::Str(Some(s)) if s == "1.2.3"));
+        assert!(matches!(nodes[2].value, DecodedValue::I64(100)));
+        assert!(matches!(nodes[3].value, DecodedValue::I64(200)));
+        assert!(matches!(&nodes[4].value, DecodedValue::Str(Some(s)) if s == "app"));
+        assert!(matches!(nodes[5].value, DecodedValue::I64(7)));
+        assert!(matches!(nodes[6].value, DecodedValue::I64(2)));
+        assert!(matches!(nodes[7].value, DecodedValue::Bool(true)));
+        assert!(matches!(nodes[8].value, DecodedValue::I64(300)));
+    }
+
+    #[test]
+    fn decodes_native_igpuservice_set_target_stats() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        let method = igpu_method(&reg, 34, 2);
+        assert_eq!(method.name, "setTargetStats");
+        let mut buf = s16("app");
+        buf.extend_from_slice(&50i64.to_le_bytes()); // driverVersionCode
+        buf.extend_from_slice(&3i32.to_le_bytes()); // stats
+        buf.extend_from_slice(&99i64.to_le_bytes()); // value
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 4);
+        assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "app"));
+        assert!(matches!(nodes[1].value, DecodedValue::I64(50)));
+        assert!(matches!(nodes[2].value, DecodedValue::I64(3)));
+        assert!(matches!(nodes[3].value, DecodedValue::I64(99)));
+    }
+
+    #[test]
+    fn decodes_native_igpuservice_get_updatable_driver_path_reply() {
+        use crate::decode::{decode_aidl_reply, DecodedValue};
+        let reg = native_reg();
+        let method = igpu_method(&reg, 34, 4);
+        assert_eq!(method.name, "getUpdatableDriverPath");
+        // reply: status EX_NONE (0) then the String16 return value.
+        let mut buf = 0i32.to_le_bytes().to_vec();
+        buf.extend_from_slice(&s16("/vendor/lib/egl"));
+        let nodes = decode_aidl_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "return");
+        assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "/vendor/lib/egl"));
+    }
+
+    #[test]
+    fn native_igpuservice_opaque_method_stays_name_only() {
+        use crate::decode::decode_aidl_params;
+        let reg = native_reg();
+        // code 7 = addVulkanEngineName, left as a typeless IBinder stub (no params).
+        let method = igpu_method(&reg, 35, 7);
+        assert_eq!(method.name, "addVulkanEngineName");
+        assert!(method.params.is_empty());
+        let nodes = decode_aidl_params(&reg, 35, method, &[], 0);
+        assert!(nodes.is_empty());
+    }
 }
 
 use crate::model::{EnumDef, Interface, Method, OverlayLayer, Parcelable, Union};
