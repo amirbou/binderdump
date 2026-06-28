@@ -13,12 +13,12 @@
 //   EXTRACT_ALBUM_ART                                          // 9
 //   EXTRACT_METADATA                                           // 10
 //
-// Parameter types are placeholders — payload decoding is out of scope.
+// Remaining IBinder methods are non-expressible stubs (CString, fd, IMemory shared memory, or CString reply).
 
 package android.media;
 
 interface IMediaMetadataRetriever {
-    IBinder disconnect() = 1;
+    void disconnect() = 1;
     IBinder setDataSourceUrl() = 2;
     IBinder setDataSourceFd() = 3;
     IBinder setDataSourceCallback() = 4;

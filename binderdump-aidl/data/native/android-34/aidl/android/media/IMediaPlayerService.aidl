@@ -10,16 +10,16 @@
 //   LISTEN_FOR_REMOTE_DISPLAY                                    // 6
 //   GET_CODEC_LIST                                               // 7
 //
-// Parameter types are placeholders — payload decoding is out of scope.
+// Remaining IBinder methods are non-expressible stubs (AttributionSourceState Parcelable, raw Parcel, or String8).
 
 package android.media;
 
 interface IMediaPlayerService {
     IBinder create() = 1;
     IBinder createMediaRecorder() = 2;
-    IBinder createMetadataRetriever() = 3;
-    IBinder addBatteryData() = 4;
+    void createMetadataRetriever(out IBinder retriever) = 3;
+    void addBatteryData(int params) = 4;
     IBinder pullBatteryData() = 5;
     IBinder listenForRemoteDisplay() = 6;
-    IBinder getCodecList() = 7;
+    void getCodecList(out IBinder codecList) = 7;
 }
