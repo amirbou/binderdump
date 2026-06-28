@@ -1523,6 +1523,135 @@ mod tests {
         let m9 = native_method(&reg, 35, "android.gui.SensorServer", 9);
         assert_eq!(m9.name, "enableHalBypassReplayDataInjection");
     }
+
+    // ICameraRecordingProxy
+
+    #[test]
+    fn decodes_icamerarecordingproxy_start_recording_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // startRecording(out int status) = 1; no in params; reply: readInt32() → status_t
+        let method = native_method(&reg, 34, "android.hardware.ICameraRecordingProxy", 1);
+        assert_eq!(method.name, "startRecording");
+        let buf = 0i32.to_le_bytes().to_vec();
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "status");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
+    }
+
+    #[test]
+    fn decodes_icamerarecordingproxy_stop_recording_request() {
+        use crate::decode::decode_aidl_params;
+        let reg = native_reg();
+        // stopRecording() = 2; no in params, reply parcel is empty
+        let method = native_method(&reg, 34, "android.hardware.ICameraRecordingProxy", 2);
+        assert_eq!(method.name, "stopRecording");
+        let nodes = decode_aidl_params(&reg, 34, method, &[], 0);
+        assert!(nodes.is_empty());
+    }
+
+    // ICameraRecordingProxyListener
+
+    #[test]
+    fn decodes_icamerarecordingproxylistener_data_callback_timestamp_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // oneway dataCallbackTimestamp(long timestamp, int msgType, in IBinder imageData) = 1
+        // IBinder imageData halts decoding — timestamp and msgType are decodable.
+        let method = native_method(
+            &reg,
+            34,
+            "android.hardware.ICameraRecordingProxyListener",
+            1,
+        );
+        assert_eq!(method.name, "dataCallbackTimestamp");
+        assert!(method.oneway);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&1_000_000_000i64.to_le_bytes()); // timestamp = 1s in ns
+        buf.extend_from_slice(&1i32.to_le_bytes()); // msgType = CAMERA_MSG_VIDEO_FRAME
+                                                    // imageData (IBinder) — undecodable; raw bytes follow
+        buf.extend_from_slice(&[0u8; 4]); // placeholder binder bytes
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].name, "timestamp");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(1_000_000_000)));
+        assert_eq!(nodes[1].name, "msgType");
+        assert!(matches!(nodes[1].value, DecodedValue::I64(1)));
+        assert_eq!(nodes[2].name, "imageData");
+        assert!(matches!(nodes[2].value, DecodedValue::Raw));
+    }
+
+    // IStreamSource
+
+    #[test]
+    fn decodes_istreamsource_on_buffer_available_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // oneway onBufferAvailable(long index) = 3; req: writeInt64(index)
+        let method = native_method(&reg, 34, "android.hardware.IStreamSource", 3);
+        assert_eq!(method.name, "onBufferAvailable");
+        assert!(method.oneway);
+        let buf = 2i64.to_le_bytes().to_vec();
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "index");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(2)));
+    }
+
+    #[test]
+    fn decodes_istreamsource_flags_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // flags(out int flags) = 4; reply: readInt32() → uint32_t flags
+        let method = native_method(&reg, 34, "android.hardware.IStreamSource", 4);
+        assert_eq!(method.name, "flags");
+        let buf = 3u32.to_le_bytes().to_vec();
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "flags");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(3)));
+    }
+
+    #[test]
+    fn decodes_istreamsource_set_buffers_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // setBuffers(long count, in IBinder buffers) = 2
+        // wire: writeInt64(count) then N binders inline; IBinder halts after count.
+        let method = native_method(&reg, 34, "android.hardware.IStreamSource", 2);
+        assert_eq!(method.name, "setBuffers");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&3i64.to_le_bytes()); // count = 3
+        buf.extend_from_slice(&[0u8; 16]); // placeholder binder data
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].name, "count");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(3)));
+        assert_eq!(nodes[1].name, "buffers");
+        assert!(matches!(nodes[1].value, DecodedValue::Raw));
+    }
+
+    // IStreamListener
+
+    #[test]
+    fn decodes_istreamlistener_queue_buffer_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // oneway queueBuffer(long index, long size) = 5; req: writeInt64(index), writeInt64(size)
+        let method = native_method(&reg, 34, "android.hardware.IStreamListener", 5);
+        assert_eq!(method.name, "queueBuffer");
+        assert!(method.oneway);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0i64.to_le_bytes()); // index = 0
+        buf.extend_from_slice(&4096i64.to_le_bytes()); // size = 4096
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].name, "index");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
+        assert_eq!(nodes[1].name, "size");
+        assert!(matches!(nodes[1].value, DecodedValue::I64(4096)));
+    }
 }
 
 use crate::model::{EnumDef, Interface, Method, OverlayLayer, Parcelable, Union};
