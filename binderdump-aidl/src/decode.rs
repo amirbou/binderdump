@@ -207,6 +207,10 @@ pub enum DecodedValue {
     Serializable {
         class_name: Option<String>,
     }, // leaf; the Java object stream is opaque
+    Binder {
+        handle: u64,
+        strong: bool,
+    }, // a strong-binder arg; strong = local binder, else a remote handle
     Raw,
 }
 
@@ -230,8 +234,9 @@ pub fn decode_aidl_params(
     method: &Method,
     buf: &[u8],
     start: usize,
+    offsets: &[u8],
 ) -> Vec<DecodedNode> {
-    let mut cur = ParcelCursor::new(buf, start);
+    let mut cur = ParcelCursor::new(buf, start).with_offsets(offsets);
     let mut nodes = Vec::new();
 
     for param in &method.params {
@@ -378,8 +383,9 @@ pub fn decode_aidl_reply(
     method: &Method,
     buf: &[u8],
     start: usize,
+    offsets: &[u8],
 ) -> Vec<DecodedNode> {
-    let mut cur = ParcelCursor::new(buf, start);
+    let mut cur = ParcelCursor::new(buf, start).with_offsets(offsets);
     let mut nodes = Vec::new();
 
     let Some(code) = read_reply_status(&mut cur) else {
@@ -517,7 +523,16 @@ fn decode_value(
         TypeRef::Array(el) | TypeRef::List(el) => decode_array(reg, sdk, cur, el, start, depth + 1),
         TypeRef::Nullable(inner) => decode_nullable(reg, sdk, cur, inner, start, depth + 1),
         TypeRef::Map(_, _) => decode_map(reg, sdk, cur, start, depth + 1),
-        TypeRef::IBinder => None,
+        TypeRef::IBinder => match cur.read_binder_object() {
+            Some((handle, strong)) => Some(node(
+                DecodedValue::Binder { handle, strong },
+                "IBinder",
+                start,
+                cur.pos - start,
+                vec![],
+            )),
+            None => None, // not at a known binder object (e.g. no offsets) -> caller halts
+        },
     }
 }
 
@@ -1396,7 +1411,7 @@ mod tests {
         body.extend_from_slice(&(b'i' as u16).to_le_bytes());
         body.extend_from_slice(&[0, 0, 0, 0]); // NUL + pad
         let buf = parcelable_block(&body);
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(
             matches!(&nodes[0].value, DecodedValue::Parcelable { fqn, null: false } if fqn == "a.P")
         );
@@ -1419,7 +1434,7 @@ mod tests {
         let mut buf = 1i32.to_le_bytes().to_vec(); // presence = present
         buf.extend_from_slice(&parcelable_block(&7i32.to_le_bytes())); // [size][id=7]
         buf.extend_from_slice(&9i32.to_le_bytes());
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(
             matches!(&nodes[0].value, DecodedValue::Parcelable { fqn, null: false } if fqn == "a.P")
         );
@@ -1434,7 +1449,7 @@ mod tests {
         let reg = reg_with_parcelable("a.P", vec![("id", TypeRef::Primitive(Prim::I32))]);
         let m = method(vec![in_param("p", TypeRef::UserDefined("a.P".into()))]);
         let buf = 0i32.to_le_bytes();
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(
             matches!(&nodes[0].value, DecodedValue::Parcelable { fqn, null: true } if fqn == "a.P")
         );
@@ -1452,7 +1467,7 @@ mod tests {
         body.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]); // extra trailing
         let mut buf = parcelable_block(&body);
         buf.extend_from_slice(&9i32.to_le_bytes());
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(nodes[0].children[0].value, DecodedValue::I64(5)));
         assert!(matches!(nodes[1].value, DecodedValue::I64(9)));
     }
@@ -1468,14 +1483,14 @@ mod tests {
         );
         let m = method(vec![in_param("p", TypeRef::UserDefined("a.P".into()))]);
         let buf = parcelable_block(&5i32.to_le_bytes()); // size=8, only id
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert_eq!(nodes[0].children.len(), 1);
         assert!(matches!(nodes[0].children[0].value, DecodedValue::I64(5)));
     }
 
     #[test]
     fn parcelable_undecodable_field_yields_remainder() {
-        // IBinder is undecodable; the parcelable surfaces the rest of the block
+        // IBinder without offsets is undecodable; the parcelable surfaces the rest of the block
         // as a Bytes node and resyncs so the following param still decodes.
         let reg = reg_with_parcelable(
             "a.P",
@@ -1493,7 +1508,7 @@ mod tests {
         body.extend_from_slice(&[1, 2, 3, 4]);
         let mut buf = parcelable_block(&body);
         buf.extend_from_slice(&9i32.to_le_bytes());
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(nodes[0].children[0].value, DecodedValue::I64(3)));
         assert!(matches!(
             nodes[0].children.last().unwrap().value,
@@ -1507,7 +1522,7 @@ mod tests {
         let reg = reg_with_parcelable("a.Empty", vec![]);
         let m = method(vec![in_param("p", TypeRef::UserDefined("a.Empty".into()))]);
         let buf = [0u8; 8];
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(nodes[0].value, DecodedValue::Raw));
     }
 
@@ -1545,7 +1560,7 @@ mod tests {
         let m = method(vec![in_param("p", TypeRef::UserDefined("a.Outer".into()))]);
         let inner = parcelable_block(&42i32.to_le_bytes());
         let buf = parcelable_block(&inner);
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         let inner_node = &nodes[0].children[0];
         assert_eq!(inner_node.name, "inner");
         assert!(
@@ -1569,7 +1584,7 @@ mod tests {
         let mut buf = 1i32.to_le_bytes().to_vec(); // presence flag = 1
         buf.extend_from_slice(&parcelable_block(&7i32.to_le_bytes()));
         buf.extend_from_slice(&9i32.to_le_bytes());
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(
             &nodes[0].value,
             DecodedValue::Parcelable { null: false, .. }
@@ -1584,7 +1599,7 @@ mod tests {
         ]);
         let mut buf2 = 0i32.to_le_bytes().to_vec(); // presence flag = 0
         buf2.extend_from_slice(&9i32.to_le_bytes());
-        let nodes2 = decode_aidl_params(&reg, 34, &m2, &buf2, 0);
+        let nodes2 = decode_aidl_params(&reg, 34, &m2, &buf2, 0, &[]);
         assert!(matches!(
             &nodes2[0].value,
             DecodedValue::Parcelable { null: true, .. }
@@ -1604,7 +1619,7 @@ mod tests {
         buf.extend_from_slice(&(b'h' as u16).to_le_bytes());
         buf.extend_from_slice(&(b'i' as u16).to_le_bytes());
         buf.extend_from_slice(&[0, 0, 0, 0]);
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "hi"));
     }
 
@@ -1661,7 +1676,7 @@ mod tests {
         let reg = reg_with_enum("a.E", Prim::I32, vec![("OFF", 0), ("ON", 1)]);
         let m = method(vec![in_param("state", TypeRef::UserDefined("a.E".into()))]);
         let buf = 1i32.to_le_bytes();
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         match &nodes[0].value {
             DecodedValue::Enum { repr, variants } => {
@@ -1684,7 +1699,7 @@ mod tests {
         for v in [10i32, 20, 30] {
             buf.extend_from_slice(&v.to_le_bytes());
         }
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(
             nodes[0].value,
             DecodedValue::Array {
@@ -1704,7 +1719,7 @@ mod tests {
             TypeRef::Array(Box::new(TypeRef::Primitive(Prim::I32))),
         )]);
         let buf = (-1i32).to_le_bytes();
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(
             nodes[0].value,
             DecodedValue::Array { len: 0, null: true }
@@ -1722,7 +1737,7 @@ mod tests {
         buf.extend_from_slice(&5i32.to_le_bytes()); // count 5
         buf.extend_from_slice(&[1, 2, 3, 4, 5, 0, 0, 0]); // 5 bytes + pad to 8
         buf.extend_from_slice(&7i32.to_le_bytes()); // following int proves cursor landed past the pad
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(nodes[0].value, DecodedValue::Bytes));
         assert_eq!(nodes[0].start, 4);
         assert_eq!(nodes[0].len, 5);
@@ -1739,7 +1754,7 @@ mod tests {
         buf.extend_from_slice(&1i32.to_le_bytes()); // inner0 count 1
         buf.extend_from_slice(&9i32.to_le_bytes());
         buf.extend_from_slice(&0i32.to_le_bytes()); // inner1 count 0
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(nodes[0].value, DecodedValue::Array { len: 2, .. }));
         assert_eq!(nodes[0].children.len(), 2);
         assert!(matches!(
@@ -1760,7 +1775,7 @@ mod tests {
             TypeRef::UserDefined("a.SomeParcelable".into()),
         )]);
         let buf = [0u8; 8];
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(nodes[0].value, DecodedValue::Raw));
     }
 
@@ -1778,7 +1793,7 @@ mod tests {
         buf.extend_from_slice(&(b'i' as u16).to_le_bytes());
         buf.extend_from_slice(&[0, 0]); // u16 NUL
         buf.extend_from_slice(&[0, 0]); // pad to 4-byte boundary
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0].name, "count");
         assert!(matches!(nodes[0].value, DecodedValue::I64(5)));
@@ -1794,7 +1809,7 @@ mod tests {
         let mut m = method(vec![in_param("x", TypeRef::Primitive(Prim::I32))]);
         m.params[0].direction = Direction::Out;
         let buf = 9i32.to_le_bytes();
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(nodes.is_empty());
     }
 
@@ -1809,7 +1824,7 @@ mod tests {
         let mut buf = Vec::new();
         buf.extend_from_slice(&1i32.to_le_bytes());
         buf.extend_from_slice(&[0xaa, 0xbb, 0xcc, 0xdd]);
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert_eq!(nodes.len(), 2);
         assert!(matches!(nodes[0].value, DecodedValue::I64(1)));
         assert!(matches!(nodes[1].value, DecodedValue::Raw));
@@ -1827,7 +1842,7 @@ mod tests {
         let mut buf = Vec::new();
         buf.extend_from_slice(&1i32.to_le_bytes());
         buf.extend_from_slice(&[0, 0]);
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(nodes[0].value, DecodedValue::I64(1)));
         assert!(matches!(nodes.last().unwrap().value, DecodedValue::Raw));
     }
@@ -1970,7 +1985,7 @@ mod tests {
         let m = method(vec![in_param("u", TypeRef::UserDefined("a.U".into()))]);
         let mut buf = 0i32.to_le_bytes().to_vec(); // tag 0 -> n
         buf.extend_from_slice(&42i32.to_le_bytes());
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(
             matches!(&nodes[0].value, DecodedValue::Union { fqn, null: false } if fqn == "a.U")
         );
@@ -1991,7 +2006,7 @@ mod tests {
         buf.extend_from_slice(&(b'h' as u16).to_le_bytes());
         buf.extend_from_slice(&(b'i' as u16).to_le_bytes());
         buf.extend_from_slice(&[0, 0, 0, 0]);
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert_eq!(nodes[0].children[0].name, "s");
         assert!(matches!(&nodes[0].children[0].value, DecodedValue::Str(Some(s)) if s == "hi"));
     }
@@ -2001,7 +2016,7 @@ mod tests {
         let reg = reg_with_union("a.U", vec![("n", TypeRef::Primitive(Prim::I32))]);
         let m = method(vec![in_param("u", TypeRef::UserDefined("a.U".into()))]);
         let buf = 5i32.to_le_bytes().to_vec(); // tag 5, only field 0 exists
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(nodes[0].value, DecodedValue::Raw));
     }
 
@@ -2018,7 +2033,7 @@ mod tests {
         buf.extend_from_slice(&0i32.to_le_bytes()); // tag 0
         buf.extend_from_slice(&7i32.to_le_bytes()); // n=7
         buf.extend_from_slice(&9i32.to_le_bytes()); // after=9
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(
             &nodes[0].value,
             DecodedValue::Union { null: false, .. }
@@ -2032,7 +2047,7 @@ mod tests {
         ]);
         let mut buf2 = 0i32.to_le_bytes().to_vec(); // null
         buf2.extend_from_slice(&9i32.to_le_bytes());
-        let nodes2 = decode_aidl_params(&reg, 34, &m2, &buf2, 0);
+        let nodes2 = decode_aidl_params(&reg, 34, &m2, &buf2, 0, &[]);
         assert!(matches!(
             &nodes2[0].value,
             DecodedValue::Union { null: true, .. }
@@ -2085,7 +2100,7 @@ mod tests {
         let mut buf = size.to_le_bytes().to_vec();
         buf.extend_from_slice(&body);
         buf.extend_from_slice(&9i32.to_le_bytes()); // after=9
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(&nodes[0].value, DecodedValue::Parcelable { .. }));
         assert!(matches!(
             nodes[0].children.last().unwrap().value,
@@ -2126,7 +2141,7 @@ mod tests {
             buf.extend_from_slice(&((body.len() + 4) as i32).to_le_bytes()); // P size=8
             buf.extend_from_slice(&body);
         }
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(nodes[0].value, DecodedValue::Array { len: 2, .. }));
         assert!(
             matches!(&nodes[0].children[0].value, DecodedValue::Parcelable { fqn, .. } if fqn == "a.P")
@@ -2208,7 +2223,7 @@ mod tests {
         let mut buf = 1i32.to_le_bytes().to_vec(); // count 1
         buf.extend_from_slice(&val_string("k"));
         buf.extend_from_slice(&val_charsequence(1, "hello")); // kind 1 = plain
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         let entry = &nodes[0].children[0];
         assert!(matches!(&entry.children[1].value, DecodedValue::Str(Some(s)) if s == "hello"));
     }
@@ -2225,7 +2240,7 @@ mod tests {
         let mut buf = 1i32.to_le_bytes().to_vec(); // count 1
         buf.extend_from_slice(&val_string("k"));
         buf.extend_from_slice(&val_charsequence(0, "styled")); // kind 0 = spanned
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(nodes[0].value, DecodedValue::Raw));
     }
 
@@ -2265,7 +2280,7 @@ mod tests {
         ));
         buf.extend_from_slice(&val_string("k2"));
         buf.extend_from_slice(&val_string("v2"));
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         let e0 = &nodes[0].children[0];
         assert!(matches!(
             &e0.children[1].value,
@@ -2293,7 +2308,7 @@ mod tests {
         // presence=1, then an empty bundle body (length 0, no magic).
         let mut buf = 1i32.to_le_bytes().to_vec();
         buf.extend_from_slice(&0i32.to_le_bytes());
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(
             nodes[0].value,
             DecodedValue::Bundle {
@@ -2311,7 +2326,7 @@ mod tests {
             TypeRef::UserDefined("android.os.Bundle".into()),
         )]);
         let buf = 0i32.to_le_bytes(); // writeTypedObject presence = null
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(
             nodes[0].value,
             DecodedValue::Bundle { len: 0, null: true }
@@ -2326,7 +2341,7 @@ mod tests {
             TypeRef::UserDefined("android.os.Bundle".into()),
         )]);
         let buf = typed_bundle(&[("k", val_i32(1, 42))], false); // VAL_INTEGER=1
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(
             &nodes[0].value,
             DecodedValue::Bundle {
@@ -2346,7 +2361,7 @@ mod tests {
             TypeRef::UserDefined("android.os.PersistableBundle".into()),
         )]);
         let buf = typed_bundle(&[("k", val_i32(1, 7))], true); // native magic
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert_eq!(nodes[0].type_label, "PersistableBundle");
         assert!(matches!(
             nodes[0].value,
@@ -2368,7 +2383,7 @@ mod tests {
         ]);
         let mut buf = typed_bundle(&[("k", val_i32(1, 5))], false);
         buf.extend_from_slice(&9i32.to_le_bytes());
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(
             nodes[0].value,
             DecodedValue::Bundle {
@@ -2393,7 +2408,7 @@ mod tests {
         buf.extend_from_slice(&val_bundle(&[("inner", val_i32(1, 1))]));
         buf.extend_from_slice(&val_string("k2"));
         buf.extend_from_slice(&val_string("v2"));
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(
             nodes[0].value,
             DecodedValue::Map {
@@ -2423,7 +2438,7 @@ mod tests {
         let mut buf = 1i32.to_le_bytes().to_vec(); // count 1
         buf.extend_from_slice(&val_string("k"));
         buf.extend_from_slice(&val_string("v"));
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(
             nodes[0].value,
             DecodedValue::Map {
@@ -2452,7 +2467,7 @@ mod tests {
         let mut buf = 1i32.to_le_bytes().to_vec(); // count 1
         buf.extend_from_slice(&val_string("k"));
         buf.extend_from_slice(&val_i32(1, 42)); // VAL_INTEGER=1, 42
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         let entry = &nodes[0].children[0];
         assert!(matches!(entry.children[1].value, DecodedValue::I64(42)));
     }
@@ -2465,7 +2480,7 @@ mod tests {
             TypeRef::Map(Box::new(TypeRef::String), Box::new(TypeRef::String)),
         )]);
         let buf = (-1i32).to_le_bytes();
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(
             nodes[0].value,
             DecodedValue::Map { len: 0, null: true }
@@ -2487,7 +2502,7 @@ mod tests {
         buf.extend_from_slice(&11i32.to_le_bytes());
         buf.extend_from_slice(&8i32.to_le_bytes());
         buf.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef, 1, 2, 3, 4]);
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         let entry = &nodes[0].children[0];
         // negative count -> null array; cursor resynced past the block
         assert!(matches!(
@@ -2513,7 +2528,7 @@ mod tests {
         buf.extend_from_slice(&11i32.to_le_bytes()); // VAL_LIST tag
         buf.extend_from_slice(&(list_body.len() as i32).to_le_bytes()); // length
         buf.extend_from_slice(&list_body);
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         let val = &nodes[0].children[0].children[1];
         assert!(matches!(val.value, DecodedValue::Array { len: 2, .. }));
         assert!(matches!(val.children[1].value, DecodedValue::I64(8)));
@@ -2555,7 +2570,7 @@ mod tests {
         buf.extend_from_slice(&4i32.to_le_bytes()); // VAL_PARCELABLE tag
         buf.extend_from_slice(&(pbody.len() as i32).to_le_bytes()); // length
         buf.extend_from_slice(&pbody);
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         let val = &nodes[0].children[0].children[1];
         assert!(matches!(&val.value, DecodedValue::Parcelable { fqn, .. } if fqn == "a.P"));
         assert!(matches!(val.children[0].value, DecodedValue::I64(5)));
@@ -2577,7 +2592,7 @@ mod tests {
         buf.extend_from_slice(&2i32.to_le_bytes()); // VAL_MAP tag
         buf.extend_from_slice(&(inner.len() as i32).to_le_bytes());
         buf.extend_from_slice(&inner);
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         let val = &nodes[0].children[0].children[1];
         assert!(matches!(val.value, DecodedValue::Map { len: 1, .. }));
     }
@@ -2610,7 +2625,7 @@ mod tests {
         buf.extend_from_slice(&val_string("top")); // key
         buf.extend_from_slice(&inner); // value = deep nest
                                        // must not stack-overflow; returns without panic.
-        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(!nodes.is_empty());
     }
 
@@ -2621,7 +2636,7 @@ mod tests {
         m.return_type = Some(TypeRef::Primitive(Prim::I32));
         let mut buf = 0i32.to_le_bytes().to_vec(); // status EX_NONE
         buf.extend_from_slice(&42i32.to_le_bytes()); // return = 42
-        let nodes = decode_aidl_reply(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_reply(&reg, 34, &m, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "return");
         assert!(matches!(nodes[0].value, DecodedValue::I64(42)));
@@ -2638,7 +2653,7 @@ mod tests {
         // reply carries only the out param y (in param x is request-only).
         let mut buf = 0i32.to_le_bytes().to_vec(); // status
         buf.extend_from_slice(&7i32.to_le_bytes()); // y = 7
-        let nodes = decode_aidl_reply(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_reply(&reg, 34, &m, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "y");
         assert!(matches!(nodes[0].value, DecodedValue::I64(7)));
@@ -2650,7 +2665,7 @@ mod tests {
         let mut m = method(vec![]);
         m.return_type = Some(TypeRef::UserDefined("void".into())); // void parses to this
         let buf = 0i32.to_le_bytes(); // status only
-        let nodes = decode_aidl_reply(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_reply(&reg, 34, &m, &buf, 0, &[]);
         assert!(nodes.is_empty());
     }
 
@@ -2661,7 +2676,7 @@ mod tests {
         let mut buf = (-1i32).to_le_bytes().to_vec(); // EX_SECURITY
         buf.extend_from_slice(&string16("denied"));
         buf.extend_from_slice(&0i32.to_le_bytes()); // remote stack-trace header size 0
-        let nodes = decode_aidl_reply(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_reply(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "EX_SECURITY"));
         assert_eq!(nodes[0].name, "exception");
         assert!(nodes.iter().any(|n| n.name == "exception.message"
@@ -2676,7 +2691,7 @@ mod tests {
         buf.extend_from_slice(&string16("oops"));
         buf.extend_from_slice(&0i32.to_le_bytes()); // stack-trace header size 0
         buf.extend_from_slice(&42i32.to_le_bytes()); // service-specific code
-        let nodes = decode_aidl_reply(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_reply(&reg, 34, &m, &buf, 0, &[]);
         assert!(nodes
             .iter()
             .any(|n| n.name == "exception.serviceSpecific"
@@ -2693,7 +2708,7 @@ mod tests {
         buf.extend_from_slice(&8i32.to_le_bytes()); // header size (covers size int + 4 content)
         buf.extend_from_slice(&[1, 2, 3, 4]); // header content
         buf.extend_from_slice(&99i32.to_le_bytes()); // return value
-        let nodes = decode_aidl_reply(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_reply(&reg, 34, &m, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "return");
         assert!(matches!(nodes[0].value, DecodedValue::I64(99)));
@@ -2710,7 +2725,7 @@ mod tests {
         buf.extend_from_slice(&[0, 0, 0, 0]);
         buf.extend_from_slice(&0i32.to_le_bytes()); // re-read status = EX_NONE
         buf.extend_from_slice(&5i32.to_le_bytes()); // return
-        let nodes = decode_aidl_reply(&reg, 34, &m, &buf, 0);
+        let nodes = decode_aidl_reply(&reg, 34, &m, &buf, 0, &[]);
         assert_eq!(nodes[0].name, "return");
         assert!(matches!(nodes[0].value, DecodedValue::I64(5)));
     }
@@ -2746,6 +2761,47 @@ mod tests {
         assert_eq!(cur.read_binder_object(), None);
     }
 
+    #[test]
+    fn decodes_param_after_ibinder() {
+        let reg = Registry::empty();
+        let m = method(vec![
+            in_param("display", TypeRef::IBinder),
+            in_param("mode", TypeRef::Primitive(Prim::I32)),
+        ]);
+        // flat_binder_object (HANDLE, handle=2) then int32 mode=1; binder object at data offset 0.
+        let mut buf = BINDER_TYPE_HANDLE.to_le_bytes().to_vec();
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&2u64.to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes());
+        buf.extend_from_slice(&1i32.to_le_bytes());
+        let offsets = 0u64.to_le_bytes();
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &offsets);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].name, "display");
+        assert!(matches!(
+            nodes[0].value,
+            DecodedValue::Binder {
+                handle: 2,
+                strong: false
+            }
+        ));
+        assert_eq!(nodes[1].name, "mode");
+        assert!(matches!(nodes[1].value, DecodedValue::I64(1)));
+    }
+
+    #[test]
+    fn ibinder_without_offsets_halts() {
+        let reg = Registry::empty();
+        let m = method(vec![
+            in_param("display", TypeRef::IBinder),
+            in_param("mode", TypeRef::Primitive(Prim::I32)),
+        ]);
+        let mut buf = vec![0u8; 24];
+        buf.extend_from_slice(&1i32.to_le_bytes());
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]); // no offsets -> halt
+        assert!(matches!(nodes[0].value, DecodedValue::Raw));
+    }
+
     // end-to-end: resolve a real AOSP interface+method whose param is an enum from
     // the committed corpus, then decode a parcel value and assert the enum variant.
     // IThermal.getCoolingDevicesWithType(in CoolingType type) is code 2 (0-indexed
@@ -2776,7 +2832,7 @@ mod tests {
 
         // decode CoolingType::FAN (value 0) from a 4-byte parcel
         let buf = 0i32.to_le_bytes();
-        let nodes = decode_aidl_params(&reg, sdk, &method, &buf, 0);
+        let nodes = decode_aidl_params(&reg, sdk, &method, &buf, 0, &[]);
         assert_eq!(nodes.len(), 1);
         match &nodes[0].value {
             DecodedValue::Enum { repr, variants } => {
