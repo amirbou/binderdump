@@ -11,15 +11,15 @@
 //   CONFIGURE_CHANNEL                                      // 5
 //   DESTROY                                                // 6
 //
-// Parameter types are placeholders — payload decoding is out of scope.
+// Remaining IBinder stub: 1 (BitTube socketpair fd — not AIDL-decodable).
 
 package android.gui;
 
 interface SensorEventConnection {
     IBinder getSensorChannel() = 1;
-    IBinder enableDisable() = 2;
-    IBinder setEventRate() = 3;
-    IBinder flushSensor() = 4;
-    IBinder configureChannel() = 5;
-    IBinder destroy() = 6;
+    void enableDisable(int handle, boolean enabled, long samplingPeriodNs, long maxBatchReportLatencyNs, int reservedFlags, out int status) = 2;
+    void setEventRate(int handle, long ns, out int status) = 3;
+    void flushSensor(out int status) = 4;
+    void configureChannel(int handle, int rateLevel, out int status) = 5;
+    oneway void destroy() = 6;
 }

@@ -12,7 +12,8 @@
 //
 // ON_TRUSTED_PRESENTATION_CHANGED (4) was added after android13-release.
 //
-// Parameter types are placeholders — payload decoding is out of scope.
+// Remaining IBinder stubs: 1 (ListenerStats nested Parcelable), 2 (Fence Flattenable),
+// 3 (String8).
 
 package android.gui;
 

@@ -23,29 +23,31 @@
 //   DISCARD_FREE_BUFFERS                                            // 19
 //   DUMP_STATE                                                      // 20
 //
-// Parameter types are placeholders — payload decoding is out of scope.
+// Remaining IBinder stubs: 1 (BufferItem Parcelable), 3 (GraphicBuffer Flattenable),
+// 4 (Fence Flattenable), 11 (String8), 17 (NativeHandle fds), 18 (Flattenable vector),
+// 20 (String8).
 
 package android.gui;
 
 interface IGraphicBufferConsumer {
     IBinder acquireBuffer() = 1;
-    IBinder detachBuffer() = 2;
+    void detachBuffer(int slot, out int status) = 2;
     IBinder attachBuffer() = 3;
     IBinder releaseBuffer() = 4;
-    IBinder consumerConnect() = 5;
-    IBinder consumerDisconnect() = 6;
-    IBinder getReleasedBuffers() = 7;
-    IBinder setDefaultBufferSize() = 8;
-    IBinder setMaxBufferCount() = 9;
-    IBinder setMaxAcquiredBufferCount() = 10;
+    void consumerConnect(IBinder consumer, boolean controlledByApp, out int status) = 5;
+    void consumerDisconnect(out int status) = 6;
+    void getReleasedBuffers(out int status, out long slotMask) = 7;
+    void setDefaultBufferSize(int width, int height, out int status) = 8;
+    void setMaxBufferCount(int bufferCount, out int status) = 9;
+    void setMaxAcquiredBufferCount(int maxAcquiredBuffers, out int status) = 10;
     IBinder setConsumerName() = 11;
-    IBinder setDefaultBufferFormat() = 12;
-    IBinder setDefaultBufferDataSpace() = 13;
-    IBinder setConsumerUsageBits() = 14;
-    IBinder setConsumerIsProtected() = 15;
-    IBinder setTransformHint() = 16;
+    void setDefaultBufferFormat(int defaultFormat, out int status) = 12;
+    void setDefaultBufferDataSpace(int defaultDataSpace, out int status) = 13;
+    void setConsumerUsageBits(long usage, out int status) = 14;
+    void setConsumerIsProtected(boolean isProtected, out int status) = 15;
+    void setTransformHint(int hint, out int status) = 16;
     IBinder getSidebandStream() = 17;
     IBinder getOccupancyHistory() = 18;
-    IBinder discardFreeBuffers() = 19;
+    void discardFreeBuffers(out int status) = 19;
     IBinder dumpState() = 20;
 }
