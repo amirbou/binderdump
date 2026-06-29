@@ -150,7 +150,7 @@ const MAX_DECODE_DEPTH: u32 = 128;
 
 // true if we've recursed too deep. warns once at the boundary so a truncated decode is
 // visible rather than silently swallowed (a real parcel never approaches the cap).
-fn depth_exceeded(depth: u32) -> bool {
+pub(crate) fn depth_exceeded(depth: u32) -> bool {
     if depth >= MAX_DECODE_DEPTH {
         eprintln!(
             "binderdump: parcel decode recursion cap ({MAX_DECODE_DEPTH}) hit; truncating (likely a malformed parcel)"
@@ -461,7 +461,7 @@ fn raw_tail(name: String, start: usize, buf_len: usize) -> DecodedNode {
     }
 }
 
-fn node(
+pub(crate) fn node(
     value: DecodedValue,
     label: &str,
     start: usize,
@@ -507,6 +507,9 @@ fn decode_value(
             ))
         }
         TypeRef::UserDefined(fqn) => {
+            if let Some(n) = crate::native_struct::decode(reg, sdk, cur, fqn, start, depth + 1) {
+                return Some(n);
+            }
             if let Some(label) = bundle_label(fqn) {
                 // AIDL Java backend writes a Bundle/PersistableBundle arg (or struct field)
                 // via Parcel.writeTypedObject: int32 presence (0=null, 1=present) then
@@ -2918,5 +2921,12 @@ mod tests {
                 v
             ),
         }
+    }
+
+    #[test]
+    fn native_struct_unknown_type_is_none() {
+        let reg = Registry::empty();
+        let mut cur = ParcelCursor::new(&[0u8; 4], 0);
+        assert!(crate::native_struct::decode(&reg, 35, &mut cur, "a.b.NotAStruct", 0, 0).is_none());
     }
 }

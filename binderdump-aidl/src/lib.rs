@@ -9,6 +9,7 @@ pub mod binder_object;
 pub mod decode;
 pub mod model;
 pub mod native_interfaces;
+pub mod native_struct;
 pub mod parser;
 pub mod registry;
 pub mod token;
