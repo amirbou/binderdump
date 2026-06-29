@@ -86,7 +86,10 @@ interface ISurfaceComposer {
     IBinder createDisplay() = 5;
     void destroyDisplay(IBinder display) = 6;
     void getPhysicalDisplayToken(long displayId, out IBinder result) = 7;
-    IBinder setTransactionState() = 8;
+    // decode stops at the layer_state_t front half (fields 1–11); the build-variant
+    // back half (field 12 onward) is raw-tailed. DisplayState/InputWindowCommands/
+    // UncacheBuffer/ListenerCallback params that follow are unreachable under safe-partial.
+    void setTransactionState(in FrameTimelineInfo frameTimelineInfo, in ComposerState[] state, in DisplayState[] displays, int flags, in IBinder applyToken, in InputWindowCommands commands, long desiredPresentTime, boolean isAutoTimestamp, in UncacheBuffer[] uncacheBuffers, boolean hasListenerCallbacks, in ListenerCallback[] listenerCallbacks, long transactionId, in long[] mergedTransactionIds) = 8;
     void authenticateSurface(IBinder bufferProducer, out boolean result) = 9;
     void getSupportedFrameTimestamps(out int status) = 10;
     IBinder getDisplayModes() = 11;
