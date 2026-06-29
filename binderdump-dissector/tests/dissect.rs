@@ -34,6 +34,10 @@ fn fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.pcapng")
 }
 
+fn set_transaction_state_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/set_transaction_state.pcapng")
+}
+
 fn tshark(args: &[&str]) -> String {
     let output = Command::new("tshark")
         .args(args)
@@ -1380,5 +1384,43 @@ fn follow_via_stream_id_zero() {
         body > 0,
         "follow,binderdump,ascii,0 produced empty output:\n{}",
         follow
+    );
+}
+
+// Verify that setTransactionState decodes the front half of layer_state_t and
+// raw-tails the build-variant back half. Fixture: real android15-QPR capture of a
+// single-layer setTransactionState transaction. Assertions cover only the verified
+// front half (offsets 0-211 from layer_state_t start): method name, layerId=12,
+// what=0x400000106e, and the raw tail. Fields after crop (field 11) are
+// build-variant and therefore not asserted.
+#[test]
+fn set_transaction_state_decodes_layer_state() {
+    ensure_dissector_loaded();
+    let fixture = set_transaction_state_fixture();
+    let out = tshark(&["-r", fixture.to_str().unwrap(), "-V"]);
+
+    // method resolved from the android-35 native corpus
+    assert!(
+        out.contains("Method: setTransactionState"),
+        "setTransactionState method not decoded:\n{}",
+        &out[..out.len().min(2000)]
+    );
+
+    // layer identity fields — both BC_TRANSACTION and BR_TRANSACTION frames carry the
+    // same front-half body; these are verified against the real capture hex
+    assert!(
+        out.contains("state.layerId: 12"),
+        "layerId=12 not found in tshark output"
+    );
+    // what=0x000000400000106e = 274877911150 decimal (capture value confirmed in diagnosis)
+    assert!(
+        out.contains("state.what: 274877911150"),
+        "state.what not decoded correctly"
+    );
+
+    // raw tail must be present after crop (confirms safe-partial boundary at field 12)
+    assert!(
+        out.contains("Parameter (raw)"),
+        "raw tail missing after crop — safe-partial boundary not emitted"
     );
 }
