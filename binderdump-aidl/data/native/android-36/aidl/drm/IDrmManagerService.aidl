@@ -35,16 +35,16 @@
 //   FINALIZE_DECRYPT_UNIT                                        // 31
 //   PREAD                                                        // 32
 //
-// Parameter types are placeholders — payload decoding is out of scope.
+// Remaining IBinder stubs use non-expressible types (Flattenable, vector, blob, String8).
 
 package drm;
 
 interface IDrmManagerService {
-    IBinder addUniqueId() = 1;
-    IBinder removeUniqueId() = 2;
-    IBinder addClient() = 3;
-    IBinder removeClient() = 4;
-    IBinder setDrmServiceListener() = 5;
+    void addUniqueId(int isNative, out int uniqueId) = 1;
+    void removeUniqueId(int uniqueId) = 2;
+    void addClient(int uniqueId) = 3;
+    void removeClient(int uniqueId) = 4;
+    void setDrmServiceListener(int uniqueId, IBinder listener) = 5;
     IBinder installDrmEngine() = 6;
     IBinder getConstraintsFromContent() = 7;
     IBinder getMetadataFromContent() = 8;
@@ -59,11 +59,11 @@ interface IDrmManagerService {
     IBinder setPlaybackStatus() = 17;
     IBinder validateAction() = 18;
     IBinder removeRights() = 19;
-    IBinder removeAllRights() = 20;
+    void removeAllRights(int uniqueId, out int status) = 20;
     IBinder openConvertSession() = 21;
     IBinder convertData() = 22;
-    IBinder closeConvertSession() = 23;
-    IBinder getAllSupportInfo() = 24;
+    void closeConvertSession(int uniqueId, int convertId) = 23;
+    void getAllSupportInfo(int uniqueId) = 24;
     IBinder openDecryptSession() = 25;
     IBinder openDecryptSessionFromUri() = 26;
     IBinder openDecryptSessionForStreaming() = 27;

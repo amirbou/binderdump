@@ -4,10 +4,10 @@
 //
 //   NOTIFY = IBinder::FIRST_CALL_TRANSACTION  // 1
 //
-// Parameter types are placeholders — payload decoding is out of scope.
+// Note: IMediaRecorderClient.notify has no optional Parcel blob (unlike IMediaPlayerClient.notify).
 
 package android.media;
 
 interface IMediaRecorderClient {
-    IBinder notify() = 1;
+    oneway void notify(int msg, int ext1, int ext2) = 1;
 }

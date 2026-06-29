@@ -6,12 +6,12 @@
 //   PAUSE                                      // 2
 //   RESUME                                     // 3
 //
-// Parameter types are placeholders — payload decoding is out of scope.
+// Wire: no request args; reply: readInt32() (status_t).
 
 package android.media;
 
 interface IRemoteDisplay {
-    IBinder dispose() = 1;
-    IBinder pause() = 2;
-    IBinder resume() = 3;
+    void dispose(out int status) = 1;
+    void pause(out int status) = 2;
+    void resume(out int status) = 3;
 }

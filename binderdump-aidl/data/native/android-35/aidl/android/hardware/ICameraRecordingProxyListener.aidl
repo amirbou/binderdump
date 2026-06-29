@@ -7,12 +7,12 @@
 //   RECORDING_FRAME_HANDLE_CALLBACK_TIMESTAMP                                     // 2
 //   RECORDING_FRAME_HANDLE_CALLBACK_TIMESTAMP_BATCH                               // 3
 //
-// Parameter types are placeholders — payload decoding is out of scope.
+// Remaining IBinder methods are non-expressible stubs (native_handle_t).
 
 package android.hardware;
 
 interface ICameraRecordingProxyListener {
-    IBinder dataCallbackTimestamp() = 1;
+    oneway void dataCallbackTimestamp(long timestamp, int msgType, in IBinder imageData) = 1;
     IBinder recordingFrameHandleCallbackTimestamp() = 2;
     IBinder recordingFrameHandleCallbackTimestampBatch() = 3;
 }

@@ -826,6 +826,7 @@ fn handle_transaction_code(
             r.interface.clone(),
             r.method_name.clone(),
             r.method,
+            r.method_source == "native",
         );
 
         let td = crate::follow_stream::TapData {

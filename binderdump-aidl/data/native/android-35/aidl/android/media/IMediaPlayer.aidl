@@ -48,52 +48,52 @@
 //   ENABLE_AUDIO_DEVICE_CALLBACK                               // 43
 //
 // setDataSource is overloaded at multiple codes (url/fd/stream/callback/rtp).
-// Parameter types are placeholders — payload decoding is out of scope.
+// Remaining IBinder methods are non-expressible stubs (raw Parcel, fd, Parcelable, or array reply).
 
 package android.media;
 
 interface IMediaPlayer {
-    IBinder disconnect() = 1;
+    void disconnect() = 1;
     IBinder setDataSourceUrl() = 2;
     IBinder setDataSourceFd() = 3;
-    IBinder setDataSourceStream() = 4;
-    IBinder setDataSourceCallback() = 5;
+    void setDataSourceStream(in IBinder source, out int status) = 4;
+    void setDataSourceCallback(in IBinder source, out int status) = 5;
     IBinder setDataSourceRtp() = 6;
-    IBinder setBufferingSettings() = 7;
-    IBinder getBufferingSettings() = 8;
-    IBinder prepareAsync() = 9;
-    IBinder start() = 10;
-    IBinder stop() = 11;
-    IBinder isPlaying() = 12;
-    IBinder setPlaybackSettings() = 13;
-    IBinder getPlaybackSettings() = 14;
-    IBinder setSyncSettings() = 15;
-    IBinder getSyncSettings() = 16;
-    IBinder pause() = 17;
-    IBinder seekTo() = 18;
-    IBinder getCurrentPosition() = 19;
-    IBinder getDuration() = 20;
-    IBinder reset() = 21;
-    IBinder notifyAt() = 22;
-    IBinder setAudioStreamType() = 23;
-    IBinder setLooping() = 24;
-    IBinder setVolume() = 25;
+    void setBufferingSettings(int initialMarkMs, int resumePlaybackMarkMs, out int status) = 7;
+    void getBufferingSettings(out int status, out int initialMarkMs, out int resumePlaybackMarkMs) = 8;
+    void prepareAsync(out int status) = 9;
+    void start(out int status) = 10;
+    void stop(out int status) = 11;
+    void isPlaying(out int state, out int status) = 12;
+    void setPlaybackSettings(float speed, float pitch, int fallbackMode, int stretchMode, out int status) = 13;
+    void getPlaybackSettings(out int status, out float speed, out float pitch, out int fallbackMode, out int stretchMode) = 14;
+    void setSyncSettings(int source, int audioAdjustMode, float tolerance, float videoFpsHint, out int status) = 15;
+    void getSyncSettings(out int status, out int source, out int audioAdjustMode, out float tolerance, out float videoFps) = 16;
+    void pause(out int status) = 17;
+    void seekTo(int msec, int mode, out int status) = 18;
+    void getCurrentPosition(out int msec, out int status) = 19;
+    void getDuration(out int msec, out int status) = 20;
+    void reset(out int status) = 21;
+    void notifyAt(long mediaTimeUs, out int status) = 22;
+    void setAudioStreamType(int stream, out int status) = 23;
+    void setLooping(int loop, out int status) = 24;
+    void setVolume(float leftVolume, float rightVolume, out int status) = 25;
     IBinder invoke() = 26;
     IBinder setMetadataFilter() = 27;
     IBinder getMetadata() = 28;
-    IBinder setAuxEffectSendLevel() = 29;
-    IBinder attachAuxEffect() = 30;
-    IBinder setVideoSurfaceTexture() = 31;
+    void setAuxEffectSendLevel(float level, out int status) = 29;
+    void attachAuxEffect(int effectId, out int status) = 30;
+    void setVideoSurfaceTexture(in IBinder bufferProducer, out int status) = 31;
     IBinder setParameter() = 32;
     IBinder getParameter() = 33;
     IBinder setRetransmitEndpoint() = 34;
     IBinder getRetransmitEndpoint() = 35;
-    IBinder setNextPlayer() = 36;
+    void setNextPlayer(in IBinder player, out int status) = 36;
     IBinder applyVolumeShaper() = 37;
     IBinder getVolumeShaperState() = 38;
     IBinder prepareDrm() = 39;
-    IBinder releaseDrm() = 40;
-    IBinder setOutputDevice() = 41;
-    IBinder getRoutedDeviceId() = 42;
-    IBinder enableAudioDeviceCallback() = 43;
+    void releaseDrm(out int status) = 40;
+    void setOutputDevice(int deviceId, out int status) = 41;
+    void getRoutedDeviceId(out int status, out int deviceId) = 42;
+    void enableAudioDeviceCallback(boolean enabled, out int status) = 43;
 }

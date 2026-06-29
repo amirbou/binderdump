@@ -1,5 +1,5 @@
 // Synthetic AIDL stand-in for android::IGpuService.
-// Source: frameworks/native/libs/graphicsenv/include/graphicsenv/IGpuService.h (android15-release)
+// Source: frameworks/native/libs/graphicsenv/IGpuService.cpp + include/graphicsenv/IGpuService.h (android15-release)
 // Enum BnGpuService::IGpuServiceTag:
 //
 //   SET_GPU_STATS                 = IBinder::FIRST_CALL_TRANSACTION  // 1
@@ -12,16 +12,19 @@
 //
 // (GET_FEATURE_CONFIG_OVERRIDES was not yet present on android15-release)
 //
-// Parameter types are placeholders — payload decoding is out of scope.
+// Codes 1-5 carry source-verified types. Codes 6-7 stay typeless IBinder stubs:
+// SET_TARGET_STATS_ARRAY ends in a raw Parcel::write() buffer and
+// ADD_VULKAN_ENGINE_NAME uses writeCString (no length prefix) — neither is
+// AIDL-expressible, so the decoder shows the method name only.
 
 package android.graphicsenv;
 
 interface IGpuService {
-    IBinder setGpuStats() = 1;
-    IBinder setTargetStats() = 2;
-    IBinder setUpdatableDriverPath() = 3;
-    IBinder getUpdatableDriverPath() = 4;
-    IBinder toggleAngleAsSystemDriver() = 5;
+    oneway void setGpuStats(in String driverPackageName, in String driverVersionName, long driverVersionCode, long driverBuildTime, in String appPackageName, int vulkanVersion, int driver, boolean isDriverLoaded, long driverLoadingTime) = 1;
+    oneway void setTargetStats(in String appPackageName, long driverVersionCode, int stats, long value) = 2;
+    oneway void setUpdatableDriverPath(in String driverPath) = 3;
+    void getUpdatableDriverPath(out String driverPath) = 4;
+    oneway void toggleAngleAsSystemDriver(boolean enabled) = 5;
     IBinder setTargetStatsArray() = 6;
     IBinder addVulkanEngineName() = 7;
 }

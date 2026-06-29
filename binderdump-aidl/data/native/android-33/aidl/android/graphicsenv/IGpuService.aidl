@@ -1,5 +1,5 @@
 // Synthetic AIDL stand-in for android::IGpuService.
-// Source: frameworks/native/libs/graphicsenv/include/graphicsenv/IGpuService.h (android13-release)
+// Source: frameworks/native/libs/graphicsenv/IGpuService.cpp + include/graphicsenv/IGpuService.h (android13-release)
 // Enum BnGpuService::IGpuServiceTag:
 //
 //   SET_GPU_STATS                 = IBinder::FIRST_CALL_TRANSACTION  // 1
@@ -11,13 +11,14 @@
 // SET_TARGET_STATS_ARRAY (6) and ADD_VULKAN_ENGINE_NAME (7) were added after
 // android14-release.
 //
-// Parameter types are placeholders — payload decoding is out of scope.
+// Types verified against BpGpuService (writeUtf8AsUtf16 -> String, writeUint64/
+// writeInt64 -> long, writeInt32 -> int, writeBool -> boolean).
 
 package android.graphicsenv;
 
 interface IGpuService {
-    IBinder setGpuStats() = 1;
-    IBinder setTargetStats() = 2;
-    IBinder setUpdatableDriverPath() = 3;
-    IBinder getUpdatableDriverPath() = 4;
+    oneway void setGpuStats(in String driverPackageName, in String driverVersionName, long driverVersionCode, long driverBuildTime, in String appPackageName, int vulkanVersion, int driver, boolean isDriverLoaded, long driverLoadingTime) = 1;
+    oneway void setTargetStats(in String appPackageName, long driverVersionCode, int stats, long value) = 2;
+    oneway void setUpdatableDriverPath(in String driverPath) = 3;
+    void getUpdatableDriverPath(out String driverPath) = 4;
 }

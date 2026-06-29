@@ -6,12 +6,13 @@
 //   ON_DISPLAY_DISCONNECTED                                    // 2
 //   ON_DISPLAY_ERROR                                           // 3
 //
-// Parameter types are placeholders — payload decoding is out of scope.
+// Remaining IBinder stubs are non-expressible in AIDL:
+//   ON_DISPLAY_CONNECTED: first param is IGraphicBufferProducer (typed surface binder)
 
 package android.media;
 
 interface IRemoteDisplayClient {
     IBinder onDisplayConnected() = 1;
-    IBinder onDisplayDisconnected() = 2;
-    IBinder onDisplayError() = 3;
+    oneway void onDisplayDisconnected() = 2;
+    oneway void onDisplayError(int error) = 3;
 }

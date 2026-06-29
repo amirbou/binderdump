@@ -13,19 +13,26 @@
 //   SETENTRYPOINT                                      // 9
 //   SETLOGSESSIONID                                    // 10
 //
-// Parameter types are placeholders — payload decoding is out of scope.
+// Remaining IBinder stubs are non-expressible in AIDL:
+//   GETTRACK: returns IMediaSource binder (typed interface, not generic IBinder)
+//   GETTRACKMETADATA: reply is MetaData custom parcelable
+//   GETMETADATA: reply is MetaData custom parcelable
+//   SETMEDIACAS: writeByteVector (HInterfaceToken, CAS-specific byte vector)
+//   NAME: readString8 (UTF-8, not String16)
+//   GETMETRICS: passes reply Parcel directly (raw AMediaFormat encoding)
+//   SETLOGSESSIONID: writeString8 (UTF-8, not String16)
 
 package android.media;
 
 interface IMediaExtractor {
-    IBinder countTracks() = 1;
+    void countTracks(out int count) = 1;
     IBinder getTrack() = 2;
     IBinder getTrackMetaData() = 3;
     IBinder getMetaData() = 4;
-    IBinder flags() = 5;
+    void flags(out int flags) = 5;
     IBinder setMediaCas() = 6;
     IBinder name() = 7;
     IBinder getMetrics() = 8;
-    IBinder setEntryPoint() = 9;
+    void setEntryPoint(int entryPoint) = 9;
     IBinder setLogSessionId() = 10;
 }

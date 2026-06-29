@@ -15,11 +15,11 @@
 // because the enum is defined once for both interfaces in the same TU.
 // queueBuffer is therefore code 5 and issueCommand is code 6 on the wire.
 //
-// Parameter types are placeholders — payload decoding is out of scope.
+// Remaining IBinder methods are non-expressible stubs (AMessage custom parcelable).
 
 package android.hardware;
 
 interface IStreamListener {
-    IBinder queueBuffer() = 5;
+    oneway void queueBuffer(long index, long size) = 5;
     IBinder issueCommand() = 6;
 }

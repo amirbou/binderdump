@@ -42,48 +42,51 @@
 //   SET_PRIVACY_SENSITIVE                                                        // 38
 //   GET_PRIVACY_SENSITIVE                                                        // 39
 //
-// Parameter types are placeholders — payload decoding is out of scope.
+// Remaining IBinder methods are non-expressible stubs (fd, String8, Parcelable, Parcelable vector, or array reply).
+// code 6: new QUERY_SURFACE_MEDIASOURCE_V2 (android17); uses readParcelable view::Surface — STUB.
+// code 23: new SET_PREVIEW_SURFACE_V2 (android17); uses writeParcelable view::Surface — STUB.
+// codes 7–22 and 24–39: shifted +1 and +2 respectively from android16 due to new insertions.
 
 package android.media;
 
 interface IMediaRecorder {
-    IBinder release() = 1;
-    IBinder init() = 2;
-    IBinder close() = 3;
+    void release(out int status) = 1;
+    void init(out int status) = 2;
+    void close(out int status) = 3;
     IBinder setInputSurface() = 4;
-    IBinder querySurfaceMediaSource() = 5;
+    void querySurfaceMediaSource(out IBinder source) = 5;
     IBinder querySurfaceMediaSourceV2() = 6;
-    IBinder reset() = 7;
-    IBinder stop() = 8;
-    IBinder start() = 9;
-    IBinder prepare() = 10;
-    IBinder getMaxAmplitude() = 11;
-    IBinder setVideoSource() = 12;
-    IBinder setAudioSource() = 13;
-    IBinder setOutputFormat() = 14;
-    IBinder setVideoEncoder() = 15;
-    IBinder setAudioEncoder() = 16;
+    void reset(out int status) = 7;
+    void stop(out int status) = 8;
+    void start(out int status) = 9;
+    void prepare(out int status) = 10;
+    void getMaxAmplitude(out int max, out int status) = 11;
+    void setVideoSource(int vs, out int status) = 12;
+    void setAudioSource(int as, out int status) = 13;
+    void setOutputFormat(int of, out int status) = 14;
+    void setVideoEncoder(int ve, out int status) = 15;
+    void setAudioEncoder(int ae, out int status) = 16;
     IBinder setOutputFileFd() = 17;
     IBinder setNextOutputFileFd() = 18;
-    IBinder setVideoSize() = 19;
-    IBinder setVideoFrameRate() = 20;
+    void setVideoSize(int width, int height, out int status) = 19;
+    void setVideoFrameRate(int framesPerSecond, out int status) = 20;
     IBinder setParameters() = 21;
-    IBinder setPreviewSurface() = 22;
+    void setPreviewSurface(in IBinder surface, out int status) = 22;
     IBinder setPreviewSurfaceV2() = 23;
-    IBinder setCamera() = 24;
-    IBinder setListener() = 25;
-    IBinder setClientName() = 26;
-    IBinder pause() = 27;
-    IBinder resume() = 28;
+    void setCamera(in IBinder camera, in IBinder proxy, out int status) = 24;
+    void setListener(in IBinder listener, out int status) = 25;
+    void setClientName(in String clientName, out int status) = 26;
+    void pause(out int status) = 27;
+    void resume(out int status) = 28;
     IBinder getMetrics() = 29;
-    IBinder setInputDevice() = 30;
+    void setInputDevice(int deviceId, out int status) = 30;
     IBinder getRoutedDeviceIds() = 31;
-    IBinder enableAudioDeviceCallback() = 32;
+    void enableAudioDeviceCallback(boolean enabled, out int status) = 32;
     IBinder getActiveMicrophones() = 33;
-    IBinder getPortId() = 34;
-    IBinder getRtpDataUsage() = 35;
-    IBinder setPreferredMicrophoneDirection() = 36;
-    IBinder setPreferredMicrophoneFieldDimension() = 37;
-    IBinder setPrivacySensitive() = 38;
-    IBinder getPrivacySensitive() = 39;
+    void getPortId(out int status, out int portId) = 34;
+    void getRtpDataUsage(out int status, out long bytes) = 35;
+    void setPreferredMicrophoneDirection(int direction, out int status) = 36;
+    void setPreferredMicrophoneFieldDimension(float zoom, out int status) = 37;
+    void setPrivacySensitive(int privacySensitive, out int status) = 38;
+    void getPrivacySensitive(out int status, out int privacySensitive) = 39;
 }
