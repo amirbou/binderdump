@@ -192,6 +192,9 @@ jobs:
           set -euo pipefail
           mkdir -p "$HOME/.config/wireshark/binderdump"
           cp -r binderdump-aidl/data/aosp "$HOME/.config/wireshark/binderdump/aosp"
+          # native synthetic corpus sits beside aosp (native_dir = aosp_dir.parent()/native);
+          # needed for native-interface dissector tests (e.g. setTransactionState).
+          cp -r binderdump-aidl/data/native "$HOME/.config/wireshark/binderdump/native"
 
       - name: Run dissector integration test
         run: cargo test -p binderdump-dissector --release
