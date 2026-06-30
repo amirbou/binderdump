@@ -11,10 +11,10 @@
 //   ADD_VULKAN_ENGINE_NAME                                            // 7
 //   GET_FEATURE_CONFIG_OVERRIDES                                      // 8
 //
-// Codes 1-5 carry source-verified types. Codes 6-8 stay typeless IBinder stubs:
-// SET_TARGET_STATS_ARRAY (raw Parcel::write() buffer), ADD_VULKAN_ENGINE_NAME
-// (writeCString, no length prefix), and GET_FEATURE_CONFIG_OVERRIDES (custom
-// return) aren't AIDL-expressible — the decoder shows the method name only.
+// Codes 1-5 carry source-verified types. Codes 6 and 8 stay typeless IBinder stubs:
+// SET_TARGET_STATS_ARRAY (raw Parcel::write() buffer) and GET_FEATURE_CONFIG_OVERRIDES
+// (custom return) aren't AIDL-expressible. Code 7 (ADD_VULKAN_ENGINE_NAME) is now
+// typed: BpGpuService::addVulkanEngineName calls writeCString → in CString.
 
 package android.graphicsenv;
 
@@ -25,6 +25,6 @@ interface IGpuService {
     void getUpdatableDriverPath(out String driverPath) = 4;
     oneway void toggleAngleAsSystemDriver(boolean enabled) = 5;
     IBinder setTargetStatsArray() = 6;
-    IBinder addVulkanEngineName() = 7;
+    oneway void addVulkanEngineName(in CString engineName) = 7;
     IBinder getFeatureConfigOverrides() = 8;
 }
