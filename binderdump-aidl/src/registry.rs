@@ -2165,6 +2165,224 @@ mod tests {
             matches!(&nodes[1].value, DecodedValue::Str(Some(s)) if s == "application/vnd.oma.drm.content")
         );
     }
+
+    // loads both the AOSP corpus (for parcelable/enum definitions) and the
+    // native synthetic corpus (for hand-written C++ interface stubs).
+    fn native_and_aosp_reg() -> Registry {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        Registry::with_aosp_dir(repo_root.join("data/aosp"))
+            .with_native_dir(&repo_root.join("data/native"))
+    }
+
+    // helper for building a writeParcelable buffer: [int32 1][int32 size][fields].
+    // size counts itself (4 bytes) + the provided field bytes.
+    fn parcelable_buf(fields: &[u8]) -> Vec<u8> {
+        let size = 4 + fields.len(); // size header counts itself
+        let mut b = Vec::new();
+        b.extend_from_slice(&1i32.to_le_bytes()); // presence flag (C++ writeParcelable)
+        b.extend_from_slice(&(size as i32).to_le_bytes());
+        b.extend_from_slice(fields);
+        b
+    }
+
+    // verify decode_parcelable_arg handles C++ writeParcelable wire format
+    // [int32 1 (presence flag)][int32 size][fields] without corpus lookup for
+    // the interface — only the AOSP parcelable definition is needed.
+    #[test]
+    fn decodes_writeparcelable_presence_flag() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_and_aosp_reg();
+        // build the method inline: create(in android.content.AttributionSourceState attributionSource)
+        let method = Method {
+            name: "create".to_string(),
+            params: vec![Parameter {
+                name: "attributionSource".to_string(),
+                ty: TypeRef::UserDefined("android.content.AttributionSourceState".to_string()),
+                direction: Direction::In,
+            }],
+            return_type: Some(TypeRef::IBinder),
+            oneway: false,
+            code: Some(1),
+        };
+        // [int32 1 (presence)][int32 12 (size: 4+4+4)][int32 -1 (pid)][int32 1000 (uid)]
+        // size=12 means boundary lands after uid — trailing fields truncated.
+        let mut fields = Vec::new();
+        fields.extend_from_slice(&(-1i32).to_le_bytes()); // pid
+        fields.extend_from_slice(&1000i32.to_le_bytes()); // uid
+        let buf = parcelable_buf(&fields);
+        let nodes = decode_aidl_params(&reg, 35, &method, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "attributionSource");
+        assert!(matches!(
+            &nodes[0].value,
+            DecodedValue::Parcelable { fqn, null: false } if fqn == "android.content.AttributionSourceState"
+        ));
+        assert!(nodes[0].children.len() >= 2);
+        assert_eq!(nodes[0].children[0].name, "pid");
+        assert!(matches!(nodes[0].children[0].value, DecodedValue::I64(-1)));
+        assert_eq!(nodes[0].children[1].name, "uid");
+        assert!(matches!(
+            nodes[0].children[1].value,
+            DecodedValue::I64(1000)
+        ));
+    }
+
+    #[test]
+    fn decodes_native_imediaplayerservice_create_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_and_aosp_reg();
+        // create(in android.content.AttributionSourceState attributionSource) = 1 (sdk 35)
+        let method = native_method(&reg, 35, "android.media.IMediaPlayerService", 1);
+        assert_eq!(method.name, "create");
+        // [int32 1 (presence)][int32 12 (size: 4+4+4)][int32 -1 (pid)][int32 1000 (uid)]
+        let mut fields = Vec::new();
+        fields.extend_from_slice(&(-1i32).to_le_bytes()); // pid
+        fields.extend_from_slice(&1000i32.to_le_bytes()); // uid
+        let buf = parcelable_buf(&fields);
+        let nodes = decode_aidl_params(&reg, 35, method, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "attributionSource");
+        assert!(matches!(
+            &nodes[0].value,
+            DecodedValue::Parcelable { fqn, null: false } if fqn == "android.content.AttributionSourceState"
+        ));
+        assert!(nodes[0].children.len() >= 2);
+        assert_eq!(nodes[0].children[0].name, "pid");
+        assert!(matches!(nodes[0].children[0].value, DecodedValue::I64(-1)));
+        assert_eq!(nodes[0].children[1].name, "uid");
+        assert!(matches!(
+            nodes[0].children[1].value,
+            DecodedValue::I64(1000)
+        ));
+    }
+
+    #[test]
+    fn decodes_native_imediaplayerservice_create_media_recorder_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_and_aosp_reg();
+        // createMediaRecorder(in android.content.AttributionSourceState attributionSource) = 2 (sdk 35)
+        let method = native_method(&reg, 35, "android.media.IMediaPlayerService", 2);
+        assert_eq!(method.name, "createMediaRecorder");
+        let mut fields = Vec::new();
+        fields.extend_from_slice(&(-1i32).to_le_bytes()); // pid
+        fields.extend_from_slice(&1000i32.to_le_bytes()); // uid
+        let buf = parcelable_buf(&fields);
+        let nodes = decode_aidl_params(&reg, 35, method, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "attributionSource");
+        assert!(matches!(
+            &nodes[0].value,
+            DecodedValue::Parcelable { fqn, null: false } if fqn == "android.content.AttributionSourceState"
+        ));
+        assert!(nodes[0].children.len() >= 2);
+        assert_eq!(nodes[0].children[0].name, "pid");
+        assert!(matches!(nodes[0].children[0].value, DecodedValue::I64(-1)));
+        assert_eq!(nodes[0].children[1].name, "uid");
+        assert!(matches!(
+            nodes[0].children[1].value,
+            DecodedValue::I64(1000)
+        ));
+    }
+
+    // VolumeShaperConfiguration body (no presence flag — native C++ calls writeToParcel directly):
+    //   [int32 size][int32 type=0 (ID)][int32 id][int32 optionFlags][double durationMs]
+    //   [@nullable InterpolatorConfig presence=0 (null)]
+    // size = 4 (size itself) + 4+4+4+8+4 = 28
+    fn volume_shaper_config_buf(id: i32) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&28i32.to_le_bytes()); // size header (incl. itself)
+        b.extend_from_slice(&0i32.to_le_bytes()); // type = VolumeShaperConfigurationType.ID = 0
+        b.extend_from_slice(&id.to_le_bytes()); // id
+        b.extend_from_slice(&0i32.to_le_bytes()); // optionFlags
+        b.extend_from_slice(&1.0f64.to_le_bytes()); // durationMs
+        b.extend_from_slice(&0i32.to_le_bytes()); // @nullable InterpolatorConfig = null (presence 0)
+        b
+    }
+
+    // VolumeShaperOperation body (no presence flag — native C++ calls writeToParcel directly):
+    //   [int32 size][int32 flags][int32 replaceId][float xOffset]
+    // size = 4 (size itself) + 4+4+4 = 16
+    fn volume_shaper_op_buf(flags: i32, replace_id: i32, x_offset: f32) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&16i32.to_le_bytes()); // size header (incl. itself)
+        b.extend_from_slice(&flags.to_le_bytes()); // flags
+        b.extend_from_slice(&replace_id.to_le_bytes()); // replaceId
+        b.extend_from_slice(&x_offset.to_le_bytes()); // xOffset
+        b
+    }
+
+    #[test]
+    fn decodes_native_imediaplayer_apply_volume_shaper_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_and_aosp_reg();
+        // applyVolumeShaper(in android.media.VolumeShaperConfiguration configuration,
+        //   in android.media.VolumeShaperOperation operation) = 37 (sdk 35)
+        // native C++ BpMediaPlayer calls config->writeToParcel (no presence flag).
+        let method = native_method(&reg, 35, "android.media.IMediaPlayer", 37);
+        assert_eq!(method.name, "applyVolumeShaper");
+        let mut buf = volume_shaper_config_buf(42);
+        buf.extend_from_slice(&volume_shaper_op_buf(2, -1, 0.0));
+        let nodes = decode_aidl_params(&reg, 35, method, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].name, "configuration");
+        assert!(matches!(
+            &nodes[0].value,
+            DecodedValue::Parcelable { fqn, null: false } if fqn == "android.media.VolumeShaperConfiguration"
+        ));
+        assert_eq!(nodes[1].name, "operation");
+        assert!(matches!(
+            &nodes[1].value,
+            DecodedValue::Parcelable { fqn, null: false } if fqn == "android.media.VolumeShaperOperation"
+        ));
+    }
+
+    #[test]
+    fn decodes_native_imediaplayer_get_volume_shaper_state_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_and_aosp_reg();
+        // getVolumeShaperState(int id, out android.media.VolumeShaperState state) = 38 (sdk 35)
+        // request: writeInt32(id); the out state param carries no request bytes.
+        let method = native_method(&reg, 35, "android.media.IMediaPlayer", 38);
+        assert_eq!(method.name, "getVolumeShaperState");
+        let buf = 7i32.to_le_bytes().to_vec(); // id
+        let nodes = decode_aidl_params(&reg, 35, method, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "id");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(7)));
+    }
+
+    #[test]
+    fn decodes_native_imediaplayer_get_volume_shaper_state_reply() {
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_and_aosp_reg();
+        // getVolumeShaperState reply: native C++ writes int32 1 (presence) then
+        // state->writeToParcel (size header + fields). VolumeShaperState has
+        // float volume and float xOffset.
+        // size = 4 (size itself) + 4 (volume) + 4 (xOffset) = 12
+        let method = native_method(&reg, 35, "android.media.IMediaPlayer", 38);
+        assert_eq!(method.name, "getVolumeShaperState");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&1i32.to_le_bytes()); // presence flag (written by native before writeToParcel)
+        buf.extend_from_slice(&12i32.to_le_bytes()); // size header (incl. itself)
+        buf.extend_from_slice(&0.5f32.to_le_bytes()); // volume
+        buf.extend_from_slice(&0.25f32.to_le_bytes()); // xOffset
+        let nodes = decode_native_reply(&reg, 35, method, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "state");
+        assert!(matches!(
+            &nodes[0].value,
+            DecodedValue::Parcelable { fqn, null: false } if fqn == "android.media.VolumeShaperState"
+        ));
+        assert_eq!(nodes[0].children.len(), 2);
+        assert_eq!(nodes[0].children[0].name, "volume");
+        assert!(
+            matches!(nodes[0].children[0].value, DecodedValue::F64(v) if (v - 0.5).abs() < 1e-5)
+        );
+        assert_eq!(nodes[0].children[1].name, "xOffset");
+        assert!(
+            matches!(nodes[0].children[1].value, DecodedValue::F64(v) if (v - 0.25).abs() < 1e-5)
+        );
+    }
 }
 
 use crate::model::{EnumDef, Interface, Method, OverlayLayer, Parcelable, Union};
