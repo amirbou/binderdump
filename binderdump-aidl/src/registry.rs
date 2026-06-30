@@ -1370,6 +1370,21 @@ mod tests {
         assert!(matches!(nodes[0].value, DecodedValue::I64(0)));
     }
 
+    #[test]
+    fn decodes_igraphicbufferconsumer_set_consumer_name_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // void setConsumerName(in String8 name, out int status) = 11
+        // request: writeString8(name); SafeInterface writes status_t to reply (skipped here)
+        let method = native_method(&reg, 34, "android.gui.IGraphicBufferConsumer", 11);
+        assert_eq!(method.name, "setConsumerName");
+        let buf = string8("SurfaceView");
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "name");
+        assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "SurfaceView"));
+    }
+
     // ITransactionComposerListener
 
     #[test]
@@ -1390,6 +1405,22 @@ mod tests {
         assert!(matches!(nodes[0].value, DecodedValue::I64(7)));
         assert_eq!(nodes[1].name, "inTrustedPresentationState");
         assert!(matches!(nodes[1].value, DecodedValue::Bool(true)));
+    }
+
+    #[test]
+    fn decodes_itransactioncomposerlistener_on_transaction_queue_stalled_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // oneway void onTransactionQueueStalled(in String8 reason) = 3
+        // request: writeString8(reason); oneway — no reply
+        let method = native_method(&reg, 34, "android.gui.ITransactionComposerListener", 3);
+        assert_eq!(method.name, "onTransactionQueueStalled");
+        assert!(method.oneway);
+        let buf = string8("tx_queue_overflow");
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "reason");
+        assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "tx_queue_overflow"));
     }
 
     // SensorEventConnection
@@ -1545,6 +1576,34 @@ mod tests {
         assert_eq!(m8.name, "enableReplayDataInjection");
         let m9 = native_method(&reg, 35, "android.gui.SensorServer", 9);
         assert_eq!(m9.name, "enableHalBypassReplayDataInjection");
+    }
+
+    #[test]
+    fn decodes_sensorserver_create_sensor_event_connection_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // void createSensorEventConnection(in String8 packageName, int mode,
+        //   in String opPackageName, in String attributionTag, out IBinder connection) = 2
+        // request: writeString8(packageName), writeInt32(mode),
+        //   writeString16(opPackageName), writeString16(attributionTag)
+        // reply: readStrongBinder (out IBinder connection) — skipped by decode_aidl_params
+        let method = native_method(&reg, 34, "android.gui.SensorServer", 2);
+        assert_eq!(method.name, "createSensorEventConnection");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&string8("com.example.app")); // packageName (String8)
+        buf.extend_from_slice(&0i32.to_le_bytes()); // mode = 0 (normal)
+        buf.extend_from_slice(&s16("com.example")); // opPackageName (String16)
+        buf.extend_from_slice(&s16("sensors")); // attributionTag (String16)
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 4);
+        assert_eq!(nodes[0].name, "packageName");
+        assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "com.example.app"));
+        assert_eq!(nodes[1].name, "mode");
+        assert!(matches!(nodes[1].value, DecodedValue::I64(0)));
+        assert_eq!(nodes[2].name, "opPackageName");
+        assert!(matches!(&nodes[2].value, DecodedValue::Str(Some(s)) if s == "com.example"));
+        assert_eq!(nodes[3].name, "attributionTag");
+        assert!(matches!(&nodes[3].value, DecodedValue::Str(Some(s)) if s == "sensors"));
     }
 
     // ICameraRecordingProxy
