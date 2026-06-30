@@ -48,6 +48,8 @@
 //   ENABLE_AUDIO_DEVICE_CALLBACK                               // 43
 //
 // setDataSource is overloaded at multiple codes (url/fd/stream/callback/rtp).
+// setDataSourceUrl: CString url + variable-length headers map — not expressible.
+// setDataSourceFd: fd param — not expressible.
 // Remaining IBinder methods are non-expressible stubs (raw Parcel, fd, Parcelable, or array reply).
 // code 42: renamed GET_ROUTED_DEVICE_IDS (android16); reply now writes int32 count + count*int32 — STUB (array).
 
@@ -59,7 +61,7 @@ interface IMediaPlayer {
     IBinder setDataSourceFd() = 3;
     void setDataSourceStream(in IBinder source, out int status) = 4;
     void setDataSourceCallback(in IBinder source, out int status) = 5;
-    IBinder setDataSourceRtp() = 6;
+    void setDataSourceRtp(in String8 rtpParams, out int status) = 6;
     void setBufferingSettings(int initialMarkMs, int resumePlaybackMarkMs, out int status) = 7;
     void getBufferingSettings(out int status, out int initialMarkMs, out int resumePlaybackMarkMs) = 8;
     void prepareAsync(out int status) = 9;

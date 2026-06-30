@@ -40,7 +40,7 @@
 //   SET_PRIVACY_SENSITIVE                                                        // 36
 //   GET_PRIVACY_SENSITIVE                                                        // 37
 //
-// Remaining IBinder methods are non-expressible stubs (fd, String8, Parcelable vector, or array reply).
+// Remaining IBinder methods are non-expressible stubs (fd, Parcelable, Parcelable vector, or array reply).
 
 package android.media;
 
@@ -64,7 +64,7 @@ interface IMediaRecorder {
     IBinder setNextOutputFileFd() = 17;
     void setVideoSize(int width, int height, out int status) = 18;
     void setVideoFrameRate(int framesPerSecond, out int status) = 19;
-    IBinder setParameters() = 20;
+    void setParameters(in String8 params, out int status) = 20;
     void setPreviewSurface(in IBinder surface, out int status) = 21;
     void setCamera(in IBinder camera, in IBinder proxy, out int status) = 22;
     void setListener(in IBinder listener, out int status) = 23;

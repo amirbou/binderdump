@@ -13,8 +13,6 @@
 //   CREATE: enum placeholder only, no Bp/Bn implementation found in source
 //   GET_CODEC_INFO: reply includes MediaCodecInfo custom parcelable
 //   GET_GLOBAL_SETTINGS: reply includes AMessage custom parcelable
-//   FIND_CODEC_BY_TYPE: uses writeCString (NUL-terminated, not String16)
-//   FIND_CODEC_BY_NAME: uses writeCString (NUL-terminated, not String16)
 
 package android.media;
 
@@ -23,6 +21,6 @@ interface IMediaCodecList {
     void countCodecs(out int count) = 2;
     IBinder getCodecInfo() = 3;
     IBinder getGlobalSettings() = 4;
-    IBinder findCodecByType() = 5;
-    IBinder findCodecByName() = 6;
+    void findCodecByType(in CString type, int encoder, int startIndex, out int result) = 5;
+    void findCodecByName(in CString name, out int result) = 6;
 }
