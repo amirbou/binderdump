@@ -688,6 +688,29 @@ mod tests {
         Registry::empty().with_native_dir(&repo_root.join("data/native"))
     }
 
+    // raw String8 on the wire: int32 byte_len + UTF-8 bytes + u8 NUL, padded to 4.
+    // matches Parcel::writeString8.
+    fn string8(s: &str) -> Vec<u8> {
+        let mut b = (s.len() as i32).to_le_bytes().to_vec();
+        b.extend_from_slice(s.as_bytes());
+        b.push(0); // NUL
+        while b.len() % 4 != 0 {
+            b.push(0);
+        }
+        b
+    }
+
+    // raw CString on the wire: UTF-8 bytes + NUL, padded to 4. no length prefix.
+    // matches Parcel::writeCString.
+    fn cstring(s: &str) -> Vec<u8> {
+        let mut b = s.as_bytes().to_vec();
+        b.push(0); // NUL
+        while b.len() % 4 != 0 {
+            b.push(0);
+        }
+        b
+    }
+
     fn igpu_method(reg: &Registry, sdk: u32, code: u32) -> &crate::model::Method {
         match reg.resolve(sdk, "android.graphicsenv.IGpuService", code) {
             Lookup::Hit { method, .. } => method,
@@ -1786,6 +1809,136 @@ mod tests {
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name, "uniqueId");
         assert!(matches!(nodes[0].value, DecodedValue::I64(7)));
+    }
+
+    // IMediaExtractor — String8
+
+    #[test]
+    fn decodes_native_imediaextractor_set_log_session_id_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // setLogSessionId(in String8 sessionId) = 10; no out params on request
+        let method = native_method(&reg, 34, "android.media.IMediaExtractor", 10);
+        assert_eq!(method.name, "setLogSessionId");
+        let buf = string8("abc-session-123");
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "sessionId");
+        assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "abc-session-123"));
+    }
+
+    // IMediaCodecList — CString
+
+    #[test]
+    fn decodes_native_imediacodeclist_find_codec_by_type_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // findCodecByType(in CString type, int encoder, int startIndex, out int result) = 5
+        let method = native_method(&reg, 34, "android.media.IMediaCodecList", 5);
+        assert_eq!(method.name, "findCodecByType");
+        let mut buf = cstring("video/avc"); // 9 chars+NUL=10, padded to 12
+        buf.extend_from_slice(&1i32.to_le_bytes()); // encoder = 1
+        buf.extend_from_slice(&0i32.to_le_bytes()); // startIndex = 0
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].name, "type");
+        assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "video/avc"));
+        assert_eq!(nodes[1].name, "encoder");
+        assert!(matches!(nodes[1].value, DecodedValue::I64(1)));
+        assert_eq!(nodes[2].name, "startIndex");
+        assert!(matches!(nodes[2].value, DecodedValue::I64(0)));
+    }
+
+    #[test]
+    fn decodes_native_imediacodeclist_find_codec_by_name_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // findCodecByName(in CString name, out int result) = 6
+        let method = native_method(&reg, 34, "android.media.IMediaCodecList", 6);
+        assert_eq!(method.name, "findCodecByName");
+        let buf = cstring("OMX.google.avc.decoder");
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "name");
+        assert!(
+            matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "OMX.google.avc.decoder")
+        );
+    }
+
+    // IMediaPlayerService — String8 + IBinder
+
+    #[test]
+    fn decodes_native_imediaplayerservice_listen_for_remote_display_request() {
+        use crate::binder_object;
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // listenForRemoteDisplay(in String opPackageName, in IBinder client,
+        //   in String8 iface, out IBinder display) = 6
+        // request: writeString16(opPackageName), flat_binder_object(client), writeString8(iface)
+        let method = native_method(&reg, 34, "android.media.IMediaPlayerService", 6);
+        assert_eq!(method.name, "listenForRemoteDisplay");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&s16("com.example")); // opPackageName (String16)
+        let binder_off = buf.len() as u64; // offset of the flat_binder_object
+        buf.extend_from_slice(&binder_object::HANDLE.to_le_bytes()); // type
+        buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+        buf.extend_from_slice(&3u64.to_le_bytes()); // handle = 3
+        buf.extend_from_slice(&0u64.to_le_bytes()); // cookie
+        buf.extend_from_slice(&string8("wlan0")); // iface (String8)
+        let offsets = binder_off.to_le_bytes();
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &offsets);
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].name, "opPackageName");
+        assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "com.example"));
+        assert_eq!(nodes[1].name, "client");
+        assert!(matches!(
+            nodes[1].value,
+            DecodedValue::Binder {
+                handle: 3,
+                strong: false
+            }
+        ));
+        assert_eq!(nodes[2].name, "iface");
+        assert!(matches!(&nodes[2].value, DecodedValue::Str(Some(s)) if s == "wlan0"));
+    }
+
+    // IMediaPlayer — String8
+
+    #[test]
+    fn decodes_native_imediaplayer_set_data_source_rtp_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // setDataSourceRtp(in String8 rtpParams, out int status) = 6
+        let method = native_method(&reg, 34, "android.media.IMediaPlayer", 6);
+        assert_eq!(method.name, "setDataSourceRtp");
+        let buf = string8("rtp://192.168.1.1:5004");
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "rtpParams");
+        assert!(
+            matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "rtp://192.168.1.1:5004")
+        );
+    }
+
+    // IMediaRecorder — String8
+
+    #[test]
+    fn decodes_native_imediarecorder_set_parameters_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // setParameters(in String8 params, out int status) = 20 (sdk 33-36), 21 (sdk 37)
+        for (sdk, code) in [(33u32, 20u32), (34, 20), (35, 20), (36, 20), (37, 21)] {
+            let method = native_method(&reg, sdk, "android.media.IMediaRecorder", code);
+            assert_eq!(method.name, "setParameters", "sdk={sdk}");
+            let buf = string8("time-lapse-fps=30&video-bitrate=4000000");
+            let nodes = decode_aidl_params(&reg, sdk, method, &buf, 0, &[]);
+            assert_eq!(nodes.len(), 1, "sdk={sdk}");
+            assert_eq!(nodes[0].name, "params", "sdk={sdk}");
+            assert!(
+                matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "time-lapse-fps=30&video-bitrate=4000000"),
+                "sdk={sdk}"
+            );
+        }
     }
 }
 
