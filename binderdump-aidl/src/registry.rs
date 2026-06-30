@@ -1940,6 +1940,151 @@ mod tests {
             );
         }
     }
+
+    // IDrmManagerService — String8
+
+    #[test]
+    fn decodes_idrm_can_handle_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // canHandle(int uniqueId, in String8 path, in String8 mimeType, out int result) = 9
+        // request: writeInt32(uniqueId), writeString8(path), writeString8(mimeType)
+        let method = native_method(&reg, 34, "drm.IDrmManagerService", 9);
+        assert_eq!(method.name, "canHandle");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&42i32.to_le_bytes()); // uniqueId
+        buf.extend_from_slice(&string8("/sdcard/movie.mp4")); // path
+        buf.extend_from_slice(&string8("video/mp4")); // mimeType
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].name, "uniqueId");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(42)));
+        assert_eq!(nodes[1].name, "path");
+        assert!(matches!(&nodes[1].value, DecodedValue::Str(Some(s)) if s == "/sdcard/movie.mp4"));
+        assert_eq!(nodes[2].name, "mimeType");
+        assert!(matches!(&nodes[2].value, DecodedValue::Str(Some(s)) if s == "video/mp4"));
+    }
+
+    #[test]
+    fn decodes_idrm_get_drm_object_type_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // getDrmObjectType(int uniqueId, in String8 path, in String8 mimeType, out int objectType) = 14
+        // request: writeInt32(uniqueId), writeString8(path), writeString8(mimeType)
+        let method = native_method(&reg, 34, "drm.IDrmManagerService", 14);
+        assert_eq!(method.name, "getDrmObjectType");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&1i32.to_le_bytes()); // uniqueId
+        buf.extend_from_slice(&string8("/sdcard/rights.dcf")); // path
+        buf.extend_from_slice(&string8("application/vnd.oma.drm.content")); // mimeType
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].name, "uniqueId");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(1)));
+        assert_eq!(nodes[1].name, "path");
+        assert!(matches!(&nodes[1].value, DecodedValue::Str(Some(s)) if s == "/sdcard/rights.dcf"));
+        assert_eq!(nodes[2].name, "mimeType");
+        assert!(
+            matches!(&nodes[2].value, DecodedValue::Str(Some(s)) if s == "application/vnd.oma.drm.content")
+        );
+    }
+
+    #[test]
+    fn decodes_idrm_check_rights_status_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // checkRightsStatus(int uniqueId, in String8 path, int action, out int result) = 15
+        // request: writeInt32(uniqueId), writeString8(path), writeInt32(action)
+        let method = native_method(&reg, 34, "drm.IDrmManagerService", 15);
+        assert_eq!(method.name, "checkRightsStatus");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&3i32.to_le_bytes()); // uniqueId
+        buf.extend_from_slice(&string8("/sdcard/content.dcf")); // path
+        buf.extend_from_slice(&1i32.to_le_bytes()); // action = Action::PLAY
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].name, "uniqueId");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(3)));
+        assert_eq!(nodes[1].name, "path");
+        assert!(
+            matches!(&nodes[1].value, DecodedValue::Str(Some(s)) if s == "/sdcard/content.dcf")
+        );
+        assert_eq!(nodes[2].name, "action");
+        assert!(matches!(nodes[2].value, DecodedValue::I64(1)));
+    }
+
+    #[test]
+    fn decodes_idrm_validate_action_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // validateAction(int uniqueId, in String8 path, int action,
+        //   int outputType, int configuration, out int result) = 18
+        // request: writeInt32(uniqueId), writeString8(path), writeInt32(action),
+        //   writeInt32(description.outputType), writeInt32(description.configuration)
+        // ActionDescription is a flat struct written as two bare int32s.
+        let method = native_method(&reg, 34, "drm.IDrmManagerService", 18);
+        assert_eq!(method.name, "validateAction");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&2i32.to_le_bytes()); // uniqueId
+        buf.extend_from_slice(&string8("/sdcard/protected.dcf")); // path
+        buf.extend_from_slice(&2i32.to_le_bytes()); // action = Action::TRANSFER
+        buf.extend_from_slice(&1i32.to_le_bytes()); // outputType
+        buf.extend_from_slice(&0i32.to_le_bytes()); // configuration
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 5);
+        assert_eq!(nodes[0].name, "uniqueId");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(2)));
+        assert_eq!(nodes[1].name, "path");
+        assert!(
+            matches!(&nodes[1].value, DecodedValue::Str(Some(s)) if s == "/sdcard/protected.dcf")
+        );
+        assert_eq!(nodes[2].name, "action");
+        assert!(matches!(nodes[2].value, DecodedValue::I64(2)));
+        assert_eq!(nodes[3].name, "outputType");
+        assert!(matches!(nodes[3].value, DecodedValue::I64(1)));
+        assert_eq!(nodes[4].name, "configuration");
+        assert!(matches!(nodes[4].value, DecodedValue::I64(0)));
+    }
+
+    #[test]
+    fn decodes_idrm_remove_rights_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // removeRights(int uniqueId, in String8 path, out int status) = 19
+        // request: writeInt32(uniqueId), writeString8(path)
+        let method = native_method(&reg, 34, "drm.IDrmManagerService", 19);
+        assert_eq!(method.name, "removeRights");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&7i32.to_le_bytes()); // uniqueId
+        buf.extend_from_slice(&string8("/sdcard/movie.fl")); // path
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].name, "uniqueId");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(7)));
+        assert_eq!(nodes[1].name, "path");
+        assert!(matches!(&nodes[1].value, DecodedValue::Str(Some(s)) if s == "/sdcard/movie.fl"));
+    }
+
+    #[test]
+    fn decodes_idrm_open_convert_session_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // openConvertSession(int uniqueId, in String8 mimeType, out int convertId) = 21
+        // request: writeInt32(uniqueId), writeString8(mimeType)
+        let method = native_method(&reg, 34, "drm.IDrmManagerService", 21);
+        assert_eq!(method.name, "openConvertSession");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&5i32.to_le_bytes()); // uniqueId
+        buf.extend_from_slice(&string8("application/vnd.oma.drm.content")); // mimeType
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].name, "uniqueId");
+        assert!(matches!(nodes[0].value, DecodedValue::I64(5)));
+        assert_eq!(nodes[1].name, "mimeType");
+        assert!(
+            matches!(&nodes[1].value, DecodedValue::Str(Some(s)) if s == "application/vnd.oma.drm.content")
+        );
+    }
 }
 
 use crate::model::{EnumDef, Interface, Method, OverlayLayer, Parcelable, Union};
