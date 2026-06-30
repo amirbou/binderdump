@@ -1801,7 +1801,7 @@ mod tests {
     fn decodes_isurfacecomposer_create_display_request() {
         use crate::decode::{decode_aidl_params, DecodedValue};
         let reg = native_reg();
-        // IBinder createDisplay(in String8 displayName, boolean secure) = 5
+        // void createDisplay(in String8 displayName, boolean secure, out IBinder display) = 5
         // BpSurfaceComposer::createDisplay: writeString8(displayName), writeBool(secure).
         let method = native_method(&reg, 34, "android.ui.ISurfaceComposer", 5);
         assert_eq!(method.name, "createDisplay");
@@ -1813,6 +1813,34 @@ mod tests {
         assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "ExternalDisplay"));
         assert_eq!(nodes[1].name, "secure");
         assert!(matches!(nodes[1].value, DecodedValue::Bool(true)));
+    }
+
+    #[test]
+    fn decodes_isurfacecomposer_create_display_reply() {
+        use crate::binder_object;
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // void createDisplay(in String8 displayName, boolean secure, out IBinder display) = 5
+        // reply: readStrongBinder() -> display token (sp<IBinder>)
+        let method = native_method(&reg, 34, "android.ui.ISurfaceComposer", 5);
+        assert_eq!(method.name, "createDisplay");
+        let mut buf = Vec::new();
+        let binder_off = buf.len() as u64;
+        buf.extend_from_slice(&binder_object::HANDLE.to_le_bytes()); // type
+        buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+        buf.extend_from_slice(&7u64.to_le_bytes()); // handle = 7
+        buf.extend_from_slice(&0u64.to_le_bytes()); // cookie
+        let offsets = binder_off.to_le_bytes();
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &offsets);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "display");
+        assert!(matches!(
+            nodes[0].value,
+            DecodedValue::Binder {
+                handle: 7,
+                strong: false
+            }
+        ));
     }
 
     // IDrmManagerService
