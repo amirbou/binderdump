@@ -52,7 +52,7 @@
 // setDataSourceUrl: CString url + variable-length headers map — not expressible.
 // setDataSourceFd: fd param — not expressible.
 // setVideoSurfaceTexture is overloaded at codes 31 and 32 (legacy / v2).
-// Remaining IBinder methods are non-expressible stubs (raw Parcel, fd, Parcelable, or array reply).
+// Remaining IBinder methods are non-expressible stubs (raw Parcel, fd, or array reply).
 // code 32: new SET_VIDEO_SURFACETEXTURE_V2 (android17); uses writeParcelable view::Surface — STUB.
 // codes 33–44: shifted +1 from android16 due to new code 32 insertion.
 
@@ -96,8 +96,8 @@ interface IMediaPlayer {
     IBinder setRetransmitEndpoint() = 35;
     IBinder getRetransmitEndpoint() = 36;
     void setNextPlayer(in IBinder player, out int status) = 37;
-    IBinder applyVolumeShaper() = 38;
-    IBinder getVolumeShaperState() = 39;
+    IBinder applyVolumeShaper(in android.media.VolumeShaperConfiguration configuration, in android.media.VolumeShaperOperation operation) = 38;
+    void getVolumeShaperState(int id, out android.media.VolumeShaperState state) = 39;
     IBinder prepareDrm() = 40;
     void releaseDrm(out int status) = 41;
     void setOutputDevice(int deviceId, out int status) = 42;
