@@ -15,14 +15,14 @@
 // ENABLE_REPLAY_DATA_INJECTION (8) and ENABLE_HAL_BYPASS_REPLAY_DATA_INJECTION (9)
 // were added after android14-release.
 //
-// Remaining IBinder stubs: 1 (Sensor Flattenable array), 2 (String8 packageName),
-// 4 (Sensor Flattenable array), 5 (NativeHandle fds), 6 (float array).
+// Remaining IBinder stubs: 1 (Sensor Flattenable array), 4 (Sensor Flattenable array),
+// 5 (NativeHandle fds), 6 (float array).
 
 package android.gui;
 
 interface SensorServer {
     IBinder getSensorList() = 1;
-    IBinder createSensorEventConnection() = 2;
+    void createSensorEventConnection(in String8 packageName, int mode, in String opPackageName, in String attributionTag, out IBinder connection) = 2;
     void enableDataInjection(int mode, out int status) = 3;
     IBinder getDynamicSensorList() = 4;
     IBinder createSensorDirectConnection() = 5;
