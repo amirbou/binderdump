@@ -139,6 +139,19 @@ impl<'a> ParcelCursor<'a> {
         self.take(padded - n)?;
         Some(Some(String::from_utf8_lossy(bytes).into_owned()))
     }
+
+    // CString (Parcel::writeCString): the C-string bytes through a NUL terminator, padded to 4
+    // bytes, NO length prefix. Outer None = overrun (no NUL before buffer end); inner is always
+    // Some (writeCString(nullptr) is not used by these interfaces). frameworks/native Parcel.cpp.
+    // Correct only because the cursor is 4-aligned here (every reader consumes a multiple of 4).
+    pub fn read_cstring(&mut self) -> Option<Option<String>> {
+        let rest = self.buf.get(self.pos..)?;
+        let nul = rest.iter().position(|&b| b == 0)?;
+        let bytes = rest[..nul].to_vec();
+        let total = crate::token::pad_to_4(nul.checked_add(1)?); // bytes + NUL, padded to 4
+        self.skip(total)?;
+        Some(Some(String::from_utf8_lossy(&bytes).into_owned()))
+    }
 }
 
 use crate::model::{Direction, Method, Prim, TypeRef};
@@ -501,6 +514,26 @@ fn decode_value(
             Some(node(
                 DecodedValue::Str(s),
                 "String",
+                start,
+                cur.pos - start,
+                vec![],
+            ))
+        }
+        TypeRef::String8 => {
+            let s = cur.read_string8()?;
+            Some(node(
+                DecodedValue::Str(s),
+                "String8",
+                start,
+                cur.pos - start,
+                vec![],
+            ))
+        }
+        TypeRef::CString => {
+            let s = cur.read_cstring()?;
+            Some(node(
+                DecodedValue::Str(s),
+                "CString",
                 start,
                 cur.pos - start,
                 vec![],
@@ -1967,6 +2000,53 @@ mod tests {
         let buf = 9i32.to_le_bytes(); // claims 9 bytes, none follow
         let mut cur = ParcelCursor::new(&buf, 0);
         assert_eq!(cur.read_string8(), None);
+    }
+
+    #[test]
+    fn reads_cstring() {
+        // "egl\0" then pad to 4 (already 4)
+        let buf = b"egl\0".to_vec();
+        let mut c = ParcelCursor::new(&buf, 0);
+        assert_eq!(c.read_cstring(), Some(Some("egl".to_string())));
+        assert_eq!(c.pos, 4);
+    }
+
+    #[test]
+    fn reads_cstring_padded() {
+        // "ab\0" = 3 bytes -> padded to 4
+        let mut buf = b"ab\0".to_vec();
+        buf.push(0);
+        buf.extend_from_slice(&7i32.to_le_bytes()); // sentinel after
+        let mut c = ParcelCursor::new(&buf, 0);
+        assert_eq!(c.read_cstring(), Some(Some("ab".to_string())));
+        assert_eq!(c.pos, 4);
+        assert_eq!(c.read_i32(), Some(7));
+    }
+
+    #[test]
+    fn read_cstring_overrun_no_nul() {
+        let buf = b"abc".to_vec(); // no NUL
+        let mut c = ParcelCursor::new(&buf, 0);
+        assert_eq!(c.read_cstring(), None);
+    }
+
+    #[test]
+    fn decodes_string8_and_cstring_params() {
+        let reg = Registry::empty();
+        let m = method(vec![
+            in_param("name", TypeRef::String8),
+            in_param("path", TypeRef::CString),
+        ]);
+        let mut buf = Vec::new();
+        // String8 "hi": i32 len=2, "hi", NUL, pad to 4
+        buf.extend_from_slice(&2i32.to_le_bytes());
+        buf.extend_from_slice(b"hi\0");
+        buf.push(0);
+        // CString "egl": "egl\0"
+        buf.extend_from_slice(b"egl\0");
+        let nodes = decode_aidl_params(&reg, 35, &m, &buf, 0, &[]);
+        assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "hi"));
+        assert!(matches!(&nodes[1].value, DecodedValue::Str(Some(s)) if s == "egl"));
     }
 
     #[test]

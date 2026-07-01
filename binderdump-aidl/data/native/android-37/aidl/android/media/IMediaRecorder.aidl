@@ -42,7 +42,7 @@
 //   SET_PRIVACY_SENSITIVE                                                        // 38
 //   GET_PRIVACY_SENSITIVE                                                        // 39
 //
-// Remaining IBinder methods are non-expressible stubs (fd, String8, Parcelable, Parcelable vector, or array reply).
+// Remaining IBinder methods are non-expressible stubs (fd, Parcelable, Parcelable vector, or array reply).
 // code 6: new QUERY_SURFACE_MEDIASOURCE_V2 (android17); uses readParcelable view::Surface — STUB.
 // code 23: new SET_PREVIEW_SURFACE_V2 (android17); uses writeParcelable view::Surface — STUB.
 // codes 7–22 and 24–39: shifted +1 and +2 respectively from android16 due to new insertions.
@@ -70,7 +70,7 @@ interface IMediaRecorder {
     IBinder setNextOutputFileFd() = 18;
     void setVideoSize(int width, int height, out int status) = 19;
     void setVideoFrameRate(int framesPerSecond, out int status) = 20;
-    IBinder setParameters() = 21;
+    void setParameters(in String8 params, out int status) = 21;
     void setPreviewSurface(in IBinder surface, out int status) = 22;
     IBinder setPreviewSurfaceV2() = 23;
     void setCamera(in IBinder camera, in IBinder proxy, out int status) = 24;

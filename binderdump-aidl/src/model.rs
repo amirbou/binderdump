@@ -37,6 +37,8 @@ pub enum Prim {
 pub enum TypeRef {
     Primitive(Prim),
     String,
+    String8,
+    CString,
     IBinder,
     Array(Box<TypeRef>),
     List(Box<TypeRef>),

@@ -13,7 +13,12 @@
 //   EXTRACT_ALBUM_ART                                          // 9
 //   EXTRACT_METADATA                                           // 10
 //
-// Remaining IBinder methods are non-expressible stubs (CString, fd, IMemory shared memory, or CString reply).
+// Remaining IBinder stubs are non-expressible in AIDL:
+//   SET_DATA_SOURCE_URL: CString url + variable-length String8 headers map
+//   SET_DATA_SOURCE_FD: fd param
+//   SET_DATA_SOURCE_CALLBACK: conditional CString mime (int32 flag + CString when non-null)
+//   GET_FRAME_AT_TIME..EXTRACT_ALBUM_ART: reply is IMemory binder (shared memory)
+//   EXTRACT_METADATA: reply is readCString (UTF-8 reply, not expressible)
 
 package android.media;
 

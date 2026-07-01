@@ -112,6 +112,14 @@ pub fn parse_aidl(source: &str) -> Result<ParsedAidl, Vec<Simple<char>>> {
                         self.pos += 1;
                         TypeRef::String
                     }
+                    "String8" => {
+                        self.pos += 1;
+                        TypeRef::String8
+                    }
+                    "CString" => {
+                        self.pos += 1;
+                        TypeRef::CString
+                    }
                     "IBinder" => {
                         self.pos += 1;
                         TypeRef::IBinder
@@ -861,9 +869,8 @@ fn lexer() -> impl Parser<char, Vec<Token>, Error = Simple<char>> {
     let ident_or_kw = text::ident().map(|s: String| match s.as_str() {
         "interface" | "parcelable" | "union" | "enum" | "package" | "import" | "oneway" | "in"
         | "out" | "inout" | "const" | "extends" | "void" | "boolean" | "byte" | "char"
-        | "short" | "int" | "long" | "float" | "double" | "String" | "IBinder" | "List" | "Map" => {
-            Token::Keyword(Box::leak(s.into_boxed_str()))
-        }
+        | "short" | "int" | "long" | "float" | "double" | "String" | "String8" | "CString"
+        | "IBinder" | "List" | "Map" => Token::Keyword(Box::leak(s.into_boxed_str())),
         _ => Token::Ident(s),
     });
 

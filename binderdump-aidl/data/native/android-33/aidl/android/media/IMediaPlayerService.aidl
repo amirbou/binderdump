@@ -10,7 +10,10 @@
 //   LISTEN_FOR_REMOTE_DISPLAY                                    // 6
 //   GET_CODEC_LIST                                               // 7
 //
-// Remaining IBinder methods are non-expressible stubs (AttributionSourceState Parcelable, raw Parcel, or String8).
+// Remaining IBinder methods are non-expressible stubs (AttributionSourceState Parcelable or raw Parcel reply).
+//   CREATE: writeParcelable(AttributionSourceState) — not expressible
+//   CREATE_MEDIA_RECORDER: writeParcelable(AttributionSourceState) — not expressible
+//   PULL_BATTERY_DATA: raw Parcel* reply passed directly (unstructured metrics) — not expressible
 
 package android.media;
 
@@ -20,6 +23,6 @@ interface IMediaPlayerService {
     void createMetadataRetriever(out IBinder retriever) = 3;
     void addBatteryData(int params) = 4;
     IBinder pullBatteryData() = 5;
-    IBinder listenForRemoteDisplay() = 6;
+    void listenForRemoteDisplay(in String opPackageName, in IBinder client, in String8 iface, out IBinder display) = 6;
     void getCodecList(out IBinder codecList) = 7;
 }

@@ -18,9 +18,8 @@
 //   GETTRACKMETADATA: reply is MetaData custom parcelable
 //   GETMETADATA: reply is MetaData custom parcelable
 //   SETMEDIACAS: writeByteVector (HInterfaceToken, CAS-specific byte vector)
-//   NAME: readString8 (UTF-8, not String16)
+//   NAME: reply is readString8 (UTF-8 reply, not expressible)
 //   GETMETRICS: passes reply Parcel directly (raw AMediaFormat encoding)
-//   SETLOGSESSIONID: writeString8 (UTF-8, not String16)
 
 package android.media;
 
@@ -34,5 +33,5 @@ interface IMediaExtractor {
     IBinder name() = 7;
     IBinder getMetrics() = 8;
     void setEntryPoint(int entryPoint) = 9;
-    IBinder setLogSessionId() = 10;
+    void setLogSessionId(in String8 sessionId) = 10;
 }
