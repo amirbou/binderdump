@@ -24,8 +24,8 @@
 //   DUMP_STATE                                                      // 20
 //
 // Remaining IBinder stubs: 1 (BufferItem Parcelable), 3 (GraphicBuffer Flattenable),
-// 4 (Fence Flattenable), 11 (String8), 17 (NativeHandle fds), 18 (Flattenable vector),
-// 20 (String8).
+// 4 (Fence Flattenable), 17 (NativeHandle fds), 18 (Flattenable vector),
+// 20 (String8 reply — not expressible as out param).
 
 package android.gui;
 
@@ -40,7 +40,7 @@ interface IGraphicBufferConsumer {
     void setDefaultBufferSize(int width, int height, out int status) = 8;
     void setMaxBufferCount(int bufferCount, out int status) = 9;
     void setMaxAcquiredBufferCount(int maxAcquiredBuffers, out int status) = 10;
-    IBinder setConsumerName() = 11;
+    void setConsumerName(in String8 name, out int status) = 11;
     void setDefaultBufferFormat(int defaultFormat, out int status) = 12;
     void setDefaultBufferDataSpace(int defaultDataSpace, out int status) = 13;
     void setConsumerUsageBits(long usage, out int status) = 14;

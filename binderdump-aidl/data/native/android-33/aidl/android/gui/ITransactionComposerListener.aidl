@@ -12,13 +12,12 @@
 //
 // ON_TRUSTED_PRESENTATION_CHANGED (4) was added after android13-release.
 //
-// Remaining IBinder stubs: 1 (ListenerStats nested Parcelable), 2 (Fence Flattenable),
-// 3 (String8).
+// Remaining IBinder stubs: 1 (ListenerStats nested Parcelable), 2 (Fence Flattenable).
 
 package android.gui;
 
 interface ITransactionComposerListener {
     IBinder onTransactionCompleted() = 1;
     IBinder onReleaseBuffer() = 2;
-    IBinder onTransactionQueueStalled() = 3;
+    oneway void onTransactionQueueStalled(in String8 reason) = 3;
 }
