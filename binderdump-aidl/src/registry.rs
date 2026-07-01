@@ -668,6 +668,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn bundled_native_corpus_resolves_isurfacecomposer_set_transaction_state() {
+        // code 8 = setTransactionState; present and un-stubbed across all target SDKs.
+        // non-oneway void; frameTimelineInfo is param 1, ComposerState[] is param 2.
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let native_dir = repo_root.join("data/native");
+        let reg = Registry::empty().with_native_dir(&native_dir);
+        for sdk in [33u32, 34u32, 35u32, 36u32, 37u32] {
+            match reg.resolve(sdk, "android.ui.ISurfaceComposer", 8) {
+                Lookup::Hit { method, .. } => {
+                    assert_eq!(method.name, "setTransactionState", "sdk={sdk}");
+                    assert!(!method.oneway, "sdk={sdk}: expected non-oneway");
+                }
+                other => panic!(
+                    "expected hit for android.ui.ISurfaceComposer code=8 at sdk={sdk}, got {:?}",
+                    other
+                ),
+            }
+        }
+    }
+
     // raw String16 on the wire: int32 char_count + UTF-16 chars + u16 NUL, padded to 4.
     // matches Parcel::writeUtf8AsUtf16 / writeString16.
     fn s16(s: &str) -> Vec<u8> {
