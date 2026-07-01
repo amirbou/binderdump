@@ -803,12 +803,29 @@ mod tests {
     }
 
     #[test]
-    fn native_igpuservice_opaque_method_stays_name_only() {
-        use crate::decode::decode_aidl_params;
+    fn decodes_native_igpuservice_add_vulkan_engine_name_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
         let reg = native_reg();
-        // code 7 = addVulkanEngineName, left as a typeless IBinder stub (no params).
+        // oneway void addVulkanEngineName(in CString engineName) = 7
+        // BpGpuService::addVulkanEngineName calls writeCString, no length prefix.
         let method = igpu_method(&reg, 35, 7);
         assert_eq!(method.name, "addVulkanEngineName");
+        assert!(method.oneway);
+        let buf = cstring("ANGLE");
+        let nodes = decode_aidl_params(&reg, 35, method, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "engineName");
+        assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "ANGLE"));
+    }
+
+    #[test]
+    fn native_igpuservice_set_target_stats_array_stays_opaque() {
+        use crate::decode::decode_aidl_params;
+        let reg = native_reg();
+        // code 6 = setTargetStatsArray; ends in a raw Parcel::write() buffer — not
+        // AIDL-expressible, stays as a typeless IBinder stub.
+        let method = igpu_method(&reg, 35, 6);
+        assert_eq!(method.name, "setTargetStatsArray");
         assert!(method.params.is_empty());
         let nodes = decode_aidl_params(&reg, 35, method, &[], 0, &[]);
         assert!(nodes.is_empty());
@@ -1858,6 +1875,52 @@ mod tests {
         assert!(matches!(nodes[2].value, DecodedValue::F64(v) if (v - 60.0).abs() < 1e-3));
         assert_eq!(nodes[6].name, "status");
         assert!(matches!(nodes[6].value, DecodedValue::I64(0)));
+    }
+
+    #[test]
+    fn decodes_isurfacecomposer_create_display_request() {
+        use crate::decode::{decode_aidl_params, DecodedValue};
+        let reg = native_reg();
+        // void createDisplay(in String8 displayName, boolean secure, out IBinder display) = 5
+        // BpSurfaceComposer::createDisplay: writeString8(displayName), writeBool(secure).
+        let method = native_method(&reg, 34, "android.ui.ISurfaceComposer", 5);
+        assert_eq!(method.name, "createDisplay");
+        let mut buf = string8("ExternalDisplay");
+        buf.extend_from_slice(&1i32.to_le_bytes()); // writeBool(secure=true) → int32 1
+        let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &[]);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].name, "displayName");
+        assert!(matches!(&nodes[0].value, DecodedValue::Str(Some(s)) if s == "ExternalDisplay"));
+        assert_eq!(nodes[1].name, "secure");
+        assert!(matches!(nodes[1].value, DecodedValue::Bool(true)));
+    }
+
+    #[test]
+    fn decodes_isurfacecomposer_create_display_reply() {
+        use crate::binder_object;
+        use crate::decode::{decode_native_reply, DecodedValue};
+        let reg = native_reg();
+        // void createDisplay(in String8 displayName, boolean secure, out IBinder display) = 5
+        // reply: readStrongBinder() -> display token (sp<IBinder>)
+        let method = native_method(&reg, 34, "android.ui.ISurfaceComposer", 5);
+        assert_eq!(method.name, "createDisplay");
+        let mut buf = Vec::new();
+        let binder_off = buf.len() as u64;
+        buf.extend_from_slice(&binder_object::HANDLE.to_le_bytes()); // type
+        buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+        buf.extend_from_slice(&7u64.to_le_bytes()); // handle = 7
+        buf.extend_from_slice(&0u64.to_le_bytes()); // cookie
+        let offsets = binder_off.to_le_bytes();
+        let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &offsets);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "display");
+        assert!(matches!(
+            nodes[0].value,
+            DecodedValue::Binder {
+                handle: 7,
+                strong: false
+            }
+        ));
     }
 
     // IDrmManagerService

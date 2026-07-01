@@ -74,7 +74,7 @@
 //   ADD_TUNNEL_MODE_ENABLED_LISTENER                                           // 62
 //   REMOVE_TUNNEL_MODE_ENABLED_LISTENER                                        // 63
 //
-// Remaining IBinder stubs use non-expressible types (Flattenable, vector, blob, String8).
+// Remaining IBinder stubs use non-expressible types (Flattenable, vector, blob).
 
 package android.ui;
 
@@ -83,7 +83,7 @@ interface ISurfaceComposer {
     void createConnection(out IBinder result) = 2;
     IBinder getStaticDisplayInfo() = 3;
     void createDisplayEventConnection(int vsyncSource, int eventRegistration, out IBinder result) = 4;
-    IBinder createDisplay() = 5;
+    void createDisplay(in String8 displayName, boolean secure, out IBinder display) = 5;
     void destroyDisplay(IBinder display) = 6;
     void getPhysicalDisplayToken(long displayId, out IBinder result) = 7;
     // decode stops at the layer_state_t front half (fields 1–11); the build-variant
