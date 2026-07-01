@@ -50,7 +50,7 @@
 // setDataSource is overloaded at multiple codes (url/fd/stream/callback/rtp).
 // setDataSourceUrl: CString url + variable-length headers map — not expressible.
 // setDataSourceFd: fd param — not expressible.
-// Remaining IBinder methods are non-expressible stubs (raw Parcel, fd, Parcelable, or array reply).
+// Remaining IBinder methods are non-expressible stubs (raw Parcel, fd, or array reply).
 
 package android.media;
 
@@ -91,8 +91,8 @@ interface IMediaPlayer {
     IBinder setRetransmitEndpoint() = 34;
     IBinder getRetransmitEndpoint() = 35;
     void setNextPlayer(in IBinder player, out int status) = 36;
-    IBinder applyVolumeShaper() = 37;
-    IBinder getVolumeShaperState() = 38;
+    IBinder applyVolumeShaper(in android.media.VolumeShaperConfiguration configuration, in android.media.VolumeShaperOperation operation) = 37;
+    void getVolumeShaperState(int id, out android.media.VolumeShaperState state) = 38;
     IBinder prepareDrm() = 39;
     void releaseDrm(out int status) = 40;
     void setOutputDevice(int deviceId, out int status) = 41;
