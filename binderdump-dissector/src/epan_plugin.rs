@@ -622,6 +622,13 @@ pub extern "C" fn register_protoinfo() {
                 strings: None,
             })
             .add_extra_field(FieldInfo {
+                name: "Decode status".into(),
+                abbrev: "binderdump.decode_status".into(),
+                ftype: FtEnum::String,
+                display: FieldDisplay::StrAsciis,
+                strings: None,
+            })
+            .add_extra_field(FieldInfo {
                 name: "Source PID".into(),
                 abbrev: "binderdump.src.pid".into(),
                 ftype: FtEnum::I32,
@@ -711,6 +718,7 @@ pub extern "C" fn register_protoinfo() {
     crate::follow_stream::store_tap_id(tap_id);
     crate::follow_stream::register(proto_id);
     crate::reply_postdissector::register();
+    crate::decode_status::register(proto_id);
 }
 
 fn comm_to_string(buf: &[u8]) -> String {

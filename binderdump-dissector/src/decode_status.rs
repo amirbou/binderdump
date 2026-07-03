@@ -1,6 +1,48 @@
-// Builds the per-frame decode-status reason (why a transaction was not, or not
-// fully, decoded) from resolve/decode state. Pure — no Wireshark types here so
-// it is unit-testable; registration and emit live in the sibling fns below.
+// Builds the per-frame decode-status reason (why a transaction was not, or not fully,
+// decoded). build_status is pure and unit-testable; register/emit hold the epan FFI side.
+
+use crate::header_fields_manager::HeaderFieldsManager;
+use binderdump_epan_sys::epan;
+use binderdump_structs::event_layer::EventProtocol;
+use std::ffi::{c_int, CString};
+
+static mut EI_DECODE_INCOMPLETE: epan::expert_field = epan::expert_field { ei: -1, hf: -1 };
+static mut EI_DECODE_NA: epan::expert_field = epan::expert_field { ei: -1, hf: -1 };
+
+#[allow(static_mut_refs)]
+pub fn register(proto_id: c_int) {
+    unsafe {
+        static mut EI: [epan::ei_register_info; 2] = unsafe { std::mem::zeroed() };
+        EI[0] = epan::ei_register_info {
+            ids: &raw mut EI_DECODE_INCOMPLETE,
+            eiinfo: epan::expert_field_info {
+                name: c"binderdump.decode_status.incomplete".as_ptr(),
+                group: epan::PI_UNDECODED as c_int,
+                severity: epan::PI_WARN as c_int,
+                summary: c"Transaction not fully decoded".as_ptr(),
+                id: 0,
+                protocol: std::ptr::null(),
+                orig_severity: 0,
+                hf_info: std::mem::zeroed(),
+            },
+        };
+        EI[1] = epan::ei_register_info {
+            ids: &raw mut EI_DECODE_NA,
+            eiinfo: epan::expert_field_info {
+                name: c"binderdump.decode_status.not_applicable".as_ptr(),
+                group: epan::PI_UNDECODED as c_int,
+                severity: epan::PI_NOTE as c_int,
+                summary: c"Transaction payload not decoded".as_ptr(),
+                id: 0,
+                protocol: std::ptr::null(),
+                orig_severity: 0,
+                hf_info: std::mem::zeroed(),
+            },
+        };
+        let em = epan::expert_register_protocol(proto_id);
+        epan::expert_register_field_array(em, EI.as_mut_ptr(), EI.len() as c_int);
+    }
+}
 
 pub enum Severity {
     Incomplete,    // a gap we'd want closed (opaque param, corpus gap, partial) -> PI_WARN
@@ -99,6 +141,33 @@ pub fn build_status(i: &StatusInput) -> Option<Status> {
         ));
     }
     None
+}
+
+#[allow(static_mut_refs)]
+pub fn emit(
+    manager: &HeaderFieldsManager<EventProtocol>,
+    tree: *mut epan::proto_node,
+    tvb: *mut epan::tvbuff_t,
+    pinfo: *mut epan::packet_info,
+    off: c_int,
+    len: c_int,
+    status: &Status,
+) -> anyhow::Result<()> {
+    let hf = manager
+        .get_handle("binderdump.decode_status")
+        .ok_or_else(|| anyhow::anyhow!("decode_status hf not registered"))?;
+    let text = CString::new(status.text.as_str())
+        .unwrap_or_else(|_| CString::new("decode status").unwrap()); // interior NUL -> fallback
+    unsafe {
+        let item = epan::proto_tree_add_string(tree, hf, tvb, off, len, text.as_ptr());
+        epan::binderdump_proto_item_set_generated(item);
+        let ei = match status.severity {
+            Severity::Incomplete => &raw mut EI_DECODE_INCOMPLETE,
+            Severity::NotApplicable => &raw mut EI_DECODE_NA,
+        };
+        epan::expert_add_info(pinfo, item, ei);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
