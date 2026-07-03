@@ -11,11 +11,13 @@
 // fields are not visible to tshark -e/-Y, which compile filters before
 // dissection; the undecodable tail uses a static `parcel.raw` field, which is.
 
+use crate::decode_status;
 use crate::header_fields_manager::HeaderFieldsManager;
 use binderdump_aidl::decode::{decode_aidl_reply, decode_native_reply};
 use binderdump_aidl::{decode_aidl_params, DecodedNode, DecodedValue};
 use binderdump_epan_sys::epan;
 use binderdump_structs::binder_serde::FieldOffset;
+use binderdump_structs::binder_types::BinderInterface;
 use binderdump_structs::event_layer::EventProtocol;
 use std::collections::HashMap;
 use std::ffi::{c_int, CString};
@@ -28,7 +30,7 @@ pub fn dissect_transaction_data(
     event: &EventProtocol,
     field: FieldOffset,
     tvb: *mut epan::tvbuff,
-    _pinfo: *mut epan::packet_info,
+    pinfo: *mut epan::packet_info,
     tree: *mut epan::proto_node,
 ) -> anyhow::Result<()> {
     let data_off: usize = field.offset;
@@ -57,14 +59,51 @@ pub fn dissect_transaction_data(
     // replies carry no writeInterfaceToken; recover the originating method via
     // reply correlation and decode the status header + return value + out params.
     if txn.reply != 0 {
+        let off: c_int = data_off.try_into()?;
+        let len: c_int = field.size.try_into()?;
+
         // BR_REPLY (read side) carries in_reply_to_debug_id == 0, so fall back to the
         // reply's own debug_id to find the originating request (see txn_for_reply).
         let Some(state) =
             crate::reply_correlation::txn_for_reply(txn.in_reply_to_debug_id, txn.debug_id)
         else {
+            let input = decode_status::StatusInput {
+                method_source: "aosp",
+                is_hwbinder: false,
+                interface: None,
+                method_name: None,
+                sdk: event.android_sdk(),
+                code: txn.code,
+                is_reply: true,
+                reply_correlated: false,
+                reply_method_known: false,
+                decoded_params: 0,
+                raw_tail_reason: None,
+                undecoded_bytes: 0,
+            };
+            if let Some(status) = decode_status::build_status(&input) {
+                decode_status::emit(manager, tree, tvb as *mut _, pinfo, off, len, &status)?;
+            }
             return Ok(());
         };
         let Some(method) = state.method else {
+            let input = decode_status::StatusInput {
+                method_source: "aosp",
+                is_hwbinder: false,
+                interface: None,
+                method_name: None,
+                sdk: event.android_sdk(),
+                code: txn.code,
+                is_reply: true,
+                reply_correlated: true,
+                reply_method_known: false,
+                decoded_params: 0,
+                raw_tail_reason: None,
+                undecoded_bytes: 0,
+            };
+            if let Some(status) = decode_status::build_status(&input) {
+                decode_status::emit(manager, tree, tvb as *mut _, pinfo, off, len, &status)?;
+            }
             return Ok(());
         };
         // reply payload starts at offset 0 (no interface token).
@@ -87,29 +126,39 @@ pub fn dissect_transaction_data(
                 &txn.offsets,
             )
         };
-        if nodes.is_empty() {
-            return Ok(());
+        if !nodes.is_empty() {
+            let iface = state.interface.as_deref().unwrap_or("unknown");
+            let sub = open_subtree(manager, tree, tvb, off, len, "Reply");
+            for node in &nodes {
+                render_value(
+                    manager,
+                    sub,
+                    tvb,
+                    data_off,
+                    iface,
+                    &method.name,
+                    &node.name,
+                    node,
+                )?;
+            }
         }
-        let iface = state.interface.as_deref().unwrap_or("unknown");
-        let sub = open_subtree(
-            manager,
-            tree,
-            tvb,
-            data_off.try_into()?,
-            field.size.try_into()?,
-            "Reply",
-        );
-        for node in &nodes {
-            render_value(
-                manager,
-                sub,
-                tvb,
-                data_off,
-                iface,
-                &method.name,
-                &node.name,
-                node,
-            )?;
+        let (decoded_params, raw_tail_reason, tail_bytes) = decode_stats(&nodes, txn.data.len());
+        let input = decode_status::StatusInput {
+            method_source: "aosp",
+            is_hwbinder: false,
+            interface: None,
+            method_name: None,
+            sdk: event.android_sdk(),
+            code: txn.code,
+            is_reply: true,
+            reply_correlated: true,
+            reply_method_known: true,
+            decoded_params,
+            raw_tail_reason,
+            undecoded_bytes: tail_bytes,
+        };
+        if let Some(status) = decode_status::build_status(&input) {
+            decode_status::emit(manager, tree, tvb as *mut _, pinfo, off, len, &status)?;
         }
         return Ok(());
     }
@@ -121,9 +170,32 @@ pub fn dissect_transaction_data(
         event.android_sdk(),
         &txn.data,
     );
+    let is_hwbinder = matches!(event.binder_interface(), BinderInterface::HWBINDER);
+    let off: c_int = data_off.try_into()?;
+    let len: c_int = field.size.try_into()?;
+
+    // unresolved (no method) -> status only, no params subtree.
     let (Some(method), Some(start)) = (r.method, r.params_start) else {
+        let input = decode_status::StatusInput {
+            method_source: r.method_source,
+            is_hwbinder,
+            interface: r.interface.as_deref(),
+            method_name: r.method_name.as_deref(),
+            sdk: event.android_sdk(),
+            code: txn.code,
+            is_reply: false,
+            reply_correlated: true,
+            reply_method_known: true,
+            decoded_params: 0,
+            raw_tail_reason: None,
+            undecoded_bytes: 0,
+        };
+        if let Some(status) = decode_status::build_status(&input) {
+            decode_status::emit(manager, tree, tvb as *mut _, pinfo, off, len, &status)?;
+        }
         return Ok(());
     };
+
     let nodes = decode_aidl_params(
         crate::aidl_resolve::registry(),
         event.android_sdk(),
@@ -132,42 +204,84 @@ pub fn dissect_transaction_data(
         start,
         &txn.offsets,
     );
-    if nodes.is_empty() {
-        return Ok(());
+
+    // render whatever decoded (unchanged), if any.
+    if !nodes.is_empty() {
+        let ett = manager
+            .get_handle("binderdump.ioctl_data.bwr.transaction.parcel")
+            .unwrap_or(-1);
+        let title = CString::new("Parameters")?;
+        let params_tree = unsafe {
+            epan::proto_tree_add_subtree(
+                tree,
+                tvb,
+                off,
+                len,
+                ett,
+                std::ptr::null_mut(),
+                title.as_ptr(),
+            )
+        };
+        let iface = r.interface.as_deref().unwrap_or("unknown");
+        for node in &nodes {
+            render_value(
+                manager,
+                params_tree,
+                tvb,
+                data_off,
+                iface,
+                &method.name,
+                &node.name,
+                node,
+            )?;
+        }
     }
 
-    // open the Parameters subtree over the whole data buffer.
-    let ett = manager
-        .get_handle("binderdump.ioctl_data.bwr.transaction.parcel")
-        .unwrap_or(-1);
-    let title = CString::new("Parameters")?;
-    let params_tree = unsafe {
-        epan::proto_tree_add_subtree(
-            tree,
-            tvb,
-            data_off.try_into()?,
-            field.size.try_into()?,
-            ett,
-            std::ptr::null_mut(),
-            title.as_ptr(),
-        )
+    // status: stub (0 params + leftover) or raw-tail partial.
+    let (decoded_params, raw_tail_reason, tail_bytes) = decode_stats(&nodes, txn.data.len());
+    let undecoded_bytes = if raw_tail_reason.is_some() {
+        tail_bytes
+    } else {
+        txn.data.len().saturating_sub(start) // only read by build_status when decoded_params == 0 (opaque stub)
     };
-
-    let iface = r.interface.as_deref().unwrap_or("unknown");
-    for node in &nodes {
-        render_value(
-            manager,
-            params_tree,
-            tvb,
-            data_off,
-            iface,
-            &method.name,
-            &node.name,
-            node,
-        )?;
+    let input = decode_status::StatusInput {
+        method_source: r.method_source,
+        is_hwbinder,
+        interface: r.interface.as_deref(),
+        method_name: r.method_name.as_deref(),
+        sdk: event.android_sdk(),
+        code: txn.code,
+        is_reply: false,
+        reply_correlated: true,
+        reply_method_known: true,
+        decoded_params,
+        raw_tail_reason,
+        undecoded_bytes,
+    };
+    if let Some(status) = decode_status::build_status(&input) {
+        decode_status::emit(manager, tree, tvb as *mut _, pinfo, off, len, &status)?;
     }
-
     Ok(())
+}
+
+// returns (decoded_param_count, raw_tail_reason, undecoded_bytes) from a decoded
+// node list. a trailing RawTail means decode stopped; its start marks the
+// undecoded region.
+//
+// only detects a trailing top-level RawTail. a field that truncates inside a
+// parcelable is resynced to its size boundary and surfaces as a Bytes child, so
+// such a frame currently reports no decode_status (known limitation).
+fn decode_stats<'a>(nodes: &'a [DecodedNode], data_len: usize) -> (usize, Option<&'a str>, usize) {
+    if let Some(last) = nodes.last() {
+        if let DecodedValue::RawTail { reason } = &last.value {
+            return (
+                nodes.len() - 1,
+                Some(reason.as_str()),
+                data_len.saturating_sub(last.start),
+            );
+        }
+    }
+    (nodes.len(), None, 0)
 }
 
 // render one decoded node into the wireshark tree.
@@ -189,7 +303,7 @@ fn render_value(
 
     match &node.value {
         // undecodable tail: static raw field so it is filterable from tshark.
-        DecodedValue::Raw => {
+        DecodedValue::Raw | DecodedValue::RawTail { .. } => {
             let h = handle(manager, "raw")?;
             unsafe {
                 epan::proto_tree_add_item(tree, h, tvb, off, len, epan::ENC_NA);
@@ -446,6 +560,7 @@ fn add_typed(
         }
         // these variants are handled by render_value before add_typed is called.
         DecodedValue::Raw
+        | DecodedValue::RawTail { .. }
         | DecodedValue::Bytes
         | DecodedValue::Array { .. }
         | DecodedValue::Enum { .. }

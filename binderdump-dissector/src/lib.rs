@@ -1,6 +1,7 @@
 mod aidl_resolve;
 mod binderdump;
 mod col_info;
+mod decode_status;
 mod dissect_flat_objects;
 mod dissect_offsets;
 mod dissect_parcel;

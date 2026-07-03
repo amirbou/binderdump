@@ -7,8 +7,11 @@ use crate::binder_object;
 
 // 4-byte-aligned cursor over a parcel buffer. AIDL aligns every write to 4
 // bytes; 64-bit values occupy 8. All readers return None on overrun.
+// `overran` is set to true when a take()/skip() fails a bounds check; callers
+// use it to distinguish a genuine buffer overrun from an undecodable type.
 pub struct ParcelCursor<'a> {
     pub pos: usize,
+    pub overran: bool,
     buf: &'a [u8],
     offsets: &'a [u8],
 }
@@ -17,6 +20,7 @@ impl<'a> ParcelCursor<'a> {
     pub fn new(buf: &'a [u8], start: usize) -> Self {
         Self {
             pos: start,
+            overran: false,
             buf,
             offsets: &[],
         }
@@ -30,10 +34,20 @@ impl<'a> ParcelCursor<'a> {
     }
 
     fn take(&mut self, n: usize) -> Option<&'a [u8]> {
-        let end = self.pos.checked_add(n)?;
-        let slice = self.buf.get(self.pos..end)?;
-        self.pos = end;
-        Some(slice)
+        let Some(end) = self.pos.checked_add(n) else {
+            self.overran = true;
+            return None;
+        };
+        match self.buf.get(self.pos..end) {
+            Some(slice) => {
+                self.pos = end;
+                Some(slice)
+            }
+            None => {
+                self.overran = true;
+                None
+            }
+        }
     }
 
     pub fn read_i32(&mut self) -> Option<i32> {
@@ -60,8 +74,14 @@ impl<'a> ParcelCursor<'a> {
 
     // advance pos by n; None on overrun.
     pub fn skip(&mut self, n: usize) -> Option<()> {
-        let end = self.pos.checked_add(n)?;
-        self.buf.get(self.pos..end)?;
+        let Some(end) = self.pos.checked_add(n) else {
+            self.overran = true;
+            return None;
+        };
+        if self.buf.get(self.pos..end).is_none() {
+            self.overran = true;
+            return None;
+        }
         self.pos = end;
         Some(())
     }
@@ -214,6 +234,9 @@ pub enum DecodedValue {
         strong: bool,
     }, // a strong-binder arg; strong = local binder, else a remote handle
     Raw,
+    RawTail {
+        reason: String,
+    }, // decode stopped here; `reason` says why (undecodable type / overrun)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -246,13 +269,19 @@ pub fn decode_aidl_params(
             continue;
         }
         let before = cur.pos;
+        cur.overran = false;
         match decode_value(reg, sdk, &mut cur, &param.ty, 0) {
             Some(mut node) => {
                 node.name = param.name.clone();
                 nodes.push(node);
             }
             None => {
-                nodes.push(raw_tail(param.name.clone(), before, buf.len()));
+                let reason = if cur.overran {
+                    "buffer overrun".to_string()
+                } else {
+                    format!("param {} (undecodable type {:?})", param.name, param.ty)
+                };
+                nodes.push(raw_tail(param.name.clone(), before, buf.len(), reason));
                 return nodes;
             }
         }
@@ -399,13 +428,19 @@ pub fn decode_aidl_reply(
     if has_return_value(method) {
         if let Some(rt) = &method.return_type {
             let before = cur.pos;
+            cur.overran = false;
             match decode_value(reg, sdk, &mut cur, rt, 0) {
                 Some(mut n) => {
                     n.name = "return".to_string();
                     nodes.push(n);
                 }
                 None => {
-                    nodes.push(raw_tail("return".to_string(), before, buf.len()));
+                    let reason = if cur.overran {
+                        "buffer overrun".to_string()
+                    } else {
+                        format!("return value (undecodable type {:?})", rt)
+                    };
+                    nodes.push(raw_tail("return".to_string(), before, buf.len(), reason));
                     return nodes;
                 }
             }
@@ -416,13 +451,19 @@ pub fn decode_aidl_reply(
             continue;
         }
         let before = cur.pos;
+        cur.overran = false;
         match decode_value(reg, sdk, &mut cur, &param.ty, 0) {
             Some(mut n) => {
                 n.name = param.name.clone();
                 nodes.push(n);
             }
             None => {
-                nodes.push(raw_tail(param.name.clone(), before, buf.len()));
+                let reason = if cur.overran {
+                    "buffer overrun".to_string()
+                } else {
+                    format!("param {} (undecodable type {:?})", param.name, param.ty)
+                };
+                nodes.push(raw_tail(param.name.clone(), before, buf.len(), reason));
                 return nodes;
             }
         }
@@ -449,13 +490,19 @@ pub fn decode_native_reply(
             continue;
         }
         let before = cur.pos;
+        cur.overran = false;
         match decode_value(reg, sdk, &mut cur, &param.ty, 0) {
             Some(mut n) => {
                 n.name = param.name.clone();
                 nodes.push(n);
             }
             None => {
-                nodes.push(raw_tail(param.name.clone(), before, buf.len()));
+                let reason = if cur.overran {
+                    "buffer overrun".to_string()
+                } else {
+                    format!("param {} (undecodable type {:?})", param.name, param.ty)
+                };
+                nodes.push(raw_tail(param.name.clone(), before, buf.len(), reason));
                 return nodes;
             }
         }
@@ -463,13 +510,13 @@ pub fn decode_native_reply(
     nodes
 }
 
-fn raw_tail(name: String, start: usize, buf_len: usize) -> DecodedNode {
+fn raw_tail(name: String, start: usize, buf_len: usize, reason: String) -> DecodedNode {
     DecodedNode {
         name,
         type_label: "raw".to_string(),
         start,
         len: buf_len.saturating_sub(start),
-        value: DecodedValue::Raw,
+        value: DecodedValue::RawTail { reason },
         children: vec![],
     }
 }
@@ -1581,7 +1628,7 @@ mod tests {
         let m = method(vec![in_param("p", TypeRef::UserDefined("a.Empty".into()))]);
         let buf = [0u8; 8];
         let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
-        assert!(matches!(nodes[0].value, DecodedValue::Raw));
+        assert!(matches!(nodes[0].value, DecodedValue::RawTail { .. }));
     }
 
     #[test]
@@ -1834,7 +1881,7 @@ mod tests {
         )]);
         let buf = [0u8; 8];
         let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
-        assert!(matches!(nodes[0].value, DecodedValue::Raw));
+        assert!(matches!(nodes[0].value, DecodedValue::RawTail { .. }));
     }
 
     #[test]
@@ -1885,7 +1932,12 @@ mod tests {
         let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert_eq!(nodes.len(), 2);
         assert!(matches!(nodes[0].value, DecodedValue::I64(1)));
-        assert!(matches!(nodes[1].value, DecodedValue::Raw));
+        let tail = nodes.last().unwrap();
+        assert!(
+            matches!(&tail.value, DecodedValue::RawTail { reason } if reason.contains("undecodable")),
+            "got {:?}",
+            tail.value
+        );
         assert_eq!(nodes[1].start, 4);
         assert_eq!(nodes[1].len, 4); // remaining bytes
     }
@@ -1902,7 +1954,34 @@ mod tests {
         buf.extend_from_slice(&[0, 0]);
         let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
         assert!(matches!(nodes[0].value, DecodedValue::I64(1)));
-        assert!(matches!(nodes.last().unwrap().value, DecodedValue::Raw));
+        let tail = nodes.last().unwrap();
+        assert!(
+            matches!(&tail.value, DecodedValue::RawTail { reason } if reason == "buffer overrun"),
+            "got {:?}",
+            tail.value
+        );
+    }
+
+    #[test]
+    fn undecodable_type_near_end_not_mislabeled_as_overrun() {
+        // an unmodeled UserDefined param at position 4 with only 3 bytes remaining.
+        // the old heuristic `before + 4 > buf.len()` fires here (4 + 4 = 8 > 7)
+        // and would wrongly say "buffer overrun". the flag correctly says "undecodable"
+        // because decode_union returns None from a registry miss — no take() fails.
+        let reg = Registry::empty();
+        let m = method(vec![
+            in_param("x", TypeRef::Primitive(Prim::I32)),
+            in_param("obj", TypeRef::UserDefined("a.b.Foo".into())),
+        ]);
+        let mut buf = 1i32.to_le_bytes().to_vec();
+        buf.extend_from_slice(&[0xaa, 0xbb, 0xcc]); // 3 bytes remain (< 4)
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
+        let tail = nodes.last().unwrap();
+        assert!(
+            matches!(&tail.value, DecodedValue::RawTail { reason } if reason.contains("undecodable")),
+            "got {:?}",
+            tail.value
+        );
     }
 
     #[test]
@@ -2122,7 +2201,7 @@ mod tests {
         let m = method(vec![in_param("u", TypeRef::UserDefined("a.U".into()))]);
         let buf = 5i32.to_le_bytes().to_vec(); // tag 5, only field 0 exists
         let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
-        assert!(matches!(nodes[0].value, DecodedValue::Raw));
+        assert!(matches!(nodes[0].value, DecodedValue::RawTail { .. }));
     }
 
     #[test]
@@ -2346,7 +2425,7 @@ mod tests {
         buf.extend_from_slice(&val_string("k"));
         buf.extend_from_slice(&val_charsequence(0, "styled")); // kind 0 = spanned
         let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
-        assert!(matches!(nodes[0].value, DecodedValue::Raw));
+        assert!(matches!(nodes[0].value, DecodedValue::RawTail { .. }));
     }
 
     // VAL_BUNDLE(3)-tagged value (the nested-in-map form): tag + bundle body.
@@ -2904,7 +2983,7 @@ mod tests {
         let mut buf = vec![0u8; 24];
         buf.extend_from_slice(&1i32.to_le_bytes());
         let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]); // no offsets -> halt
-        assert!(matches!(nodes[0].value, DecodedValue::Raw));
+        assert!(matches!(nodes[0].value, DecodedValue::RawTail { .. }));
     }
 
     #[test]

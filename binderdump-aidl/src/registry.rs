@@ -1699,7 +1699,7 @@ mod tests {
         assert_eq!(nodes[1].name, "msgType");
         assert!(matches!(nodes[1].value, DecodedValue::I64(1)));
         assert_eq!(nodes[2].name, "imageData");
-        assert!(matches!(nodes[2].value, DecodedValue::Raw));
+        assert!(matches!(nodes[2].value, DecodedValue::RawTail { .. }));
     }
 
     // IStreamSource
@@ -1749,7 +1749,7 @@ mod tests {
         assert_eq!(nodes[0].name, "count");
         assert!(matches!(nodes[0].value, DecodedValue::I64(3)));
         assert_eq!(nodes[1].name, "buffers");
-        assert!(matches!(nodes[1].value, DecodedValue::Raw));
+        assert!(matches!(nodes[1].value, DecodedValue::RawTail { .. }));
     }
 
     // IStreamListener
