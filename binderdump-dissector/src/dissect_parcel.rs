@@ -189,7 +189,7 @@ fn render_value(
 
     match &node.value {
         // undecodable tail: static raw field so it is filterable from tshark.
-        DecodedValue::Raw => {
+        DecodedValue::Raw | DecodedValue::RawTail { .. } => {
             let h = handle(manager, "raw")?;
             unsafe {
                 epan::proto_tree_add_item(tree, h, tvb, off, len, epan::ENC_NA);
@@ -446,6 +446,7 @@ fn add_typed(
         }
         // these variants are handled by render_value before add_typed is called.
         DecodedValue::Raw
+        | DecodedValue::RawTail { .. }
         | DecodedValue::Bytes
         | DecodedValue::Array { .. }
         | DecodedValue::Enum { .. }
