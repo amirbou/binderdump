@@ -1424,3 +1424,55 @@ fn set_transaction_state_decodes_layer_state() {
         "raw tail missing after crop — safe-partial boundary not emitted"
     );
 }
+
+// Verify that a partially-decoded frame emits a non-empty binderdump.decode_status
+// containing "decode stopped". set_transaction_state.pcapng has a raw tail because the
+// layer_state_t back half is build-variant and the decoder stops at the boundary.
+#[test]
+fn decode_status_present_on_partial_decode() {
+    ensure_dissector_loaded();
+    let fixture = set_transaction_state_fixture();
+    let out = tshark(&[
+        "-r",
+        fixture.to_str().unwrap(),
+        "-T",
+        "fields",
+        "-e",
+        "binderdump.decode_status",
+    ]);
+    assert!(
+        out.lines().any(|l| l.contains("decode stopped")),
+        "expected at least one frame with 'decode stopped' in binderdump.decode_status; got:\n{}",
+        out
+    );
+}
+
+// Verify that a fully-decoded frame emits no binderdump.decode_status.
+// bundle.pcapng carries IApplicationThread.setCoreSettings(Bundle) with a Bundle
+// parameter that decodes completely — no raw tail, no unresolved method, no stub.
+#[test]
+fn decode_status_absent_on_fully_decoded() {
+    ensure_dissector_loaded();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bundle.pcapng");
+    let path = fixture.to_str().unwrap();
+    let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../binderdump-aidl/data/aosp");
+    let corpus_pref = format!(
+        "binderdump.aosp_corpus_dir:{}",
+        corpus_dir.to_str().unwrap()
+    );
+    let out = tshark(&[
+        "-r",
+        path,
+        "-o",
+        &corpus_pref,
+        "-T",
+        "fields",
+        "-e",
+        "binderdump.decode_status",
+    ]);
+    assert!(
+        out.lines().all(|l| l.trim().is_empty()),
+        "expected no decode_status on fully-decoded bundle frames; got:\n{}",
+        out
+    );
+}

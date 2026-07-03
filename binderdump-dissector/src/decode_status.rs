@@ -100,10 +100,12 @@ pub fn build_status(i: &StatusInput) -> Option<Status> {
             return incomplete("reply: originating method unknown".to_string());
         }
         if let Some(r) = i.raw_tail_reason {
-            return incomplete(format!(
-                "reply: decode stopped at {}; {} bytes undecoded",
-                r, i.undecoded_bytes
-            ));
+            let bytes = if i.undecoded_bytes > 0 {
+                format!("; {} bytes undecoded", i.undecoded_bytes)
+            } else {
+                String::new()
+            };
+            return incomplete(format!("reply: decode stopped at {}{}", r, bytes));
         }
         return None; // reply fully decoded
     }
@@ -129,9 +131,14 @@ pub fn build_status(i: &StatusInput) -> Option<Status> {
 
     // resolved method: partial or opaque.
     if let Some(r) = i.raw_tail_reason {
+        let bytes = if i.undecoded_bytes > 0 {
+            format!("; {} bytes undecoded", i.undecoded_bytes)
+        } else {
+            String::new()
+        };
         return incomplete(format!(
-            "method {}: decode stopped at {}; {} bytes undecoded",
-            method, r, i.undecoded_bytes
+            "method {}: decode stopped at {}{}",
+            method, r, bytes
         ));
     }
     if i.decoded_params == 0 && i.undecoded_bytes > 0 {
@@ -143,7 +150,6 @@ pub fn build_status(i: &StatusInput) -> Option<Status> {
     None
 }
 
-#[allow(static_mut_refs)]
 pub fn emit(
     manager: &HeaderFieldsManager<EventProtocol>,
     tree: *mut epan::proto_node,
@@ -156,8 +162,10 @@ pub fn emit(
     let hf = manager
         .get_handle("binderdump.decode_status")
         .ok_or_else(|| anyhow::anyhow!("decode_status hf not registered"))?;
+    // status.text with an interior NUL -> fall back to a literal that has none, so
+    // the inner unwrap can't fail.
     let text = CString::new(status.text.as_str())
-        .unwrap_or_else(|_| CString::new("decode status").unwrap()); // interior NUL -> fallback
+        .unwrap_or_else(|_| CString::new("decode status").unwrap());
     unsafe {
         let item = epan::proto_tree_add_string(tree, hf, tvb, off, len, text.as_ptr());
         epan::binderdump_proto_item_set_generated(item);
@@ -271,6 +279,16 @@ mod tests {
                 && s.text.contains("InputWindowCommands")
                 && s.text.contains("24 bytes")
         );
+    }
+
+    #[test]
+    fn raw_tail_zero_undecoded_omits_byte_count() {
+        let mut i = base();
+        i.raw_tail_reason = Some("buffer overrun");
+        i.undecoded_bytes = 0;
+        let s = build_status(&i).unwrap();
+        assert!(s.text.contains("decode stopped at"));
+        assert!(!s.text.contains("bytes undecoded"));
     }
 
     #[test]
