@@ -2572,6 +2572,88 @@ mod tests {
             r.interfaces[0].imports,
         );
     }
+
+    #[test]
+    fn is_interface_true_for_overlay_interface() {
+        let mut overlay = OverlayLayer {
+            source_path: "t".into(),
+            interfaces: Default::default(),
+            enums: Default::default(),
+            parcelables: Default::default(),
+            unions: Default::default(),
+            typedefs: Default::default(),
+        };
+        overlay
+            .interfaces
+            .insert("x.y.IFoo".into(), iface("x.y.IFoo", &["start"]));
+        let reg = Registry::from_parts(vec![overlay], None, HashMap::new());
+        assert!(reg.is_interface(34, "x.y.IFoo"));
+        assert!(!reg.is_interface(34, "x.y.IBar")); // unknown
+    }
+
+    #[test]
+    fn is_interface_false_for_parcelable_and_enum() {
+        use crate::model::{Parcelable, Prim};
+        let mut overlay = OverlayLayer {
+            source_path: "t".into(),
+            interfaces: Default::default(),
+            enums: Default::default(),
+            parcelables: Default::default(),
+            unions: Default::default(),
+            typedefs: Default::default(),
+        };
+        overlay.parcelables.insert(
+            "a.b.P".into(),
+            Parcelable {
+                fqn: "a.b.P".into(),
+                fields: vec![],
+            },
+        );
+        overlay.enums.insert(
+            "a.b.E".into(),
+            EnumDef {
+                fqn: "a.b.E".into(),
+                backing: Prim::I32,
+                consts: vec![],
+            },
+        );
+        let reg = Registry::from_parts(vec![overlay], None, HashMap::new());
+        assert!(!reg.is_interface(34, "a.b.P"));
+        assert!(!reg.is_interface(34, "a.b.E"));
+    }
+
+    #[test]
+    fn is_interface_true_for_native_corpus_interface() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let native_dir = repo_root.join("data/native");
+        let reg = Registry::empty().with_native_dir(&native_dir);
+        assert!(reg.is_interface(34, "android.gui.IConsumerListener"));
+        assert!(reg.is_interface(34, "android.gui.SensorServer"));
+        // a parcelable fqn should not be detected as an interface
+        assert!(!reg.is_interface(34, "no.such.IDoesNotExist"));
+    }
+
+    #[test]
+    fn resolve_user_type_returns_ibinder_for_interface() {
+        use crate::model::TypeRef;
+        let mut overlay = OverlayLayer {
+            source_path: "t".into(),
+            interfaces: Default::default(),
+            enums: Default::default(),
+            parcelables: Default::default(),
+            unions: Default::default(),
+            typedefs: Default::default(),
+        };
+        // simulate a HIDL package with an interface ICallback
+        overlay.interfaces.insert(
+            "x.y@1.0::ICallback".into(),
+            iface("x.y@1.0::ICallback", &["f"]),
+        );
+        let reg = Registry::from_parts(vec![overlay], None, HashMap::new());
+        let pkgs = vec!["x.y@1.0".to_string()];
+        let resolved = reg.resolve_user_type(34, "ICallback", &pkgs);
+        assert_eq!(resolved, Some(TypeRef::IBinder));
+    }
 }
 
 use crate::model::{EnumDef, Interface, Method, OverlayLayer, Parcelable, TypeRef, Union};
@@ -3109,11 +3191,33 @@ impl Registry {
         None
     }
 
+    // true if `fqn` names a known interface in the corpus (overlay, aosp lazy, or native).
+    // used to detect interface-typed params/returns and decode them as IBinder flat_binder_objects.
+    pub fn is_interface(&self, sdk: u32, fqn: &str) -> bool {
+        for overlay in self.overlays.iter().rev() {
+            if overlay.interfaces.contains_key(fqn) {
+                return true;
+            }
+        }
+        if self.aosp_root.is_some() && self.lazy_resolve_recursive(sdk, fqn).is_some() {
+            return true;
+        }
+        if let Some(layers) = self.native_layers.get(&sdk) {
+            for layer in layers.iter() {
+                if layer.interfaces.contains_key(fqn) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Resolve a bare (unqualified) HIDL type name against an ordered list of
     /// candidate packages. `candidate_pkgs` should include the current package
     /// first, then any explicitly imported packages from the interface definition.
     /// Returns the resolved TypeRef: a primitive for typedefs, or a fully-qualified
-    /// UserDefined fqn for enums and parcelables. Returns None if not found.
+    /// UserDefined fqn for enums and parcelables, or IBinder for interfaces. Returns
+    /// None if not found.
     pub fn resolve_user_type(
         &self,
         sdk: u32,
@@ -3133,6 +3237,10 @@ impl Registry {
             // parcelable/struct: same
             if self.parcelable_def(sdk, &qualified).is_some() {
                 return Some(TypeRef::UserDefined(qualified));
+            }
+            // interface: written inline as a flat_binder_object
+            if self.is_interface(sdk, &qualified) {
+                return Some(TypeRef::IBinder);
             }
         }
         None
