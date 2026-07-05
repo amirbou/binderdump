@@ -3097,4 +3097,25 @@ mod tests {
         let mut cur = ParcelCursor::new(&[0u8; 4], 0);
         assert!(crate::native_struct::decode(&reg, 35, &mut cur, "a.b.NotAStruct", 0, 0).is_none());
     }
+
+    // INTERFACE_TRANSACTION replies carry a bare String16 at offset 0 with no status header.
+    // verify that read_string16 recovers the descriptor from the observed wire pattern.
+    #[test]
+    fn read_string16_interface_descriptor() {
+        // "android.frameworks.stats.IStats" in UTF-16 LE: count=31, then 31+1=32 char16_t (64
+        // bytes, pad_to_4 is already 0 mod 4), as seen in frame 100 of out.pcapng.
+        let descriptor = "android.frameworks.stats.IStats";
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(&(descriptor.len() as i32).to_le_bytes()); // count
+        for ch in descriptor.encode_utf16() {
+            buf.extend_from_slice(&ch.to_le_bytes());
+        }
+        // NUL terminator (u16)
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        // padded to 4 bytes: (31+1)*2 = 64, already a multiple of 4 — no extra padding needed.
+        let mut cur = ParcelCursor::new(&buf, 0);
+        let result = cur.read_string16();
+        assert_eq!(result, Some(Some(descriptor.to_string())));
+        assert_eq!(cur.pos, buf.len()); // cursor consumed the whole buffer
+    }
 }
