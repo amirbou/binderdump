@@ -3,7 +3,9 @@
 // and tags how the resolution happened (aosp / overlay / special / etc.)
 // for the `binder.transaction.method_source` field.
 
-use binderdump_aidl::token::{aidl_params_start, parse_aidl_token, parse_hidl_token};
+use binderdump_aidl::token::{
+    aidl_params_start, hidl_params_start, parse_aidl_token, parse_hidl_token,
+};
 use binderdump_aidl::{Lookup, Method, Registry, Source};
 use binderdump_structs::binder_types::BinderInterface;
 use std::sync::OnceLock;
@@ -15,7 +17,8 @@ pub struct ResolvedTransaction<'a> {
     pub method_source: &'static str,
     pub overlay_path: Option<String>,
     pub method: Option<&'a Method>, // resolved method, for param decode
-    pub params_start: Option<usize>, // AIDL: offset where params begin
+    pub params_start: Option<usize>, // AIDL/HIDL: offset where params begin
+    pub is_hidl: bool,              // true when the frame is on /dev/hwbinder
 }
 
 pub fn resolve<'a>(
@@ -25,13 +28,16 @@ pub fn resolve<'a>(
     android_sdk: u32,
     data_buf: &[u8],
 ) -> ResolvedTransaction<'a> {
-    let (interface, params_start) = match iface {
+    let (interface, params_start, is_hidl) = match iface {
         BinderInterface::BINDER | BinderInterface::VNDBINDER => {
             let iface = parse_aidl_token(data_buf, android_sdk);
             let start = aidl_params_start(data_buf, android_sdk);
-            (iface, start)
+            (iface, start, false)
         }
-        BinderInterface::HWBINDER => (parse_hidl_token(data_buf), None),
+        BinderInterface::HWBINDER => {
+            let start = hidl_params_start(data_buf);
+            (parse_hidl_token(data_buf), start, true)
+        }
     };
 
     // Special codes are interface-agnostic - check first.
@@ -49,6 +55,7 @@ pub fn resolve<'a>(
             overlay_path: None,
             method: None,
             params_start,
+            is_hidl,
         };
     }
 
@@ -60,6 +67,7 @@ pub fn resolve<'a>(
             overlay_path: None,
             method: None,
             params_start,
+            is_hidl,
         };
     };
 
@@ -77,6 +85,7 @@ pub fn resolve<'a>(
                 overlay_path,
                 method: Some(method),
                 params_start,
+                is_hidl,
             }
         }
         Lookup::UnknownInterface => {
@@ -96,6 +105,7 @@ pub fn resolve<'a>(
                 overlay_path: None,
                 method: None,
                 params_start,
+                is_hidl,
             }
         }
         Lookup::UnknownCode { interface: _ } => ResolvedTransaction {
@@ -105,6 +115,7 @@ pub fn resolve<'a>(
             overlay_path: None,
             method: None,
             params_start,
+            is_hidl,
         },
         Lookup::SpecialCode(_) => unreachable!("checked above"),
     }

@@ -14,12 +14,14 @@
 use crate::decode_status;
 use crate::header_fields_manager::HeaderFieldsManager;
 use binderdump_aidl::decode::{decode_aidl_reply, decode_native_reply};
+use binderdump_aidl::decode_hidl::{decode_hidl_params, decode_hidl_reply};
 use binderdump_aidl::{decode_aidl_params, DecodedNode, DecodedValue};
 use binderdump_epan_sys::epan;
 use binderdump_structs::binder_serde::FieldOffset;
 use binderdump_structs::binder_types::BinderInterface;
+use binderdump_structs::bwr_layer::PtrPayload;
 use binderdump_structs::event_layer::EventProtocol;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::{c_int, CString};
 use std::sync::{Mutex, OnceLock};
 
@@ -80,6 +82,7 @@ pub fn dissect_transaction_data(
                 decoded_params: 0,
                 raw_tail_reason: None,
                 undecoded_bytes: 0,
+                payload_decoder_missing: false,
             };
             if let Some(status) = decode_status::build_status(&input) {
                 decode_status::emit(manager, tree, tvb as *mut _, pinfo, off, len, &status)?;
@@ -100,6 +103,7 @@ pub fn dissect_transaction_data(
                 decoded_params: 0,
                 raw_tail_reason: None,
                 undecoded_bytes: 0,
+                payload_decoder_missing: false,
             };
             if let Some(status) = decode_status::build_status(&input) {
                 decode_status::emit(manager, tree, tvb as *mut _, pinfo, off, len, &status)?;
@@ -107,6 +111,7 @@ pub fn dissect_transaction_data(
             return Ok(());
         };
         // reply payload starts at offset 0 (no interface token).
+        let ptr_payloads = assemble_ptr_payloads(&txn.ptr_payloads);
         let nodes = if state.is_native {
             decode_native_reply(
                 crate::aidl_resolve::registry(),
@@ -115,6 +120,23 @@ pub fn dissect_transaction_data(
                 &txn.data,
                 0,
                 &txn.offsets,
+            )
+        } else if state.is_hidl {
+            let candidate_pkgs = hidl_candidate_pkgs(
+                crate::aidl_resolve::registry(),
+                event.android_sdk(),
+                state.interface.as_deref(),
+            );
+            decode_hidl_reply(
+                crate::aidl_resolve::registry(),
+                event.android_sdk(),
+                method,
+                &txn.data,
+                0,
+                &txn.offsets,
+                &ptr_payloads,
+                &candidate_pkgs,
+                state.interface.as_deref(),
             )
         } else {
             decode_aidl_reply(
@@ -156,6 +178,7 @@ pub fn dissect_transaction_data(
             decoded_params,
             raw_tail_reason,
             undecoded_bytes: tail_bytes,
+            payload_decoder_missing: false,
         };
         if let Some(status) = decode_status::build_status(&input) {
             decode_status::emit(manager, tree, tvb as *mut _, pinfo, off, len, &status)?;
@@ -189,6 +212,7 @@ pub fn dissect_transaction_data(
             decoded_params: 0,
             raw_tail_reason: None,
             undecoded_bytes: 0,
+            payload_decoder_missing: false,
         };
         if let Some(status) = decode_status::build_status(&input) {
             decode_status::emit(manager, tree, tvb as *mut _, pinfo, off, len, &status)?;
@@ -196,14 +220,34 @@ pub fn dissect_transaction_data(
         return Ok(());
     };
 
-    let nodes = decode_aidl_params(
-        crate::aidl_resolve::registry(),
-        event.android_sdk(),
-        method,
-        &txn.data,
-        start,
-        &txn.offsets,
-    );
+    let ptr_payloads = assemble_ptr_payloads(&txn.ptr_payloads);
+    let nodes = if r.is_hidl {
+        let candidate_pkgs = hidl_candidate_pkgs(
+            crate::aidl_resolve::registry(),
+            event.android_sdk(),
+            r.interface.as_deref(),
+        );
+        decode_hidl_params(
+            crate::aidl_resolve::registry(),
+            event.android_sdk(),
+            method,
+            &txn.data,
+            start,
+            &txn.offsets,
+            &ptr_payloads,
+            &candidate_pkgs,
+            r.interface.as_deref(),
+        )
+    } else {
+        decode_aidl_params(
+            crate::aidl_resolve::registry(),
+            event.android_sdk(),
+            method,
+            &txn.data,
+            start,
+            &txn.offsets,
+        )
+    };
 
     // render whatever decoded (unchanged), if any.
     if !nodes.is_empty() {
@@ -244,6 +288,15 @@ pub fn dissect_transaction_data(
     } else {
         txn.data.len().saturating_sub(start) // only read by build_status when decoded_params == 0 (opaque stub)
     };
+    // HIDL decoder returns a single top-level RawTail when it hits an unsupported
+    // aggregate type or an opaque handle/memory type. signal that distinctly from
+    // the AIDL "opaque stub" path so decode_status can say "not implemented".
+    let payload_decoder_missing = r.is_hidl
+        && nodes.len() == 1
+        && matches!(&nodes[0].value, DecodedValue::RawTail { reason } if {
+            let r = reason.as_str();
+            r.contains("not yet supported") || r.contains("opaque") || r.contains("aggregate") || r.contains("handle")
+        });
     let input = decode_status::StatusInput {
         method_source: r.method_source,
         is_hwbinder,
@@ -257,11 +310,55 @@ pub fn dissect_transaction_data(
         decoded_params,
         raw_tail_reason,
         undecoded_bytes,
+        payload_decoder_missing,
     };
     if let Some(status) = decode_status::build_status(&input) {
         decode_status::emit(manager, tree, tvb as *mut _, pinfo, off, len, &status)?;
     }
     Ok(())
+}
+
+// build the ordered list of package fqns used for resolving bare HIDL type names.
+// the current package (derived from the interface fqn) comes first, followed by any
+// packages that the interface's definition explicitly imports.
+fn hidl_candidate_pkgs(
+    reg: &binderdump_aidl::Registry,
+    sdk: u32,
+    iface_fqn: Option<&str>,
+) -> Vec<String> {
+    let fqn = match iface_fqn {
+        Some(f) => f,
+        None => return vec![],
+    };
+    let mut pkgs = Vec::new();
+    // current package: pkg@ver from "pkg@ver::IName"
+    if let Some((pkg, _)) = fqn.split_once("::") {
+        if pkg.contains('@') {
+            pkgs.push(pkg.to_string());
+        }
+    }
+    // explicit imports from the interface definition
+    if let Some(iface) = reg.iface_def(sdk, fqn) {
+        for import_pkg in &iface.imports {
+            if !pkgs.contains(import_pkg) {
+                pkgs.push(import_pkg.clone());
+            }
+        }
+    }
+    pkgs
+}
+
+// group PtrPayload chunks by offset_index, concatenate data in slice order, and
+// return as Vec<(offset_index, payload_bytes)> sorted by offset_index. the
+// decoder expects exactly this form.
+fn assemble_ptr_payloads(raw: &[PtrPayload]) -> Vec<(u32, Vec<u8>)> {
+    let mut map: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
+    for p in raw {
+        map.entry(p.offset_index)
+            .or_default()
+            .extend_from_slice(&p.data);
+    }
+    map.into_iter().collect()
 }
 
 // returns (decoded_param_count, raw_tail_reason, undecoded_bytes) from a decoded
