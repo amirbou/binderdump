@@ -27,8 +27,8 @@ const FLAT_FDA_PREFIX: &str = offsets_prefix!("entry.fda");
 const PTR_SIZE: usize = 8;
 
 // Fixed-size header per PtrPayload before the variable-length `data` bytes:
-// offset_index(4) + buffer_addr(8) + total_size(8) + data_len(2).
-const PTR_PAYLOAD_FIXED_HEADER: usize = 4 + 8 + 8 + 2;
+// offset_index(4) + buffer_addr(8) + total_size(8) + data_len(4).
+const PTR_PAYLOAD_FIXED_HEADER: usize = 4 + 8 + 8 + 4;
 
 struct FieldRefs {
     type_hf: c_int,

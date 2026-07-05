@@ -256,6 +256,20 @@ impl TransactionProtocolBuilder {
         }
 
         txn.is_compat = self.is_compat;
+
+        // move the accumulated scatter-gather payloads onto the wire struct;
+        // concatenate each entry's chunks in chunk_index order.
+        txn.ptr_payloads = self
+            .ptr_payloads
+            .into_iter()
+            .map(|(offset_index, accum)| PtrPayload {
+                offset_index,
+                buffer_addr: accum.buffer_addr,
+                total_size: accum.total_size,
+                data: accum.chunks.into_values().flatten().collect(),
+            })
+            .collect();
+
         Some(txn)
     }
 

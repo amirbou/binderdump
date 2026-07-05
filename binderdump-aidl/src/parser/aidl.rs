@@ -813,6 +813,7 @@ pub fn parse_aidl(source: &str) -> Result<ParsedAidl, Vec<Simple<char>>> {
                 base_code: 1,
                 methods,
                 extends: None,
+                imports: vec![],
             });
         } else if cur.eat_kw("enum") {
             let pkg = cur.package.clone();

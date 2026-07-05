@@ -126,6 +126,7 @@ mod tests {
                 })
                 .collect(),
             extends: None,
+            imports: vec![],
         }
     }
 
@@ -137,6 +138,7 @@ mod tests {
             enums: Default::default(),
             parcelables: Default::default(),
             unions: Default::default(),
+            typedefs: Default::default(),
         };
         overlay
             .interfaces
@@ -160,6 +162,7 @@ mod tests {
             enums: Default::default(),
             parcelables: Default::default(),
             unions: Default::default(),
+            typedefs: Default::default(),
         };
         // Even if an overlay declared a method at PING's value, special table wins.
         overlay
@@ -189,6 +192,7 @@ mod tests {
             enums: Default::default(),
             parcelables: Default::default(),
             unions: Default::default(),
+            typedefs: Default::default(),
         };
         overlay
             .interfaces
@@ -583,6 +587,7 @@ mod tests {
             enums: Default::default(),
             parcelables: Default::default(),
             unions: Default::default(),
+            typedefs: Default::default(),
         };
         overlay.parcelables.insert(
             "a.b.P".into(),
@@ -609,6 +614,7 @@ mod tests {
             enums: Default::default(),
             parcelables: Default::default(),
             unions: Default::default(),
+            typedefs: Default::default(),
         };
         overlay.unions.insert(
             "a.b.U".into(),
@@ -635,6 +641,7 @@ mod tests {
             enums: Default::default(),
             parcelables: Default::default(),
             unions: Default::default(),
+            typedefs: Default::default(),
         };
         overlay.enums.insert(
             "a.b.E".into(),
@@ -2446,10 +2453,129 @@ mod tests {
             matches!(nodes[0].children[1].value, DecodedValue::F64(v) if (v - 0.25).abs() < 1e-5)
         );
     }
+
+    #[test]
+    fn typedef_def_loads_from_overlay() {
+        use crate::model::{Prim, TypeRef};
+        let mut overlay = OverlayLayer {
+            source_path: "x".into(),
+            interfaces: Default::default(),
+            enums: Default::default(),
+            parcelables: Default::default(),
+            unions: Default::default(),
+            typedefs: Default::default(),
+        };
+        overlay.typedefs.insert(
+            "android.hardware.graphics.composer@2.4::Display".into(),
+            TypeRef::Primitive(Prim::U64),
+        );
+        let reg = Registry::from_parts(vec![overlay], None, HashMap::new());
+        let t = reg
+            .typedef_def(34, "android.hardware.graphics.composer@2.4::Display")
+            .expect("typedef must resolve");
+        assert_eq!(t, TypeRef::Primitive(Prim::U64));
+        assert!(reg.typedef_def(34, "android.hardware.Missing").is_none());
+    }
+
+    #[test]
+    fn typedef_def_follows_chain() {
+        use crate::model::{Prim, TypeRef};
+        // AliasedDisplay -> Display -> uint64_t; typedef_def should return Primitive(U64)
+        let mut overlay = OverlayLayer {
+            source_path: "x".into(),
+            interfaces: Default::default(),
+            enums: Default::default(),
+            parcelables: Default::default(),
+            unions: Default::default(),
+            typedefs: Default::default(),
+        };
+        overlay
+            .typedefs
+            .insert("a@1.0::Display".into(), TypeRef::Primitive(Prim::U64));
+        overlay.typedefs.insert(
+            "a@1.0::AliasedDisplay".into(),
+            TypeRef::UserDefined("a@1.0::Display".into()),
+        );
+        let reg = Registry::from_parts(vec![overlay], None, HashMap::new());
+        let t = reg.typedef_def(34, "a@1.0::AliasedDisplay").expect("chain");
+        assert_eq!(t, TypeRef::Primitive(Prim::U64));
+    }
+
+    #[test]
+    fn lazy_typedef_def_resolves_from_aosp_corpus() {
+        // Display is `typedef uint64_t Display` in android.hardware.graphics.composer@2.1 types.hal.
+        // A registry built with with_aosp_dir must load it on demand without any overlay.
+        use crate::model::{Prim, TypeRef};
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let reg = Registry::with_aosp_dir(repo_root.join("data/aosp"));
+        let t = reg
+            .typedef_def(35, "android.hardware.graphics.composer@2.1::Display")
+            .expect("Display typedef must resolve from AOSP corpus");
+        assert_eq!(t, TypeRef::Primitive(Prim::U64));
+        // second call must hit the cache and return the same result
+        let t2 = reg
+            .typedef_def(35, "android.hardware.graphics.composer@2.1::Display")
+            .expect("cached hit");
+        assert_eq!(t2, TypeRef::Primitive(Prim::U64));
+        // non-typedef fqn in the same package returns None
+        assert!(reg
+            .typedef_def(35, "android.hardware.graphics.composer@2.1::IComposer")
+            .is_none());
+    }
+
+    #[test]
+    fn resolve_user_type_finds_cross_package_typedef() {
+        // simulates resolving "Display" in the context of IComposerCallback@2.4:
+        //   candidate_pkgs = ["android.hardware.graphics.composer@2.4",
+        //                      "android.hardware.graphics.composer@2.1"]
+        // "Display" lives in @2.1 types.hal as typedef uint64_t Display.
+        use crate::model::{Prim, TypeRef};
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let reg = Registry::with_aosp_dir(repo_root.join("data/aosp"));
+        let pkgs = vec![
+            "android.hardware.graphics.composer@2.4".to_string(),
+            "android.hardware.graphics.composer@2.1".to_string(),
+        ];
+        let resolved = reg
+            .resolve_user_type(35, "Display", &pkgs)
+            .expect("Display must resolve to u64 via @2.1");
+        assert_eq!(resolved, TypeRef::Primitive(Prim::U64));
+    }
+
+    #[test]
+    fn resolve_user_type_finds_same_package_typedef() {
+        // VsyncPeriodNanos lives in composer@2.4 types.hal as typedef uint32_t VsyncPeriodNanos.
+        // it is found on the first candidate (current package).
+        use crate::model::{Prim, TypeRef};
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let reg = Registry::with_aosp_dir(repo_root.join("data/aosp"));
+        let pkgs = vec![
+            "android.hardware.graphics.composer@2.4".to_string(),
+            "android.hardware.graphics.composer@2.1".to_string(),
+        ];
+        let resolved = reg
+            .resolve_user_type(35, "VsyncPeriodNanos", &pkgs)
+            .expect("VsyncPeriodNanos must resolve to u32 via @2.4");
+        assert_eq!(resolved, TypeRef::Primitive(Prim::U32));
+    }
+
+    #[test]
+    fn parse_hidl_records_imports_in_interface() {
+        // an interface with import a.b@1.0::types records "a.b@1.0" in its imports.
+        use crate::parser::hidl::parse_hidl;
+        let src = "package x.y@2.0; import a.b@1.0::types; interface IFoo { void foo(); };";
+        let r = parse_hidl(src).unwrap();
+        assert_eq!(r.interfaces.len(), 1);
+        assert!(
+            r.interfaces[0].imports.contains(&"a.b@1.0".to_string()),
+            "expected imports to contain \"a.b@1.0\", got {:?}",
+            r.interfaces[0].imports,
+        );
+    }
 }
 
-use crate::model::{EnumDef, Interface, Method, OverlayLayer, Parcelable, Union};
-use std::collections::HashMap;
+use crate::model::{EnumDef, Interface, Method, OverlayLayer, Parcelable, TypeRef, Union};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
@@ -2498,6 +2624,15 @@ pub struct Registry {
     /// indirect lookup. The Option means we've populated for that SDK
     /// already (Some) or not yet (absent).
     fqn_index: RwLock<HashMap<u32, HashMap<String, PathBuf>>>,
+    /// HIDL typedef cache: (sdk, fqn) → raw typedef target (before chain-following).
+    /// Absent means not yet looked up; Some(target) is the raw value from types.hal.
+    lazy_typedef_cache: RwLock<HashMap<(u32, String), TypeRef>>,
+    /// (sdk, pkg@ver) pairs whose types.hal has been scanned (or confirmed absent).
+    /// Prevents re-parsing the same types.hal on every miss within the same package.
+    types_hal_scanned: RwLock<HashSet<(u32, String)>>,
+    /// (sdk, pkg@ver::IFaceName) pairs whose .hal interface file has been scanned for
+    /// nested types (enums and structs declared inside the interface body).
+    iface_hal_scanned: RwLock<HashSet<(u32, String)>>,
 }
 
 impl Registry {
@@ -2519,6 +2654,9 @@ impl Registry {
             lazy_parcelable_cache: RwLock::new(HashMap::new()),
             lazy_union_cache: RwLock::new(HashMap::new()),
             fqn_index: RwLock::new(HashMap::new()),
+            lazy_typedef_cache: RwLock::new(HashMap::new()),
+            types_hal_scanned: RwLock::new(HashSet::new()),
+            iface_hal_scanned: RwLock::new(HashSet::new()),
         }
     }
 
@@ -2645,7 +2783,7 @@ impl Registry {
                 },
                 "hal" => match crate::parser::hidl::parse_hidl(&src) {
                     Ok(parsed) => {
-                        let mut iface = parsed.into_iter().find(|i| i.fqn == fqn)?;
+                        let mut iface = parsed.interfaces.into_iter().find(|i| i.fqn == fqn)?;
                         // resolve `extends` chain so base_code is correct
                         if let Some(parent_fqn) = iface.extends.clone() {
                             if let Some(parent) = self.lazy_resolve_recursive(sdk, &parent_fqn) {
@@ -2841,6 +2979,43 @@ impl Registry {
             }
         }
         if self.aosp_root.is_some() {
+            if fqn.contains('@') {
+                // HIDL enum fqn — lazy_typed would look for .aidl files (wrong path).
+                // ensure the right .hal is parsed, then read directly from the cache.
+                if let Some((pkg_at_ver, type_part)) = fqn.split_once("::") {
+                    if type_part.contains('.') {
+                        // nested type: pkg@ver::Iface.TypeName — load the interface .hal
+                        if let Some((iface_name, _)) = type_part.split_once('.') {
+                            let iface_fqn = format!("{}::{}", pkg_at_ver, iface_name);
+                            let needs_scan = !self
+                                .iface_hal_scanned
+                                .read()
+                                .unwrap()
+                                .contains(&(sdk, iface_fqn.clone()));
+                            if needs_scan {
+                                self.load_hidl_iface_hal(sdk, &iface_fqn);
+                            }
+                        }
+                    } else {
+                        // top-level enum in types.hal
+                        let needs_scan = !self
+                            .types_hal_scanned
+                            .read()
+                            .unwrap()
+                            .contains(&(sdk, pkg_at_ver.to_string()));
+                        if needs_scan {
+                            self.load_hidl_types_hal(sdk, pkg_at_ver);
+                        }
+                    }
+                }
+                return self
+                    .lazy_enum_cache
+                    .read()
+                    .unwrap()
+                    .get(&(sdk, fqn.to_string()))
+                    .copied()
+                    .flatten();
+            }
             let f = fqn.to_string();
             return self.lazy_typed(&self.lazy_enum_cache, sdk, fqn, move |p| {
                 p.enums.into_iter().find(|e| e.fqn == f)
@@ -2856,6 +3031,44 @@ impl Registry {
             }
         }
         if self.aosp_root.is_some() {
+            // HIDL structs live in types.hal or nested inside interface .hal files,
+            // not in .aidl files. For pkg@ver::Name fqns, ensure the right file is parsed.
+            if fqn.contains('@') {
+                if let Some((pkg_at_ver, type_part)) = fqn.split_once("::") {
+                    if type_part.contains('.') {
+                        // nested struct inside interface .hal — load the interface file
+                        if let Some((iface_name, _)) = type_part.split_once('.') {
+                            let iface_fqn = format!("{}::{}", pkg_at_ver, iface_name);
+                            let needs_scan = !self
+                                .iface_hal_scanned
+                                .read()
+                                .unwrap()
+                                .contains(&(sdk, iface_fqn.clone()));
+                            if needs_scan {
+                                self.load_hidl_iface_hal(sdk, &iface_fqn);
+                            }
+                        }
+                    } else {
+                        // top-level struct in types.hal
+                        let needs_scan = !self
+                            .types_hal_scanned
+                            .read()
+                            .unwrap()
+                            .contains(&(sdk, pkg_at_ver.to_string()));
+                        if needs_scan {
+                            self.load_hidl_types_hal(sdk, pkg_at_ver);
+                        }
+                    }
+                }
+                // return directly from cache; lazy_typed would try .aidl files (wrong)
+                return self
+                    .lazy_parcelable_cache
+                    .read()
+                    .unwrap()
+                    .get(&(sdk, fqn.to_string()))
+                    .copied()
+                    .flatten();
+            }
             let f = fqn.to_string();
             return self.lazy_typed(&self.lazy_parcelable_cache, sdk, fqn, move |p| {
                 p.parcelables.into_iter().find(|pc| pc.fqn == f)
@@ -2877,6 +3090,212 @@ impl Registry {
             });
         }
         None
+    }
+
+    /// Look up an interface by sdk + fqn. Checks overlays, then the lazy AOSP backend.
+    /// Used for HIDL cross-package type resolution (getting an interface's imports list).
+    pub fn iface_def(&self, sdk: u32, fqn: &str) -> Option<&'static Interface> {
+        for overlay in self.overlays.iter().rev() {
+            if overlay.interfaces.contains_key(fqn) {
+                // overlays store Interface by value; can't return 'static from here.
+                // for now, only lazy-cache lookup returns 'static; overlays won't
+                // contain HIDL import metadata in practice (overlays are user files).
+                break;
+            }
+        }
+        if self.aosp_root.is_some() {
+            return self.lazy_resolve_recursive(sdk, fqn);
+        }
+        None
+    }
+
+    /// Resolve a bare (unqualified) HIDL type name against an ordered list of
+    /// candidate packages. `candidate_pkgs` should include the current package
+    /// first, then any explicitly imported packages from the interface definition.
+    /// Returns the resolved TypeRef: a primitive for typedefs, or a fully-qualified
+    /// UserDefined fqn for enums and parcelables. Returns None if not found.
+    pub fn resolve_user_type(
+        &self,
+        sdk: u32,
+        name: &str,
+        candidate_pkgs: &[String],
+    ) -> Option<TypeRef> {
+        for pkg in candidate_pkgs {
+            let qualified = format!("{}::{}", pkg, name);
+            // typedef chain: returns the terminal resolved type
+            if let Some(ty) = self.typedef_def(sdk, &qualified) {
+                return Some(ty);
+            }
+            // enum: return the qualified fqn for the caller to decode with
+            if self.enum_def(sdk, &qualified).is_some() {
+                return Some(TypeRef::UserDefined(qualified));
+            }
+            // parcelable/struct: same
+            if self.parcelable_def(sdk, &qualified).is_some() {
+                return Some(TypeRef::UserDefined(qualified));
+            }
+        }
+        None
+    }
+
+    /// Resolve a HIDL primitive typedef by fqn. Follows typedef chains (a typedef
+    /// of a typedef) up to 8 levels deep to guard against cycles. Returns the
+    /// terminal TypeRef — either a primitive/string/list or a UserDefined fqn
+    /// that is an enum or parcelable (not another typedef). Returns None if `fqn`
+    /// is not a typedef in any overlay or in the AOSP corpus types.hal.
+    pub fn typedef_def(&self, sdk: u32, fqn: &str) -> Option<TypeRef> {
+        self.typedef_def_depth(sdk, fqn, 0)
+    }
+
+    fn typedef_def_depth(&self, sdk: u32, fqn: &str, depth: u32) -> Option<TypeRef> {
+        if depth > 8 {
+            return None; // cycle or very deep chain — give up
+        }
+        for overlay in self.overlays.iter().rev() {
+            if let Some(target) = overlay.typedefs.get(fqn) {
+                // if target is itself a UserDefined, it might be another typedef; follow it
+                if let TypeRef::UserDefined(inner_fqn) = target {
+                    if let Some(resolved) = self.typedef_def_depth(sdk, inner_fqn, depth + 1) {
+                        return Some(resolved);
+                    }
+                }
+                return Some(target.clone());
+            }
+        }
+
+        // lazy HIDL types.hal lookup — only for pkg@ver::Name-shaped fqns
+        if self.aosp_root.is_some() {
+            if let Some((pkg_at_ver, _)) = fqn.split_once("::") {
+                let pkg_at_ver = pkg_at_ver.to_string();
+                let already_scanned = self
+                    .types_hal_scanned
+                    .read()
+                    .unwrap()
+                    .contains(&(sdk, pkg_at_ver.clone()));
+                if !already_scanned {
+                    self.load_hidl_types_hal(sdk, &pkg_at_ver);
+                }
+                let cached = self
+                    .lazy_typedef_cache
+                    .read()
+                    .unwrap()
+                    .get(&(sdk, fqn.to_string()))
+                    .cloned();
+                if let Some(target) = cached {
+                    if let TypeRef::UserDefined(inner_fqn) = &target {
+                        if let Some(resolved) = self.typedef_def_depth(sdk, inner_fqn, depth + 1) {
+                            return Some(resolved);
+                        }
+                    }
+                    return Some(target);
+                }
+            }
+        }
+
+        None
+    }
+
+    // load typedefs and parcelables (structs) from `pkg_at_ver`'s types.hal.
+    // locates the file by finding any already-indexed interface in the same package and
+    // looking for types.hal alongside it. marks the package scanned regardless of outcome.
+    fn load_hidl_types_hal(&self, sdk: u32, pkg_at_ver: &str) {
+        self.populate_fqn_index(sdk);
+        let prefix = format!("{}::", pkg_at_ver);
+        let types_hal_path: Option<PathBuf> = {
+            let idx = self.fqn_index.read().unwrap();
+            idx.get(&sdk).and_then(|m| {
+                m.iter()
+                    .find(|(k, _)| k.starts_with(&prefix))
+                    .and_then(|(_, p)| p.parent().map(|d| d.join("types.hal")))
+            })
+        };
+        if let Some(path) = types_hal_path {
+            if let Ok(src) = std::fs::read_to_string(&path) {
+                match crate::parser::hidl::parse_hidl(&src) {
+                    Ok(parsed) => {
+                        {
+                            let mut cache = self.lazy_typedef_cache.write().unwrap();
+                            for (fqn, target) in parsed.typedefs {
+                                cache.entry((sdk, fqn)).or_insert(target);
+                            }
+                        }
+                        // also cache parcelables (top-level structs in types.hal)
+                        {
+                            let mut pcache = self.lazy_parcelable_cache.write().unwrap();
+                            for p in parsed.parcelables {
+                                let key = (sdk, p.fqn.clone());
+                                pcache
+                                    .entry(key)
+                                    .or_insert_with(|| Some(Box::leak(Box::new(p))));
+                            }
+                        }
+                        // also cache enums (top-level enums in types.hal)
+                        {
+                            let mut ecache = self.lazy_enum_cache.write().unwrap();
+                            for e in parsed.enums {
+                                let key = (sdk, e.fqn.clone());
+                                ecache
+                                    .entry(key)
+                                    .or_insert_with(|| Some(Box::leak(Box::new(e))));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("binderdump-hidl: failed to parse {}: {}", path.display(), e);
+                    }
+                }
+            }
+        }
+        self.types_hal_scanned
+            .write()
+            .unwrap()
+            .insert((sdk, pkg_at_ver.to_string()));
+    }
+
+    /// Parse an interface's .hal file and cache any nested enum/parcelable types it declares.
+    /// `iface_fqn` is a fully-qualified HIDL interface fqn like `pkg@ver::IFaceName`. The
+    /// fqn_index is used to locate the .hal file; both enum and parcelable caches are
+    /// populated from the parsed result. Marks `iface_fqn` in `iface_hal_scanned` even on
+    /// failure so we don't re-attempt on every miss.
+    fn load_hidl_iface_hal(&self, sdk: u32, iface_fqn: &str) {
+        self.populate_fqn_index(sdk);
+        let hal_path: Option<PathBuf> = {
+            let idx = self.fqn_index.read().unwrap();
+            idx.get(&sdk).and_then(|m| m.get(iface_fqn).cloned())
+        };
+        if let Some(path) = hal_path {
+            if let Ok(src) = std::fs::read_to_string(&path) {
+                match crate::parser::hidl::parse_hidl(&src) {
+                    Ok(parsed) => {
+                        {
+                            let mut ecache = self.lazy_enum_cache.write().unwrap();
+                            for e in parsed.enums {
+                                let key = (sdk, e.fqn.clone());
+                                ecache
+                                    .entry(key)
+                                    .or_insert_with(|| Some(Box::leak(Box::new(e))));
+                            }
+                        }
+                        {
+                            let mut pcache = self.lazy_parcelable_cache.write().unwrap();
+                            for p in parsed.parcelables {
+                                let key = (sdk, p.fqn.clone());
+                                pcache
+                                    .entry(key)
+                                    .or_insert_with(|| Some(Box::leak(Box::new(p))));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("binderdump-hidl: failed to parse {}: {}", path.display(), e);
+                    }
+                }
+            }
+        }
+        self.iface_hal_scanned
+            .write()
+            .unwrap()
+            .insert((sdk, iface_fqn.to_string()));
     }
 
     fn materialize_lazy(&self, slot: Option<&'static Interface>, code: u32) -> Lookup<'static> {
@@ -2901,7 +3320,13 @@ impl Registry {
         // HIDL `extends` may cross files, so collect every parsed hidl interface
         // into one bucket and resolve inheritance once across the whole set.
         // Each .hal contributes one OverlayLayer keyed on its source path.
-        let mut hidl_pending: Vec<(PathBuf, Vec<Interface>)> = Vec::new();
+        let mut hidl_pending: Vec<(
+            PathBuf,
+            Vec<Interface>,
+            Vec<(String, TypeRef)>,
+            Vec<EnumDef>,
+            Vec<Parcelable>,
+        )> = Vec::new();
         for entry in walkdir::WalkDir::new(dir)
             .into_iter()
             .filter_map(|e| e.ok())
@@ -2948,6 +3373,8 @@ impl Registry {
                                 .into_iter()
                                 .map(|u| (u.fqn.clone(), u))
                                 .collect(),
+                            // AIDL files have no HIDL typedef declarations
+                            typedefs: Default::default(),
                         });
                     }
                     Err(_) => {
@@ -2959,10 +3386,10 @@ impl Registry {
                     Ok(v) => {
                         eprintln!(
                             "binderdump-hidl: parsed {} interface(s) from {} (inheritance resolved across all .hal files)",
-                            v.len(),
+                            v.interfaces.len(),
                             path.display()
                         );
-                        hidl_pending.push((path, v));
+                        hidl_pending.push((path, v.interfaces, v.typedefs, v.enums, v.parcelables));
                     }
                     Err(_) => {
                         eprintln!("binderdump-hidl: failed to parse {}", path.display());
@@ -2974,12 +3401,16 @@ impl Registry {
         }
 
         if !hidl_pending.is_empty() {
-            let all: Vec<Interface> = hidl_pending.iter().flat_map(|(_, v)| v.clone()).collect();
+            let all: Vec<Interface> = hidl_pending
+                .iter()
+                .flat_map(|(_, v, _, _, _)| v.clone())
+                .collect();
             match crate::parser::hidl::resolve_inheritance(all) {
                 Ok(resolved) => {
                     let by_fqn: HashMap<String, Interface> =
                         resolved.into_iter().map(|i| (i.fqn.clone(), i)).collect();
-                    for (path, parsed) in hidl_pending {
+                    for (path, parsed, file_typedefs, file_enums, file_parcelables) in hidl_pending
+                    {
                         let mut interfaces = HashMap::new();
                         for iface in parsed {
                             if let Some(r) = by_fqn.get(&iface.fqn) {
@@ -2989,9 +3420,13 @@ impl Registry {
                         layers.push(OverlayLayer {
                             source_path: path,
                             interfaces,
-                            enums: Default::default(),
-                            parcelables: Default::default(),
+                            enums: file_enums.into_iter().map(|e| (e.fqn.clone(), e)).collect(),
+                            parcelables: file_parcelables
+                                .into_iter()
+                                .map(|p| (p.fqn.clone(), p))
+                                .collect(),
                             unions: Default::default(),
+                            typedefs: file_typedefs.into_iter().collect(),
                         });
                     }
                 }

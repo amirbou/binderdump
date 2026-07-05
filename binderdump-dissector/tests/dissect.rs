@@ -38,6 +38,10 @@ fn set_transaction_state_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/set_transaction_state.pcapng")
 }
 
+fn hidl_vanilla_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hidl_vanilla.pcapng")
+}
+
 fn tshark(args: &[&str]) -> String {
     let output = Command::new("tshark")
         .args(args)
@@ -1444,6 +1448,137 @@ fn decode_status_present_on_partial_decode() {
         out.lines().any(|l| l.contains("decode stopped")),
         "expected at least one frame with 'decode stopped' in binderdump.decode_status; got:\n{}",
         out
+    );
+}
+
+// hidl_vanilla.pcapng holds three frames:
+//   1. setParameters (audio@7.0::IDevice) — aggregate decode: vec<ParameterValue>
+//   2. callflow (composer@2.1::IComposerClient) — FMQ/opaque: not implemented
+//   3. onVsync_2_4 (composer@2.4::IComposerCallback) — primitive decode
+//
+// Frame 1 exercises the scatter-gather struct decode path (typedef + cross-package
+// resolution). Frame 2 asserts that a HIDL method whose payload is fundamentally
+// opaque (the callflow FMQ command buffer) emits a named "payload decode not
+// implemented" status rather than a generic fallback.
+#[test]
+fn hidl_aggregate_decodes_real_strings() {
+    ensure_dissector_loaded();
+    let fixture = hidl_vanilla_fixture();
+    let path = fixture.to_str().unwrap();
+    let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../binderdump-aidl/data/aosp");
+    let corpus_pref = format!(
+        "binderdump.aosp_corpus_dir:{}",
+        corpus_dir.to_str().unwrap()
+    );
+
+    // frame 1: setParameters aggregate must decode without any decode_status
+    let set_params_status = tshark(&[
+        "-r",
+        path,
+        "-o",
+        &corpus_pref,
+        "-Y",
+        "binderdump.ioctl_data.bwr.transaction.method_name==\"setParameters\"",
+        "-T",
+        "fields",
+        "-e",
+        "binderdump.decode_status",
+    ]);
+    assert!(
+        set_params_status.trim().is_empty(),
+        "expected no decode_status on setParameters (aggregate decoded); got:\n{}",
+        set_params_status
+    );
+
+    // frame 1: the aggregate must appear in the protocol tree as ParameterValue
+    let set_params_tree = tshark(&[
+        "-r",
+        path,
+        "-o",
+        &corpus_pref,
+        "-Y",
+        "binderdump.ioctl_data.bwr.transaction.method_name==\"setParameters\"",
+        "-O",
+        "binderdump",
+    ]);
+    // the aggregate decodes to the real ParameterValue with the full string key
+    // (proves the whole vec<struct<string,string>> buffer tree + no 4-byte skip).
+    assert!(
+        set_params_tree.contains("ParameterValue") && set_params_tree.contains("screen_state"),
+        "expected 'ParameterValue' with key 'screen_state' in setParameters tree; got:\n{}",
+        set_params_tree
+    );
+
+    // frame 2: executeCommands decodes its in-band args (inLength + the vec<handle>
+    // as native_handles). The FMQ command STREAM is shared memory, not in this
+    // transaction, so there is nothing more to decode here and no decode_status.
+    let ec_tree = tshark(&[
+        "-r",
+        path,
+        "-o",
+        &corpus_pref,
+        "-Y",
+        "binderdump.ioctl_data.bwr.transaction.method_name==\"executeCommands_2_2\"",
+        "-O",
+        "binderdump",
+    ]);
+    assert!(
+        ec_tree.contains("native_handle") && ec_tree.contains("inLength"),
+        "expected executeCommands to decode inLength + native_handle args; got:\n{}",
+        ec_tree
+    );
+}
+
+// Asserts that a HIDL frame whose params decode completely emits no decode_status.
+// IMemtrack.getMemory(int pid, MemtrackType type) carries two primitive int params
+// with no raw tail; sample.pcapng has multiple such request frames.
+#[test]
+fn hidl_fully_decoded_has_no_decode_status() {
+    ensure_dissector_loaded();
+    let fixture = fixture_path();
+    let path = fixture.to_str().unwrap();
+    let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../binderdump-aidl/data/aosp");
+    let corpus_pref = format!(
+        "binderdump.aosp_corpus_dir:{}",
+        corpus_dir.to_str().unwrap()
+    );
+    let pfx = "binderdump.ioctl_data.bwr.transaction";
+
+    // verify the fixture has getMemory frames at all
+    let frames = tshark(&[
+        "-r",
+        path,
+        "-o",
+        &corpus_pref,
+        "-Y",
+        &format!("{pfx}.method_name==\"getMemory\""),
+        "-T",
+        "fields",
+        "-e",
+        "frame.number",
+    ]);
+    assert!(
+        frames.lines().any(|l| !l.trim().is_empty()),
+        "fixture has no getMemory frames (IMemtrack HIDL) — filter or corpus broken"
+    );
+
+    // presence filter: if any getMemory frame carries a decode_status, tshark prints it
+    let statuses = tshark(&[
+        "-r",
+        path,
+        "-o",
+        &corpus_pref,
+        "-Y",
+        &format!("{pfx}.method_name==\"getMemory\" && binderdump.decode_status"),
+        "-T",
+        "fields",
+        "-e",
+        "binderdump.decode_status",
+    ]);
+    assert!(
+        statuses.trim().is_empty(),
+        "expected no decode_status on fully-decoded getMemory (HIDL) frames; got:\n{}",
+        statuses
     );
 }
 

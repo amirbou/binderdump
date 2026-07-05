@@ -799,6 +799,7 @@ fn handle_transaction_code(
             overlay_path: None,
             method: None,
             params_start: None,
+            is_hidl: false,
         }
     };
 
@@ -835,6 +836,7 @@ fn handle_transaction_code(
             r.method_name.clone(),
             r.method,
             r.method_source == "native",
+            r.is_hidl,
         );
 
         let td = crate::follow_stream::TapData {

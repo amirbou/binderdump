@@ -67,6 +67,9 @@ pub struct StatusInput<'a> {
     pub decoded_params: usize,
     pub raw_tail_reason: Option<&'a str>,
     pub undecoded_bytes: usize,
+    // set when a HIDL method was resolved but the HIDL decoder returned only a
+    // top-level RawTail (e.g. the param type is not yet supported).
+    pub payload_decoder_missing: bool,
 }
 
 fn incomplete(text: String) -> Option<Status> {
@@ -111,8 +114,9 @@ pub fn build_status(i: &StatusInput) -> Option<Status> {
     }
 
     // requests: resolution-driven reasons.
-    if i.is_hwbinder {
-        return not_applicable("HIDL/hwbinder interface — not decoded".to_string());
+    if i.payload_decoder_missing {
+        let m = i.method_name.unwrap_or("<unknown>");
+        return incomplete(format!("HIDL method {}: payload decode not implemented", m));
     }
     match i.method_source {
         "no_token" => {
@@ -196,6 +200,7 @@ mod tests {
             decoded_params: 2,
             raw_tail_reason: None,
             undecoded_bytes: 0,
+            payload_decoder_missing: false,
         }
     }
 
@@ -215,14 +220,31 @@ mod tests {
         assert!(s.text.contains("no interface token"));
     }
 
+    // hwbinder frames now follow the normal taxonomy. a hwbinder frame whose
+    // token is absent still produces NotApplicable via the no_token arm.
     #[test]
-    fn hwbinder_is_not_applicable() {
+    fn hwbinder_no_token_is_not_applicable() {
         let mut i = base();
         i.is_hwbinder = true;
         i.method_source = "no_token";
+        i.interface = None;
+        i.method_name = None;
         let s = build_status(&i).unwrap();
         assert!(matches!(s.severity, Severity::NotApplicable));
-        assert!(s.text.contains("HIDL"));
+        assert!(s.text.contains("no interface token"));
+    }
+
+    #[test]
+    fn hidl_decoder_missing_is_incomplete() {
+        let mut i = base();
+        i.is_hwbinder = true;
+        i.method_name = Some("executeCommands");
+        i.payload_decoder_missing = true;
+        let s = build_status(&i).unwrap();
+        assert!(matches!(s.severity, Severity::Incomplete));
+        assert!(
+            s.text.contains("executeCommands") && s.text.contains("payload decode not implemented")
+        );
     }
 
     #[test]
