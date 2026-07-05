@@ -510,7 +510,7 @@ pub fn decode_native_reply(
     nodes
 }
 
-fn raw_tail(name: String, start: usize, buf_len: usize, reason: String) -> DecodedNode {
+pub(crate) fn raw_tail(name: String, start: usize, buf_len: usize, reason: String) -> DecodedNode {
     DecodedNode {
         name,
         type_label: "raw".to_string(),
@@ -628,6 +628,8 @@ fn decode_value(
         TypeRef::Array(el) | TypeRef::List(el) => decode_array(reg, sdk, cur, el, start, depth + 1),
         TypeRef::Nullable(inner) => decode_nullable(reg, sdk, cur, inner, start, depth + 1),
         TypeRef::Map(_, _) => decode_map(reg, sdk, cur, start, depth + 1),
+        // HIDL-only types have no AIDL wire form; callers surface them as opaque.
+        TypeRef::FixedArray(_, _) | TypeRef::HidlHandle | TypeRef::HidlMemory => None,
         TypeRef::IBinder => match cur.read_binder_object() {
             Some((handle, strong)) => Some(node(
                 DecodedValue::Binder { handle, strong },
@@ -1474,6 +1476,7 @@ mod tests {
             enums: Default::default(),
             parcelables: Default::default(),
             unions: Default::default(),
+            typedefs: Default::default(),
         };
         o.parcelables.insert(
             fqn.into(),
@@ -1640,6 +1643,7 @@ mod tests {
             enums: Default::default(),
             parcelables: Default::default(),
             unions: Default::default(),
+            typedefs: Default::default(),
         };
         o.parcelables.insert(
             "a.Inner".into(),
@@ -1735,6 +1739,7 @@ mod tests {
             enums: Default::default(),
             parcelables: Default::default(),
             unions: Default::default(),
+            typedefs: Default::default(),
         };
         o.enums.insert(
             fqn.into(),
@@ -2143,6 +2148,7 @@ mod tests {
             enums: Default::default(),
             parcelables: Default::default(),
             unions: Default::default(),
+            typedefs: Default::default(),
         };
         o.unions.insert(
             fqn.into(),
@@ -2251,6 +2257,7 @@ mod tests {
             enums: Default::default(),
             parcelables: Default::default(),
             unions: Default::default(),
+            typedefs: Default::default(),
         };
         o.unions.insert(
             "a.U".into(),
@@ -2303,6 +2310,7 @@ mod tests {
             enums: Default::default(),
             parcelables: Default::default(),
             unions: Default::default(),
+            typedefs: Default::default(),
         };
         o.parcelables.insert(
             "a.P".into(),
@@ -2727,6 +2735,7 @@ mod tests {
             enums: Default::default(),
             parcelables: Default::default(),
             unions: Default::default(),
+            typedefs: Default::default(),
         };
         o.parcelables.insert(
             "a.P".into(),

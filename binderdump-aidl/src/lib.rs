@@ -7,6 +7,7 @@
 pub mod aosp_layout;
 pub mod binder_object;
 pub mod decode;
+pub mod decode_hidl;
 pub mod model;
 pub mod native_interfaces;
 pub mod native_struct;

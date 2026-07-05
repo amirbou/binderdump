@@ -45,6 +45,9 @@ pub enum TypeRef {
     Map(Box<TypeRef>, Box<TypeRef>),
     UserDefined(String),    // fqn of enum/parcelable/interface, resolved later
     Nullable(Box<TypeRef>), // `@nullable T`
+    FixedArray(Box<TypeRef>, usize), // HIDL T[N] — N inline elements at natural alignment
+    HidlHandle,             // HIDL native_handle_t* arg (fd binder object on the wire)
+    HidlMemory,             // HIDL hidl_memory arg (shared memory descriptor)
 }
 
 impl TypeRef {
@@ -82,6 +85,10 @@ pub struct Interface {
     pub base_code: u32, // AIDL: 1 (FIRST_CALL_TRANSACTION). HIDL: 1 + parent_method_count.
     pub methods: Vec<Method>, // index 0 == base_code
     pub extends: Option<String>, // HIDL parent fqn
+    /// package-level imports (HIDL only): versioned fqns like "a.b@1.0" whose
+    /// types are in scope in this file. current package is always the implicit
+    /// first candidate; this list holds only the explicit imports.
+    pub imports: Vec<String>,
 }
 
 impl Interface {
@@ -135,6 +142,8 @@ pub struct OverlayLayer {
     pub enums: std::collections::HashMap<String, EnumDef>,
     pub parcelables: std::collections::HashMap<String, Parcelable>,
     pub unions: std::collections::HashMap<String, Union>,
+    // HIDL primitive typedefs: fqn -> resolved TypeRef (primitives or aliases).
+    pub typedefs: std::collections::HashMap<String, TypeRef>,
 }
 
 #[cfg(test)]
@@ -158,6 +167,7 @@ mod tests {
             base_code: 1,
             methods: names.iter().map(|n| fake_method(n)).collect(),
             extends: None,
+            imports: vec![],
         }
     }
 

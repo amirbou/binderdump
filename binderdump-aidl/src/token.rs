@@ -64,6 +64,19 @@ pub fn parse_aidl_token(bytes: &[u8], android_sdk: u32) -> Option<String> {
     String::from_utf16(&units).ok()
 }
 
+// byte offset of the first argument, i.e. just past the writeCString write
+// emitted by libhwbinder's Parcel::writeInterfaceToken. writeCString writes
+// the null-terminated string and pads the whole write to 4 bytes (libhwbinder
+// Parcel::write → writeInplace → pad_size(len)). args start right after
+// that 4-byte boundary. None on a truncated or absent token.
+pub fn hidl_params_start(bytes: &[u8]) -> Option<usize> {
+    let nul_pos = bytes.iter().position(|&b| b == 0)?;
+    if nul_pos == 0 {
+        return None;
+    }
+    Some(pad_to_4(nul_pos + 1))
+}
+
 // libhwbinder's Parcel::writeInterfaceToken calls writeCString, which writes the
 // null-terminated bytes 4-byte aligned. No length prefix on the wire.
 pub fn parse_hidl_token(bytes: &[u8]) -> Option<String> {
@@ -180,6 +193,28 @@ mod tests {
     fn hidl_no_null_returns_none() {
         let bytes = b"android.hardware.audio@7.0::IDevice";
         assert!(parse_hidl_token(bytes).is_none());
+    }
+
+    #[test]
+    fn hidl_params_start_after_token() {
+        // "android.hardware.audio@7.0::IDevice" = 35 bytes + NUL = 36, pad_to_4(36) = 36
+        let buf = build_hidl_token("android.hardware.audio@7.0::IDevice");
+        let start = hidl_params_start(&buf).unwrap();
+        assert_eq!(start, 36);
+    }
+
+    #[test]
+    fn hidl_params_start_pads_to_4() {
+        // token len 57 + NUL = 58, pad_to_4(58) = 60
+        // "android.hardware.graphics.composer@2.4::IComposerCallback" = 57 chars
+        let buf = build_hidl_token("android.hardware.graphics.composer@2.4::IComposerCallback");
+        let start = hidl_params_start(&buf).unwrap();
+        assert_eq!(start, 60, "57-char token + NUL = 58 bytes → padded to 60");
+    }
+
+    #[test]
+    fn hidl_params_start_truncated_is_none() {
+        assert!(hidl_params_start(&[0u8; 2]).is_none());
     }
 
     #[test]
