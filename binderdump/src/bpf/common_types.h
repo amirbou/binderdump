@@ -95,5 +95,9 @@ struct binder_event_txn_ptr_data {
     __u64 buffer_addr;  // sender VA the kernel was passed (informational)
     __u64 total_size;   // un-truncated buffer length as declared by binder_buffer_object.length
     __u32 chunk_size;   // bytes carried in this event's `data[]`
+    // explicit padding so offsetof(data) == sizeof == 32; without this the compiler
+    // inserts 4 bytes of implicit trailing padding that bpf_probe_read_user writes into
+    // but sizeof() skips, causing the Rust decoder to read payload 4 bytes too late.
+    __u32 _pad;
     char data[];
 };
