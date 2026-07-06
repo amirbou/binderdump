@@ -621,6 +621,18 @@ fn decode_value(
                 ))
             } else if reg.parcelable_def(sdk, fqn).is_some() {
                 decode_parcelable_arg(reg, sdk, cur, fqn, start, depth + 1)
+            } else if reg.is_interface(sdk, fqn) {
+                // interface-typed params are inline flat_binder_objects, same wire form as IBinder
+                match cur.read_binder_object() {
+                    Some((handle, strong)) => Some(node(
+                        DecodedValue::Binder { handle, strong },
+                        "IBinder",
+                        start,
+                        cur.pos - start,
+                        vec![],
+                    )),
+                    None => None,
+                }
             } else {
                 decode_union(reg, sdk, cur, fqn, start, depth + 1)
             }
@@ -2995,6 +3007,86 @@ mod tests {
         assert!(matches!(nodes[0].value, DecodedValue::RawTail { .. }));
     }
 
+    // build a registry with a single interface fqn
+    fn reg_with_interface(fqn: &str) -> Registry {
+        use crate::model::OverlayLayer;
+        let mut o = OverlayLayer {
+            source_path: "t".into(),
+            interfaces: Default::default(),
+            enums: Default::default(),
+            parcelables: Default::default(),
+            unions: Default::default(),
+            typedefs: Default::default(),
+        };
+        o.interfaces.insert(
+            fqn.into(),
+            crate::model::Interface {
+                fqn: fqn.into(),
+                flavor: crate::model::Flavor::Aidl,
+                base_code: 1,
+                methods: vec![],
+                extends: None,
+                imports: vec![],
+            },
+        );
+        Registry::from_parts(vec![o], None, std::collections::HashMap::new())
+    }
+
+    #[test]
+    fn interface_typed_param_decodes_as_ibinder() {
+        // a method with `in android.view.IWindow window, in int x` where IWindow is a known
+        // interface. the window param must decode as a Binder node and the following x also.
+        let reg = reg_with_interface("android.view.IWindow");
+        let m = method(vec![
+            in_param(
+                "window",
+                TypeRef::UserDefined("android.view.IWindow".into()),
+            ),
+            in_param("x", TypeRef::Primitive(Prim::I32)),
+        ]);
+        // flat_binder_object (HANDLE, handle=7) at offset 0, then i32=42
+        let mut buf = binder_object::HANDLE.to_le_bytes().to_vec();
+        buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+        buf.extend_from_slice(&7u64.to_le_bytes()); // handle
+        buf.extend_from_slice(&0u64.to_le_bytes()); // cookie
+        buf.extend_from_slice(&42i32.to_le_bytes()); // x
+        let offsets = 0u64.to_le_bytes();
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &offsets);
+        assert_eq!(nodes.len(), 2, "expected two nodes, got {:?}", nodes);
+        assert_eq!(nodes[0].name, "window");
+        assert!(
+            matches!(
+                nodes[0].value,
+                DecodedValue::Binder {
+                    handle: 7,
+                    strong: false
+                }
+            ),
+            "expected Binder{{handle:7,strong:false}}, got {:?}",
+            nodes[0].value
+        );
+        assert_eq!(nodes[1].name, "x");
+        assert!(matches!(nodes[1].value, DecodedValue::I64(42)));
+    }
+
+    #[test]
+    fn unknown_user_defined_type_still_halts_walk() {
+        // a UserDefined fqn that is not an interface, enum, parcelable, or union → RawTail
+        let reg = Registry::empty();
+        let m = method(vec![
+            in_param("obj", TypeRef::UserDefined("a.b.Mystery".into())),
+            in_param("x", TypeRef::Primitive(Prim::I32)),
+        ]);
+        let mut buf = 1i32.to_le_bytes().to_vec();
+        buf.extend_from_slice(&2i32.to_le_bytes());
+        let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]);
+        assert!(
+            matches!(&nodes[0].value, DecodedValue::RawTail { reason } if reason.contains("undecodable")),
+            "got {:?}",
+            nodes[0].value
+        );
+    }
+
     #[test]
     fn native_reply_decodes_out_params_no_status_header() {
         let reg = Registry::empty();
@@ -3096,5 +3188,26 @@ mod tests {
         let reg = Registry::empty();
         let mut cur = ParcelCursor::new(&[0u8; 4], 0);
         assert!(crate::native_struct::decode(&reg, 35, &mut cur, "a.b.NotAStruct", 0, 0).is_none());
+    }
+
+    // INTERFACE_TRANSACTION replies carry a bare String16 at offset 0 with no status header.
+    // verify that read_string16 recovers the descriptor from the observed wire pattern.
+    #[test]
+    fn read_string16_interface_descriptor() {
+        // "android.frameworks.stats.IStats" in UTF-16 LE: count=31, then 31+1=32 char16_t (64
+        // bytes, pad_to_4 is already 0 mod 4), as seen in frame 100 of out.pcapng.
+        let descriptor = "android.frameworks.stats.IStats";
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(&(descriptor.len() as i32).to_le_bytes()); // count
+        for ch in descriptor.encode_utf16() {
+            buf.extend_from_slice(&ch.to_le_bytes());
+        }
+        // NUL terminator (u16)
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        // padded to 4 bytes: (31+1)*2 = 64, already a multiple of 4 — no extra padding needed.
+        let mut cur = ParcelCursor::new(&buf, 0);
+        let result = cur.read_string16();
+        assert_eq!(result, Some(Some(descriptor.to_string())));
+        assert_eq!(cur.pos, buf.len()); // cursor consumed the whole buffer
     }
 }

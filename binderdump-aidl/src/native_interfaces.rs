@@ -21,6 +21,7 @@ const FQNS: &[&str] = &[
     "android.graphicsenv.IGpuService",
     "android.gui.IConsumerListener",
     "android.gui.IGraphicBufferConsumer",
+    "android.gui.IGraphicBufferProducer",
     "android.gui.ITransactionComposerListener",
     "android.gui.SensorEventConnection",
     "android.gui.SensorServer",

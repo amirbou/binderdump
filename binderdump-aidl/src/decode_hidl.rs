@@ -243,6 +243,26 @@ fn str_from_nul(chars: &[u8]) -> &[u8] {
     }
 }
 
+// read a flat_binder_object at cur.pos if it is listed in offsets.
+// returns (value, is_strong) on success and advances cur by 24 bytes.
+// flat_binder_object layout: u32 type + u32 flags + u64 binder/handle + u64 cookie.
+fn read_hidl_binder_object(cur: &mut HidlCursor, offsets: &[u8]) -> Option<(u64, bool)> {
+    let pos = cur.pos;
+    if !binder_object::offset_entries(offsets).any(|o| o == pos) {
+        return None;
+    }
+    let type_tag = cur.read_u32()?;
+    let strong = match binder_object::classify(type_tag) {
+        binder_object::Kind::Binder => true,
+        binder_object::Kind::Handle => false,
+        _ => return None,
+    };
+    let _flags = cur.read_u32()?;
+    let value = cur.read_u64()?;
+    let _cookie = cur.read_u64()?;
+    Some((value, strong))
+}
+
 // --- native_handle decoder ---
 
 // decode native_handle_t from its buffer payload.
@@ -968,8 +988,35 @@ fn walk_params_skip(
                             return nodes;
                         }
                     }
+                } else if reg.is_interface(sdk, fqn) {
+                    // interface-typed HIDL param: flat_binder_object in the offsets
+                    match read_hidl_binder_object(cur, offsets) {
+                        Some((value, strong)) => {
+                            let mut n = node(
+                                DecodedValue::Binder {
+                                    handle: value,
+                                    strong,
+                                },
+                                "IBinder",
+                                before,
+                                cur.pos - before,
+                                vec![],
+                            );
+                            n.name = param.name.clone();
+                            nodes.push(n);
+                        }
+                        None => {
+                            nodes.push(raw_tail(
+                                param.name.clone(),
+                                before,
+                                data.len(),
+                                "interface binder decode failed".to_string(),
+                            ));
+                            return nodes;
+                        }
+                    }
                 } else {
-                    // unresolved fqn or aggregate (interface/union)
+                    // unresolved fqn or aggregate (union)
                     nodes.push(raw_tail(
                         param.name.clone(),
                         before,
@@ -977,6 +1024,34 @@ fn walk_params_skip(
                         "hidl aggregate not yet supported".to_string(),
                     ));
                     return nodes;
+                }
+            }
+            TypeRef::IBinder => {
+                // interface param resolved from a bare name via resolve_user_type
+                match read_hidl_binder_object(cur, offsets) {
+                    Some((value, strong)) => {
+                        let mut n = node(
+                            DecodedValue::Binder {
+                                handle: value,
+                                strong,
+                            },
+                            "IBinder",
+                            before,
+                            cur.pos - before,
+                            vec![],
+                        );
+                        n.name = param.name.clone();
+                        nodes.push(n);
+                    }
+                    None => {
+                        nodes.push(raw_tail(
+                            param.name.clone(),
+                            before,
+                            data.len(),
+                            "interface binder decode failed".to_string(),
+                        ));
+                        return nodes;
+                    }
                 }
             }
             TypeRef::String => match decode_hidl_string(cur, data, offsets, ptr_payloads) {
@@ -1238,6 +1313,30 @@ mod tests {
                     .into_iter()
                     .map(|(n, v)| (n.to_string(), v))
                     .collect(),
+            },
+        );
+        Registry::from_parts(vec![o], None, HashMap::new())
+    }
+
+    fn reg_with_interface(fqn: &str) -> Registry {
+        let mut o = OverlayLayer {
+            source_path: "t".into(),
+            interfaces: Default::default(),
+            enums: Default::default(),
+            parcelables: Default::default(),
+            unions: Default::default(),
+            typedefs: Default::default(),
+        };
+        use crate::model::{Flavor, Interface};
+        o.interfaces.insert(
+            fqn.into(),
+            Interface {
+                fqn: fqn.into(),
+                flavor: Flavor::Hidl,
+                base_code: 1,
+                methods: vec![],
+                extends: None,
+                imports: vec![],
             },
         );
         Registry::from_parts(vec![o], None, HashMap::new())
@@ -2842,5 +2941,73 @@ mod tests {
             "expected Enum(repr=2), got {:?}",
             nodes[1].value
         );
+    }
+
+    #[test]
+    fn interface_typed_hidl_param_decodes_as_ibinder() {
+        // a method with `generates (ICallback cb)` where ICallback is a known interface.
+        // the cb param must decode as a Binder node, and a following primitive also decodes.
+        let reg = reg_with_interface("x.y@1.0::ICallback");
+        let m = method(vec![
+            in_param("cb", TypeRef::UserDefined("x.y@1.0::ICallback".into())),
+            in_param("code", TypeRef::Primitive(Prim::I32)),
+        ]);
+        // flat_binder_object (HANDLE, handle=5) at offset 0, then i32=99
+        let mut buf = binder_object::HANDLE.to_le_bytes().to_vec();
+        buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+        buf.extend_from_slice(&5u64.to_le_bytes()); // handle
+        buf.extend_from_slice(&0u64.to_le_bytes()); // cookie
+        buf.extend_from_slice(&99i32.to_le_bytes()); // code
+        let offsets = 0u64.to_le_bytes().to_vec();
+        let nodes = decode_hidl_params(&reg, 34, &m, &buf, 0, &offsets, &[], &[], None);
+        assert_eq!(nodes.len(), 2, "expected two nodes, got {nodes:?}");
+        assert_eq!(nodes[0].name, "cb");
+        assert!(
+            matches!(
+                nodes[0].value,
+                DecodedValue::Binder {
+                    handle: 5,
+                    strong: false
+                }
+            ),
+            "expected Binder{{handle:5,strong:false}}, got {:?}",
+            nodes[0].value
+        );
+        assert_eq!(nodes[1].name, "code");
+        assert!(matches!(nodes[1].value, DecodedValue::I64(99)));
+    }
+
+    #[test]
+    fn bare_interface_name_resolves_and_decodes_as_ibinder() {
+        // a bare "ICallback" in a HIDL method that is resolved via candidate_pkgs.
+        // resolve_user_type finds the interface in the package and returns TypeRef::IBinder.
+        let reg = reg_with_interface("x.y@1.0::ICallback");
+        let m = method(vec![
+            in_param("cb", TypeRef::UserDefined("ICallback".into())),
+            in_param("code", TypeRef::Primitive(Prim::I32)),
+        ]);
+        let mut buf = binder_object::HANDLE.to_le_bytes().to_vec();
+        buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+        buf.extend_from_slice(&3u64.to_le_bytes()); // handle
+        buf.extend_from_slice(&0u64.to_le_bytes()); // cookie
+        buf.extend_from_slice(&7i32.to_le_bytes()); // code
+        let offsets = 0u64.to_le_bytes().to_vec();
+        let pkgs = vec!["x.y@1.0".to_string()];
+        let nodes = decode_hidl_params(&reg, 34, &m, &buf, 0, &offsets, &[], &pkgs, None);
+        assert_eq!(nodes.len(), 2, "expected two nodes, got {nodes:?}");
+        assert_eq!(nodes[0].name, "cb");
+        assert!(
+            matches!(
+                nodes[0].value,
+                DecodedValue::Binder {
+                    handle: 3,
+                    strong: false
+                }
+            ),
+            "expected Binder, got {:?}",
+            nodes[0].value
+        );
+        assert_eq!(nodes[1].name, "code");
+        assert!(matches!(nodes[1].value, DecodedValue::I64(7)));
     }
 }

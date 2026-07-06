@@ -13,7 +13,7 @@
 
 use crate::decode_status;
 use crate::header_fields_manager::HeaderFieldsManager;
-use binderdump_aidl::decode::{decode_aidl_reply, decode_native_reply};
+use binderdump_aidl::decode::{decode_aidl_reply, decode_native_reply, ParcelCursor};
 use binderdump_aidl::decode_hidl::{decode_hidl_params, decode_hidl_reply};
 use binderdump_aidl::{decode_aidl_params, DecodedNode, DecodedValue};
 use binderdump_epan_sys::epan;
@@ -90,6 +90,65 @@ pub fn dissect_transaction_data(
             return Ok(());
         };
         let Some(method) = state.method else {
+            // INTERFACE_TRANSACTION (getInterfaceDescriptor) carries no resolved Method because
+            // the kernel handles it as a special transaction code rather than an AIDL interface
+            // method. The reply payload is a bare String16 at offset 0 — the interface descriptor.
+            // HIDL uses a different string wire format (hidl_string fat pointer), so skip it there.
+            if state.method_name.as_deref() == Some("INTERFACE_TRANSACTION") && !state.is_hidl {
+                let iface = state.interface.as_deref().unwrap_or("unknown");
+                let mut cur = ParcelCursor::new(&txn.data, 0);
+                if let Some(s) = cur.read_string16() {
+                    let slen = cur.pos;
+                    let descriptor_node = DecodedNode {
+                        name: "descriptor".to_string(),
+                        type_label: "String".to_string(),
+                        start: 0,
+                        len: slen,
+                        value: DecodedValue::Str(s),
+                        children: vec![],
+                    };
+                    let sub = open_subtree(manager, tree, tvb, off, len, "Reply");
+                    render_value(
+                        manager,
+                        sub,
+                        tvb,
+                        data_off,
+                        iface,
+                        "INTERFACE_TRANSACTION",
+                        "descriptor",
+                        &descriptor_node,
+                    )?;
+                    let undecoded = txn.data.len().saturating_sub(slen);
+                    let input = decode_status::StatusInput {
+                        method_source: "aosp",
+                        is_hwbinder: false,
+                        interface: state.interface.as_deref(),
+                        method_name: Some("INTERFACE_TRANSACTION"),
+                        sdk: event.android_sdk(),
+                        code: txn.code,
+                        is_reply: true,
+                        reply_correlated: true,
+                        reply_method_known: true,
+                        decoded_params: 1,
+                        raw_tail_reason: None,
+                        undecoded_bytes: undecoded,
+                        payload_decoder_missing: false,
+                    };
+                    if let Some(status) = decode_status::build_status(&input) {
+                        decode_status::emit(
+                            manager,
+                            tree,
+                            tvb as *mut _,
+                            pinfo,
+                            off,
+                            len,
+                            &status,
+                        )?;
+                    }
+                    return Ok(());
+                }
+                // short/garbled payload: fall through to the "method unknown" status
+            }
             let input = decode_status::StatusInput {
                 method_source: "aosp",
                 is_hwbinder: false,

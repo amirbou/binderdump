@@ -358,6 +358,7 @@ mod tests {
                 // code 1 = ON_DISCONNECT (onFrameAvailable is code 2)
                 ("android.gui.IConsumerListener", 1u32, "onDisconnect"),
                 ("android.gui.IGraphicBufferConsumer", 1, "acquireBuffer"),
+                ("android.gui.IGraphicBufferProducer", 1, "requestBuffer"),
                 (
                     "android.gui.ITransactionComposerListener",
                     1,
@@ -2572,6 +2573,133 @@ mod tests {
             r.interfaces[0].imports,
         );
     }
+
+    #[test]
+    fn is_interface_true_for_overlay_interface() {
+        let mut overlay = OverlayLayer {
+            source_path: "t".into(),
+            interfaces: Default::default(),
+            enums: Default::default(),
+            parcelables: Default::default(),
+            unions: Default::default(),
+            typedefs: Default::default(),
+        };
+        overlay
+            .interfaces
+            .insert("x.y.IFoo".into(), iface("x.y.IFoo", &["start"]));
+        let reg = Registry::from_parts(vec![overlay], None, HashMap::new());
+        assert!(reg.is_interface(34, "x.y.IFoo"));
+        assert!(!reg.is_interface(34, "x.y.IBar")); // unknown
+    }
+
+    #[test]
+    fn is_interface_false_for_parcelable_and_enum() {
+        use crate::model::{Parcelable, Prim};
+        let mut overlay = OverlayLayer {
+            source_path: "t".into(),
+            interfaces: Default::default(),
+            enums: Default::default(),
+            parcelables: Default::default(),
+            unions: Default::default(),
+            typedefs: Default::default(),
+        };
+        overlay.parcelables.insert(
+            "a.b.P".into(),
+            Parcelable {
+                fqn: "a.b.P".into(),
+                fields: vec![],
+            },
+        );
+        overlay.enums.insert(
+            "a.b.E".into(),
+            EnumDef {
+                fqn: "a.b.E".into(),
+                backing: Prim::I32,
+                consts: vec![],
+            },
+        );
+        let reg = Registry::from_parts(vec![overlay], None, HashMap::new());
+        assert!(!reg.is_interface(34, "a.b.P"));
+        assert!(!reg.is_interface(34, "a.b.E"));
+    }
+
+    #[test]
+    fn is_interface_true_for_native_corpus_interface() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let native_dir = repo_root.join("data/native");
+        let reg = Registry::empty().with_native_dir(&native_dir);
+        assert!(reg.is_interface(34, "android.gui.IConsumerListener"));
+        assert!(reg.is_interface(34, "android.gui.SensorServer"));
+        // a parcelable fqn should not be detected as an interface
+        assert!(!reg.is_interface(34, "no.such.IDoesNotExist"));
+    }
+
+    #[test]
+    fn resolve_user_type_returns_ibinder_for_interface() {
+        use crate::model::TypeRef;
+        let mut overlay = OverlayLayer {
+            source_path: "t".into(),
+            interfaces: Default::default(),
+            enums: Default::default(),
+            parcelables: Default::default(),
+            unions: Default::default(),
+            typedefs: Default::default(),
+        };
+        // simulate a HIDL package with an interface ICallback
+        overlay.interfaces.insert(
+            "x.y@1.0::ICallback".into(),
+            iface("x.y@1.0::ICallback", &["f"]),
+        );
+        let reg = Registry::from_parts(vec![overlay], None, HashMap::new());
+        let pkgs = vec!["x.y@1.0".to_string()];
+        let resolved = reg.resolve_user_type(34, "ICallback", &pkgs);
+        assert_eq!(resolved, Some(TypeRef::IBinder));
+    }
+
+    #[test]
+    fn aidl_path_rank_ordering() {
+        use std::path::Path;
+        // live source beats current, current beats higher version, higher beats lower
+        let live = Path::new("android-35/aidl/hardware/IFoo.aidl");
+        let current = Path::new("android-35/aidl_api/current/hardware/IFoo.aidl");
+        let v2 = Path::new("android-35/aidl_api/2/hardware/IFoo.aidl");
+        let v1 = Path::new("android-35/aidl_api/1/hardware/IFoo.aidl");
+        assert!(aidl_path_rank(live) > aidl_path_rank(current));
+        assert!(aidl_path_rank(current) > aidl_path_rank(v2));
+        assert!(aidl_path_rank(v2) > aidl_path_rank(v1));
+    }
+
+    #[test]
+    fn populate_fqn_index_prefers_live_over_frozen() {
+        let tmp = TempDir::new();
+        let sdk_dir = tmp.path().join("android-34");
+
+        // live source: two methods
+        let live_dir = sdk_dir.join("aidl/p");
+        std::fs::create_dir_all(&live_dir).unwrap();
+        std::fs::write(
+            live_dir.join("IFoo.aidl"),
+            "package p; interface IFoo { void methodA() = 1; void methodB() = 2; }",
+        )
+        .unwrap();
+
+        // frozen v1: only one method
+        let frozen_dir = sdk_dir.join("aidl_api/1/p");
+        std::fs::create_dir_all(&frozen_dir).unwrap();
+        std::fs::write(
+            frozen_dir.join("IFoo.aidl"),
+            "package p; interface IFoo { void methodA() = 1; }",
+        )
+        .unwrap();
+
+        let reg = Registry::with_aosp_dir(tmp.path().to_path_buf());
+
+        // code 2 (methodB) must resolve — only possible if live source was indexed
+        match reg.resolve(34, "p.IFoo", 2) {
+            Lookup::Hit { method, .. } => assert_eq!(method.name, "methodB"),
+            other => panic!("expected Hit for methodB, got {:?}", other),
+        }
+    }
 }
 
 use crate::model::{EnumDef, Interface, Method, OverlayLayer, Parcelable, TypeRef, Union};
@@ -2633,6 +2761,29 @@ pub struct Registry {
     /// (sdk, pkg@ver::IFaceName) pairs whose .hal interface file has been scanned for
     /// nested types (enums and structs declared inside the interface body).
     iface_hal_scanned: RwLock<HashSet<(u32, String)>>,
+}
+
+// rank for aidl path priority: higher = preferred when the same fqn appears in multiple files.
+// non-aidl_api paths (live source) = i32::MAX, aidl_api/current = i32::MAX-1,
+// aidl_api/<N> = N (so higher version beats lower).
+fn aidl_path_rank(path: &std::path::Path) -> i32 {
+    let mut components = path.components();
+    while let Some(c) = components.next() {
+        if c.as_os_str() == "aidl_api" {
+            return match components.next() {
+                Some(v) => {
+                    let s = v.as_os_str().to_string_lossy();
+                    if s == "current" {
+                        i32::MAX - 1
+                    } else {
+                        s.parse::<i32>().unwrap_or(0)
+                    }
+                }
+                None => 0,
+            };
+        }
+    }
+    i32::MAX
 }
 
 impl Registry {
@@ -2867,8 +3018,16 @@ impl Registry {
             };
             match ext {
                 "aidl" => {
+                    let new_rank = aidl_path_rank(path);
                     for fqn in crate::aosp_layout::aidl_interfaces_in(&src) {
-                        entries.entry(fqn).or_insert_with(|| path.to_path_buf());
+                        entries
+                            .entry(fqn)
+                            .and_modify(|existing| {
+                                if new_rank > aidl_path_rank(existing) {
+                                    *existing = path.to_path_buf();
+                                }
+                            })
+                            .or_insert_with(|| path.to_path_buf());
                     }
                 }
                 "hal" => {
@@ -3109,11 +3268,33 @@ impl Registry {
         None
     }
 
+    // true if `fqn` names a known interface in the corpus (overlay, aosp lazy, or native).
+    // used to detect interface-typed params/returns and decode them as IBinder flat_binder_objects.
+    pub fn is_interface(&self, sdk: u32, fqn: &str) -> bool {
+        for overlay in self.overlays.iter().rev() {
+            if overlay.interfaces.contains_key(fqn) {
+                return true;
+            }
+        }
+        if self.aosp_root.is_some() && self.lazy_resolve_recursive(sdk, fqn).is_some() {
+            return true;
+        }
+        if let Some(layers) = self.native_layers.get(&sdk) {
+            for layer in layers.iter() {
+                if layer.interfaces.contains_key(fqn) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Resolve a bare (unqualified) HIDL type name against an ordered list of
     /// candidate packages. `candidate_pkgs` should include the current package
     /// first, then any explicitly imported packages from the interface definition.
     /// Returns the resolved TypeRef: a primitive for typedefs, or a fully-qualified
-    /// UserDefined fqn for enums and parcelables. Returns None if not found.
+    /// UserDefined fqn for enums and parcelables, or IBinder for interfaces. Returns
+    /// None if not found.
     pub fn resolve_user_type(
         &self,
         sdk: u32,
@@ -3133,6 +3314,10 @@ impl Registry {
             // parcelable/struct: same
             if self.parcelable_def(sdk, &qualified).is_some() {
                 return Some(TypeRef::UserDefined(qualified));
+            }
+            // interface: written inline as a flat_binder_object
+            if self.is_interface(sdk, &qualified) {
+                return Some(TypeRef::IBinder);
             }
         }
         None
