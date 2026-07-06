@@ -358,6 +358,7 @@ mod tests {
                 // code 1 = ON_DISCONNECT (onFrameAvailable is code 2)
                 ("android.gui.IConsumerListener", 1u32, "onDisconnect"),
                 ("android.gui.IGraphicBufferConsumer", 1, "acquireBuffer"),
+                ("android.gui.IGraphicBufferProducer", 1, "requestBuffer"),
                 (
                     "android.gui.ITransactionComposerListener",
                     1,
