@@ -2654,6 +2654,51 @@ mod tests {
         let resolved = reg.resolve_user_type(34, "ICallback", &pkgs);
         assert_eq!(resolved, Some(TypeRef::IBinder));
     }
+
+    #[test]
+    fn aidl_path_rank_ordering() {
+        use std::path::Path;
+        // live source beats current, current beats higher version, higher beats lower
+        let live = Path::new("android-35/aidl/hardware/IFoo.aidl");
+        let current = Path::new("android-35/aidl_api/current/hardware/IFoo.aidl");
+        let v2 = Path::new("android-35/aidl_api/2/hardware/IFoo.aidl");
+        let v1 = Path::new("android-35/aidl_api/1/hardware/IFoo.aidl");
+        assert!(aidl_path_rank(live) > aidl_path_rank(current));
+        assert!(aidl_path_rank(current) > aidl_path_rank(v2));
+        assert!(aidl_path_rank(v2) > aidl_path_rank(v1));
+    }
+
+    #[test]
+    fn populate_fqn_index_prefers_live_over_frozen() {
+        let tmp = TempDir::new();
+        let sdk_dir = tmp.path().join("android-34");
+
+        // live source: two methods
+        let live_dir = sdk_dir.join("aidl/p");
+        std::fs::create_dir_all(&live_dir).unwrap();
+        std::fs::write(
+            live_dir.join("IFoo.aidl"),
+            "package p; interface IFoo { void methodA() = 1; void methodB() = 2; }",
+        )
+        .unwrap();
+
+        // frozen v1: only one method
+        let frozen_dir = sdk_dir.join("aidl_api/1/p");
+        std::fs::create_dir_all(&frozen_dir).unwrap();
+        std::fs::write(
+            frozen_dir.join("IFoo.aidl"),
+            "package p; interface IFoo { void methodA() = 1; }",
+        )
+        .unwrap();
+
+        let reg = Registry::with_aosp_dir(tmp.path().to_path_buf());
+
+        // code 2 (methodB) must resolve — only possible if live source was indexed
+        match reg.resolve(34, "p.IFoo", 2) {
+            Lookup::Hit { method, .. } => assert_eq!(method.name, "methodB"),
+            other => panic!("expected Hit for methodB, got {:?}", other),
+        }
+    }
 }
 
 use crate::model::{EnumDef, Interface, Method, OverlayLayer, Parcelable, TypeRef, Union};
@@ -2715,6 +2760,29 @@ pub struct Registry {
     /// (sdk, pkg@ver::IFaceName) pairs whose .hal interface file has been scanned for
     /// nested types (enums and structs declared inside the interface body).
     iface_hal_scanned: RwLock<HashSet<(u32, String)>>,
+}
+
+// rank for aidl path priority: higher = preferred when the same fqn appears in multiple files.
+// non-aidl_api paths (live source) = i32::MAX, aidl_api/current = i32::MAX-1,
+// aidl_api/<N> = N (so higher version beats lower).
+fn aidl_path_rank(path: &std::path::Path) -> i32 {
+    let mut components = path.components();
+    while let Some(c) = components.next() {
+        if c.as_os_str() == "aidl_api" {
+            return match components.next() {
+                Some(v) => {
+                    let s = v.as_os_str().to_string_lossy();
+                    if s == "current" {
+                        i32::MAX - 1
+                    } else {
+                        s.parse::<i32>().unwrap_or(0)
+                    }
+                }
+                None => 0,
+            };
+        }
+    }
+    i32::MAX
 }
 
 impl Registry {
@@ -2949,8 +3017,16 @@ impl Registry {
             };
             match ext {
                 "aidl" => {
+                    let new_rank = aidl_path_rank(path);
                     for fqn in crate::aosp_layout::aidl_interfaces_in(&src) {
-                        entries.entry(fqn).or_insert_with(|| path.to_path_buf());
+                        entries
+                            .entry(fqn)
+                            .and_modify(|existing| {
+                                if new_rank > aidl_path_rank(existing) {
+                                    *existing = path.to_path_buf();
+                                }
+                            })
+                            .or_insert_with(|| path.to_path_buf());
                     }
                 }
                 "hal" => {
