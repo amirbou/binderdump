@@ -12,6 +12,11 @@
 //   SYSPROPS_TRANSACTION      = '_SPR'
 //   EXTENSION_TRANSACTION     = '_EXT'
 //   TWEET_TRANSACTION         = '_TWT'
+// GetHalToken is not an IBinder.h code — it's from system/libhidl
+// transport/token/1.0/utils/include/hidl/HybridInterface.h:
+//   DEFAULT_GET_HAL_TOKEN_TRANSACTION_CODE = '_GHT'
+// sent to a HIDL hybrid interface (e.g. IGraphicBufferProducer) to fetch the
+// underlying HAL token.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpecialTxn {
     Ping,
@@ -21,6 +26,7 @@ pub enum SpecialTxn {
     Sysprops,
     Extension,
     Tweet,
+    GetHalToken,
 }
 
 pub fn lookup_special(code: u32) -> Option<SpecialTxn> {
@@ -32,6 +38,7 @@ pub fn lookup_special(code: u32) -> Option<SpecialTxn> {
         0x5f535052 => Some(SpecialTxn::Sysprops),
         0x5f455854 => Some(SpecialTxn::Extension),
         0x5f545754 => Some(SpecialTxn::Tweet),
+        0x5f474854 => Some(SpecialTxn::GetHalToken),
         _ => None,
     }
 }
@@ -45,6 +52,7 @@ pub fn special_method_name(s: SpecialTxn) -> &'static str {
         SpecialTxn::Sysprops => "SYSPROPS_TRANSACTION",
         SpecialTxn::Extension => "EXTENSION_TRANSACTION",
         SpecialTxn::Tweet => "TWEET_TRANSACTION",
+        SpecialTxn::GetHalToken => "DEFAULT_GET_HAL_TOKEN_TRANSACTION_CODE",
     }
 }
 
@@ -52,7 +60,7 @@ pub fn special_method_name(s: SpecialTxn) -> &'static str {
 // path recognise an interface-agnostic transaction from the resolved name when
 // the original transaction code isn't on hand.
 pub fn is_special_method_name(name: &str) -> bool {
-    const ALL: [SpecialTxn; 7] = [
+    const ALL: [SpecialTxn; 8] = [
         SpecialTxn::Ping,
         SpecialTxn::Dump,
         SpecialTxn::ShellCommand,
@@ -60,6 +68,7 @@ pub fn is_special_method_name(name: &str) -> bool {
         SpecialTxn::Sysprops,
         SpecialTxn::Extension,
         SpecialTxn::Tweet,
+        SpecialTxn::GetHalToken,
     ];
     ALL.iter().any(|&s| special_method_name(s) == name)
 }
@@ -102,6 +111,18 @@ mod tests {
     #[test]
     fn tweet_recognized() {
         assert_eq!(lookup_special(0x5f545754), Some(SpecialTxn::Tweet));
+    }
+    #[test]
+    fn get_hal_token_recognized() {
+        // '_GHT' = 1598507092, seen on IGraphicBufferProducer hybrid interfaces.
+        assert_eq!(lookup_special(0x5f474854), Some(SpecialTxn::GetHalToken));
+        assert_eq!(
+            special_method_name(SpecialTxn::GetHalToken),
+            "DEFAULT_GET_HAL_TOKEN_TRANSACTION_CODE"
+        );
+        assert!(is_special_method_name(
+            "DEFAULT_GET_HAL_TOKEN_TRANSACTION_CODE"
+        ));
     }
     #[test]
     fn first_call_not_special() {
@@ -373,6 +394,48 @@ mod tests {
                     }
                     other => panic!("expected hit for sdk={sdk} fqn={fqn}, got {:?}", other),
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn bundled_native_corpus_resolves_listener_and_provider() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let native_dir = repo_root.join("data/native");
+        let reg = Registry::empty().with_native_dir(&native_dir);
+        for sdk in [33u32, 34u32, 35u32, 36u32, 37u32] {
+            for (fqn, code, expected) in [
+                ("android.gui.IProducerListener", 1u32, "onBufferReleased"),
+                ("android.gui.IProducerListener", 3, "onBuffersDiscarded"),
+                // non-contiguous: code 21 = call, code 32 = getTypeAnonymousAsync
+                ("android.content.IContentProvider", 1, "query"),
+                ("android.content.IContentProvider", 21, "call"),
+                (
+                    "android.content.IContentProvider",
+                    32,
+                    "getTypeAnonymousAsync",
+                ),
+                ("android.content.IBulkCursor", 4, "onMove"),
+                ("android.content.IBulkCursor", 7, "close"),
+            ] {
+                match reg.resolve(sdk, fqn, code) {
+                    Lookup::Hit { method, source } => {
+                        assert_eq!(method.name, expected, "sdk={sdk} fqn={fqn} code={code}");
+                        assert!(matches!(source, Source::Native));
+                    }
+                    other => panic!(
+                        "expected Native hit for sdk={sdk} fqn={fqn} code={code}, got {:?}",
+                        other
+                    ),
+                }
+            }
+        }
+        // IJankListener is an Android-16 interface backported on QPR devices;
+        // kept across the native SDK set for uniform resolution.
+        for sdk in [33u32, 34u32, 35u32, 36u32, 37u32] {
+            match reg.resolve(sdk, "android.gui.IJankListener", 1) {
+                Lookup::Hit { method, .. } => assert_eq!(method.name, "onJankData", "sdk={sdk}"),
+                other => panic!("expected hit for IJankListener sdk={sdk}, got {:?}", other),
             }
         }
     }

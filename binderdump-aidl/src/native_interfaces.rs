@@ -18,10 +18,14 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 
 const FQNS: &[&str] = &[
+    "android.content.IBulkCursor",
+    "android.content.IContentProvider",
     "android.graphicsenv.IGpuService",
     "android.gui.IConsumerListener",
     "android.gui.IGraphicBufferConsumer",
     "android.gui.IGraphicBufferProducer",
+    "android.gui.IJankListener",
+    "android.gui.IProducerListener",
     "android.gui.ITransactionComposerListener",
     "android.gui.SensorEventConnection",
     "android.gui.SensorServer",
