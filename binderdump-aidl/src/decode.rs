@@ -397,12 +397,31 @@ fn decode_exception(cur: &mut ParcelCursor, code: i32) -> Vec<DecodedNode> {
 }
 
 // true if a method has a real return value (void parses to UserDefined("void")).
-fn has_return_value(method: &Method) -> bool {
+pub fn has_return_value(method: &Method) -> bool {
     match &method.return_type {
         None => false,
         Some(TypeRef::UserDefined(s)) if s == "void" => false,
         Some(_) => true,
     }
+}
+
+// true if a request carries no inbound payload — the method declares no In/InOut
+// params, so an empty Parameters region is expected, not a decode failure.
+pub fn takes_no_input_params(method: &Method) -> bool {
+    !method
+        .params
+        .iter()
+        .any(|p| matches!(p.direction, Direction::In | Direction::InOut))
+}
+
+// true if a reply carries no return payload — the method returns void and has no
+// Out/InOut params, so an empty Reply region is expected, not a decode failure.
+pub fn produces_no_reply_data(method: &Method) -> bool {
+    !has_return_value(method)
+        && !method
+            .params
+            .iter()
+            .any(|p| matches!(p.direction, Direction::Out | Direction::InOut))
 }
 
 // decode an AIDL reply: status header, then on success the return value followed by
@@ -1791,6 +1810,41 @@ mod tests {
             oneway: false,
             code: None,
         }
+    }
+
+    #[test]
+    fn no_param_void_method_reads_empty() {
+        let mut m = method(vec![]);
+        m.return_type = Some(TypeRef::UserDefined("void".into()));
+        assert!(takes_no_input_params(&m));
+        assert!(produces_no_reply_data(&m));
+    }
+
+    #[test]
+    fn out_only_method_has_no_input_but_has_reply() {
+        let mut m = method(vec![out_param("y", TypeRef::Primitive(Prim::I32))]);
+        m.return_type = None; // void return, but an out param flows back
+        assert!(takes_no_input_params(&m));
+        assert!(!produces_no_reply_data(&m)); // the out param is reply data
+    }
+
+    #[test]
+    fn method_with_in_param_and_return_is_neither() {
+        let mut m = method(vec![in_param("x", TypeRef::Primitive(Prim::I32))]);
+        m.return_type = Some(TypeRef::Primitive(Prim::I32));
+        assert!(!takes_no_input_params(&m));
+        assert!(!produces_no_reply_data(&m));
+    }
+
+    #[test]
+    fn inout_param_counts_as_both_input_and_reply() {
+        let m = method(vec![Parameter {
+            name: "io".into(),
+            ty: TypeRef::Primitive(Prim::I32),
+            direction: Direction::InOut,
+        }]);
+        assert!(!takes_no_input_params(&m));
+        assert!(!produces_no_reply_data(&m));
     }
 
     #[test]

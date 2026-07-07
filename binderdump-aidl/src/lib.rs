@@ -15,6 +15,8 @@ pub mod parser;
 pub mod registry;
 pub mod token;
 
-pub use decode::{decode_aidl_params, DecodedNode, DecodedValue};
+pub use decode::{
+    decode_aidl_params, produces_no_reply_data, takes_no_input_params, DecodedNode, DecodedValue,
+};
 pub use model::{Direction, Flavor, Interface, Method, Parameter, Prim, TypeRef};
 pub use registry::{Lookup, Registry, Source};
