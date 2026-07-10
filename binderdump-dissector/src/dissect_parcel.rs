@@ -15,7 +15,9 @@ use crate::decode_status;
 use crate::header_fields_manager::HeaderFieldsManager;
 use binderdump_aidl::decode::{decode_aidl_reply, decode_native_reply, ParcelCursor};
 use binderdump_aidl::decode_hidl::{decode_hidl_params, decode_hidl_reply};
-use binderdump_aidl::{decode_aidl_params, DecodedNode, DecodedValue};
+use binderdump_aidl::{
+    decode_aidl_params, produces_no_reply_data, takes_no_input_params, DecodedNode, DecodedValue,
+};
 use binderdump_epan_sys::epan;
 use binderdump_structs::binder_serde::FieldOffset;
 use binderdump_structs::binder_types::BinderInterface;
@@ -222,6 +224,20 @@ pub fn dissect_transaction_data(
                     node,
                 )?;
             }
+        } else if !state.is_hidl && !state.is_native && produces_no_reply_data(method) {
+            // resolved AIDL method that returns nothing — mark it so the empty
+            // Reply region isn't mistaken for a decode failure. Gated to real
+            // AIDL: native synthetic corpus uses opaque `void name()` stubs where
+            // an empty signature means "unmodeled", not "no return value", and
+            // "returns void" is AIDL phrasing.
+            open_subtree(
+                manager,
+                tree,
+                tvb,
+                off,
+                len,
+                "Return value: none (method returns void)",
+            );
         }
         let (decoded_params, raw_tail_reason, tail_bytes) = decode_stats(&nodes, txn.data.len());
         let input = decode_status::StatusInput {
@@ -338,6 +354,19 @@ pub fn dissect_transaction_data(
                 node,
             )?;
         }
+    } else if !r.is_hidl && r.method_source != "native" && takes_no_input_params(method) {
+        // resolved AIDL method that takes no arguments — mark it so the empty
+        // Parameters region isn't mistaken for a decode failure. Gated to real
+        // AIDL (aosp/overlay): native synthetic corpus uses opaque `void name()`
+        // stubs where an empty signature means "unmodeled", not "no arguments".
+        open_subtree(
+            manager,
+            tree,
+            tvb,
+            off,
+            len,
+            "Parameters: none (method takes no parameters)",
+        );
     }
 
     // status: stub (0 params + leftover) or raw-tail partial.
