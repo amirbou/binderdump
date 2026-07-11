@@ -83,8 +83,18 @@ jobs:
           if-no-files-found: error
 
   dissector:
-    name: build dissector (host)
+    name: build dissector (Wireshark ${{ matrix.wireshark }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # An epan plugin is ABI-locked to a Wireshark major.minor, so ship one .so
+        # per supported version (the artifact name carries the version, and the
+        # plugin refuses to load into a mismatched Wireshark). Add a version by
+        # appending an entry with a source that provides its libwireshark-dev.
+        include:
+          - wireshark: stable
+            ppa: ppa:wireshark-dev/stable
     steps:
       - uses: actions/checkout@v4
 
@@ -92,29 +102,31 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu
 
-      - name: Install Wireshark 4.6 dev headers
+      - name: Install Wireshark dev headers (${{ matrix.wireshark }})
         run: |
-          sudo add-apt-repository -y ppa:wireshark-dev/stable
+          sudo add-apt-repository -y ${{ matrix.ppa }}
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libwireshark-dev libglib2.0-dev
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: release-dissector
+          shared-key: release-dissector-${{ matrix.wireshark }}
 
       - name: Build
         run: cargo build --release -p binderdump-dissector --target x86_64-unknown-linux-gnu
 
-      - name: Stage artifact
+      - name: Stage artifact (Wireshark-version-named)
         run: |
           set -euo pipefail
           mkdir dist
+          # major.minor the plugin was built against — the version it will load into.
+          ws=$(pkg-config --modversion wireshark | cut -d. -f1,2)
           cp target/x86_64-unknown-linux-gnu/release/libbinderdump_dissector.so \
-             dist/libbinderdump-${{ github.ref_name }}-x86_64-linux-gnu.so
+             "dist/libbinderdump-${{ github.ref_name }}-ws${ws}-x86_64-linux-gnu.so"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: libbinderdump
+          name: libbinderdump-${{ matrix.wireshark }}
           path: dist/*
           if-no-files-found: error
 
