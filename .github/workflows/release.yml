@@ -142,11 +142,12 @@ jobs:
           tar czf "../../dist/binderdump-aidl-corpus-${{ github.ref_name }}-all.tgz" \
             aosp native
 
-      - name: Stage installer + Wireshark profile
+      - name: Stage installer + Wireshark profile + extcap
         run: |
           set -euo pipefail
           cp scripts/install_dissector.sh dist/install_dissector.sh
-          chmod +x dist/install_dissector.sh
+          cp extcap/binderdump-extcap dist/binderdump-extcap
+          chmod +x dist/install_dissector.sh dist/binderdump-extcap
           tar czf "dist/binderdump-wireshark-profile-${{ github.ref_name }}.tgz" \
             -C wireshark/profiles binderdump
 
