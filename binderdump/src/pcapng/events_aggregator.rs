@@ -61,17 +61,6 @@ impl EventsAggregator {
         }
     }
 
-    // Create a EventsAggregator that finishes the iteration if `timeout` has passed without any events being produced.
-    pub fn with_timeout(channel: EventChannel, timeout: Duration) -> Self {
-        Self {
-            channel,
-            ongoing_events: HashMap::new(),
-            current_ioctl_id: 0,
-            timeout: Some(timeout),
-            deadline: None,
-        }
-    }
-
     // Stop iteration once `deadline` is reached (absolute Instant).
     pub fn set_deadline(&mut self, deadline: Instant) {
         self.deadline = Some(deadline);

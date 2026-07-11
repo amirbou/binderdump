@@ -190,6 +190,7 @@ impl State {
         t.req_cmdline.as_deref().map(|c| (t.req_tid, c.to_owned()))
     }
 
+    #[cfg(test)]
     fn stream_index_for_anchor(&self, anchor: i32) -> Option<u32> {
         self.stream_index_by_anchor.get(&anchor).copied()
     }

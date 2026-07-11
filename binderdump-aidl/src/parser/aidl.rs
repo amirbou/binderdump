@@ -903,7 +903,6 @@ enum Token {
     Ident(String),
     Punct(char),
     Keyword(&'static str),
-    StrLit(String),
     NumLit(String),
     AtSymbol,
 }

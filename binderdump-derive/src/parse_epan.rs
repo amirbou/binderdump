@@ -5,18 +5,6 @@ use binderdump_trait::FtEnum;
 use proc_macro2::{Span, TokenStream};
 use syn::parse::{Error, Parse, ParseStream, Result};
 use syn::{parenthesized, token, Data, DeriveInput, Fields, Ident, Meta};
-pub enum ContainerAttr {
-    Name(syn::LitStr),
-}
-
-impl Debug for ContainerAttr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Name(arg0) => f.debug_tuple("Name").field(&arg0.value()).finish(),
-        }
-    }
-}
-
 #[derive(Default)]
 pub struct FieldAttrs {
     pub name: Option<syn::LitStr>,
@@ -128,7 +116,6 @@ impl TryFrom<&syn::Field> for ParsedField {
 
 pub struct StructCtx {
     pub input: DeriveInput,
-    pub container_attrs: Vec<ContainerAttr>,
     pub fields: Vec<ParsedField>,
 }
 
@@ -145,46 +132,8 @@ impl StructCtx {
         }
         Ok(Self {
             input,
-            container_attrs: vec![],
             fields: vec![],
         })
-    }
-
-    pub fn parse_container(&mut self) -> Result<()> {
-        for attr in &self.input.attrs {
-            if !attr.path().is_ident("epan") {
-                continue;
-            }
-
-            if let syn::Meta::List(meta) = &attr.meta {
-                if meta.tokens.is_empty() {
-                    continue;
-                }
-            }
-
-            attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("name") {
-                    // #[epan(name = "foo")]
-                    let s = get_string_literal("name", &meta)?;
-                    if self
-                        .container_attrs
-                        .iter()
-                        .any(|s| matches!(s, ContainerAttr::Name(_)))
-                    {
-                        return Err(error_spanned_by(
-                            attr,
-                            "#[epan(name = \"...\")] attribute specified more than once",
-                        ));
-                    }
-                    self.container_attrs.push(ContainerAttr::Name(s))
-                } else {
-                    return Err(error_spanned_by(attr, "Unknown attribute"));
-                }
-                Ok(())
-            })?;
-        }
-
-        Ok(())
     }
 
     pub fn parse_fields(&mut self) -> Result<()> {
