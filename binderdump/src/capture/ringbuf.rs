@@ -3,7 +3,7 @@ use super::{events, tracepoints::binder::BinderSkel};
 use anyhow::{Context, Result};
 use ctrlc;
 use libbpf_rs::RingBufferBuilder;
-use log::{error, warn};
+use log::{debug, error, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
@@ -27,7 +27,7 @@ impl Drop for EventChannel {
         let thread = self.consumer_thread.take();
         if let Some(handle) = thread {
             handle.join().expect("Failed to join with events thread");
-            println!("Joined with events thread");
+            debug!("Joined with events thread");
         }
     }
 }
@@ -72,7 +72,7 @@ pub fn create_events_channel(skel: &mut BinderSkel) -> Result<EventChannel> {
                 },
             }
         }
-        println!("Events thread exiting...");
+        debug!("Events thread exiting...");
     });
     let running_copy = running.clone();
     ctrlc::set_handler(move || {

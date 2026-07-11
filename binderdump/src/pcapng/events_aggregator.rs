@@ -99,7 +99,7 @@ impl EventsAggregator {
                 warn!("empty events?");
             }
         } else {
-            println!("split_events None");
+            warn!("split_events None");
         }
         events.map(|evts| evts.events)
     }
@@ -194,7 +194,7 @@ impl Iterator for EventsAggregator {
                     Some(events) => return Some(events),
                     None => continue,
                 },
-                Err(err) => println!("error handling new event: {:#?}", err),
+                Err(err) => error!("error handling new event: {:#?}", err),
             }
         }
     }
