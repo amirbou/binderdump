@@ -14,7 +14,13 @@ and reply.
 
 ### Use prebuilt binaries
 
-Grab the latest release: <https://github.com/amirbou/binderdump/releases>
+Grab the latest release: <https://github.com/amirbou/binderdump/releases>. Each
+release ships a `SHA256SUMS`; verify the downloads before running (the capture
+binary runs as root):
+
+```sh
+sha256sum -c SHA256SUMS   # in the directory holding the downloaded artifacts
+```
 
 ```sh
 # 1. on a host with adb access to a rooted device
