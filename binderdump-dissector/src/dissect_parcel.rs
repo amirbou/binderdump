@@ -84,6 +84,7 @@ pub fn dissect_transaction_data(
                 decoded_params: 0,
                 raw_tail_reason: None,
                 undecoded_bytes: 0,
+                trailing_bytes: 0,
                 payload_decoder_missing: false,
             };
             if let Some(status) = decode_status::build_status(&input) {
@@ -134,6 +135,7 @@ pub fn dissect_transaction_data(
                         decoded_params: 1,
                         raw_tail_reason: None,
                         undecoded_bytes: undecoded,
+                        trailing_bytes: 0,
                         payload_decoder_missing: false,
                     };
                     if let Some(status) = decode_status::build_status(&input) {
@@ -164,6 +166,7 @@ pub fn dissect_transaction_data(
                 decoded_params: 0,
                 raw_tail_reason: None,
                 undecoded_bytes: 0,
+                trailing_bytes: 0,
                 payload_decoder_missing: false,
             };
             if let Some(status) = decode_status::build_status(&input) {
@@ -241,8 +244,13 @@ pub fn dissect_transaction_data(
         }
         let (decoded_params, raw_tail_reason, tail_bytes) = decode_stats(&nodes, txn.data.len());
         let input = decode_status::StatusInput {
-            method_source: "aosp",
-            is_hwbinder: false,
+            // native synthetic replies are deliberately incomplete, so their trailing
+            // bytes are expected — surface the real source so the trailing check gates
+            // them out like the request path does.
+            method_source: if state.is_native { "native" } else { "aosp" },
+            // HIDL replies trail their scatter-gather buffer region; flag so the
+            // trailing-bytes check doesn't mistake that for a newer signature.
+            is_hwbinder: state.is_hidl,
             interface: None,
             method_name: None,
             sdk: event.android_sdk(),
@@ -252,7 +260,16 @@ pub fn dissect_transaction_data(
             reply_method_known: true,
             decoded_params,
             raw_tail_reason,
-            undecoded_bytes: tail_bytes,
+            undecoded_bytes: if raw_tail_reason.is_some() {
+                tail_bytes
+            } else {
+                0
+            },
+            trailing_bytes: if raw_tail_reason.is_none() {
+                tail_bytes
+            } else {
+                0
+            },
             payload_decoder_missing: false,
         };
         if let Some(status) = decode_status::build_status(&input) {
@@ -287,6 +304,7 @@ pub fn dissect_transaction_data(
             decoded_params: 0,
             raw_tail_reason: None,
             undecoded_bytes: 0,
+            trailing_bytes: 0,
             payload_decoder_missing: false,
         };
         if let Some(status) = decode_status::build_status(&input) {
@@ -398,6 +416,11 @@ pub fn dissect_transaction_data(
         decoded_params,
         raw_tail_reason,
         undecoded_bytes,
+        trailing_bytes: if raw_tail_reason.is_none() {
+            tail_bytes
+        } else {
+            0
+        },
         payload_decoder_missing,
     };
     if let Some(status) = decode_status::build_status(&input) {
@@ -456,6 +479,10 @@ fn assemble_ptr_payloads(raw: &[PtrPayload]) -> Vec<(u32, Vec<u8>)> {
 // only detects a trailing top-level RawTail. a field that truncates inside a
 // parcelable is resynced to its size boundary and surfaces as a Bytes child, so
 // such a frame currently reports no decode_status (known limitation).
+// (decoded_params, raw_tail_reason, tail_bytes). tail_bytes is the undecoded region
+// when a RawTail stopped decoding, and otherwise the bytes trailing past the last
+// cleanly-decoded node — a non-zero clean tail means the wire carried more than the
+// corpus signature models (a device newer than the base-release corpus).
 fn decode_stats<'a>(nodes: &'a [DecodedNode], data_len: usize) -> (usize, Option<&'a str>, usize) {
     if let Some(last) = nodes.last() {
         if let DecodedValue::RawTail { reason } = &last.value {
@@ -465,8 +492,13 @@ fn decode_stats<'a>(nodes: &'a [DecodedNode], data_len: usize) -> (usize, Option
                 data_len.saturating_sub(last.start),
             );
         }
+        return (
+            nodes.len(),
+            None,
+            data_len.saturating_sub(last.start + last.len),
+        );
     }
-    (nodes.len(), None, 0)
+    (0, None, 0)
 }
 
 // render one decoded node into the wireshark tree.
@@ -953,4 +985,67 @@ fn fqn_handle_enum(iface: &str, method: &str, leaf: &str, variants: &[(i64, Stri
     let h = *p_id;
     map.insert(abbrev, h);
     h
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_stats;
+    use binderdump_aidl::{DecodedNode, DecodedValue};
+
+    fn leaf(name: &str, start: usize, len: usize) -> DecodedNode {
+        DecodedNode {
+            name: name.to_string(),
+            type_label: "int".to_string(),
+            start,
+            len,
+            value: DecodedValue::I64(0),
+            children: vec![],
+        }
+    }
+
+    #[test]
+    fn decode_stats_reports_clean_trailing_from_node_end() {
+        // last node spans [8, 24) — a Parcelable whose len already covers its children.
+        // trailing must be measured from start+len (24), not start (8).
+        let parent = DecodedNode {
+            name: "p".to_string(),
+            type_label: "Parcelable".to_string(),
+            start: 8,
+            len: 16,
+            value: DecodedValue::Parcelable {
+                fqn: "X".to_string(),
+                null: false,
+            },
+            children: vec![leaf("f", 8, 4), leaf("g", 12, 4)],
+        };
+        let nodes = [leaf("a", 0, 8), parent];
+        let (n, tail_reason, tail) = decode_stats(&nodes, 32);
+        assert_eq!(n, 2);
+        assert!(tail_reason.is_none());
+        assert_eq!(tail, 8); // 32 - (8 + 16)
+    }
+
+    #[test]
+    fn decode_stats_raw_tail_reports_undecoded_region() {
+        let tail_node = DecodedNode {
+            name: "t".to_string(),
+            type_label: "RawTail".to_string(),
+            start: 12,
+            len: 0,
+            value: DecodedValue::RawTail {
+                reason: "stopped".to_string(),
+            },
+            children: vec![],
+        };
+        let nodes = [leaf("a", 0, 12), tail_node];
+        let (n, tail_reason, tail) = decode_stats(&nodes, 40);
+        assert_eq!(n, 1); // raw tail excluded from decoded count
+        assert_eq!(tail_reason, Some("stopped"));
+        assert_eq!(tail, 28); // 40 - 12
+    }
+
+    #[test]
+    fn decode_stats_empty_is_zero() {
+        assert_eq!(decode_stats(&[], 16), (0, None, 0));
+    }
 }
