@@ -5,6 +5,7 @@
 
 mod intent;
 mod layer_state;
+mod transaction_stats;
 
 pub(crate) use intent::intent_body;
 
@@ -26,6 +27,7 @@ pub fn decode(
         "Rect" => rect(cur, start, depth),
         "FrameTimelineInfo" => layer_state::frame_timeline_info(cur, start, depth),
         "ComposerState" | "layer_state_t" => layer_state::layer_state(sdk, cur, start, depth),
+        "ListenerStats" => transaction_stats::listener_stats(cur, start, depth),
         _ => None,
     }
 }

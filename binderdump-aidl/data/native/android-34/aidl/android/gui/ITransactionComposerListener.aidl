@@ -11,12 +11,14 @@
 //   ON_TRANSACTION_QUEUE_STALLED                                       // 3
 //   ON_TRUSTED_PRESENTATION_CHANGED                                    // 4
 //
-// Remaining IBinder stubs: 1 (ListenerStats nested Parcelable), 2 (Fence Flattenable).
+// onTransactionCompleted (1) decodes the ListenerStats front half (callback ids + latchTime)
+// via native_struct; the presentFence/SurfaceStats tail is build-variant. onReleaseBuffer (2)
+// stays an opaque IBinder stub (Fence Flattenable).
 
 package android.gui;
 
 interface ITransactionComposerListener {
-    IBinder onTransactionCompleted() = 1;
+    oneway void onTransactionCompleted(in ListenerStats stats) = 1;
     IBinder onReleaseBuffer() = 2;
     oneway void onTransactionQueueStalled(in String8 reason) = 3;
     oneway void onTrustedPresentationChanged(int id, boolean inTrustedPresentationState) = 4;
