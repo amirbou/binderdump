@@ -13,6 +13,20 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  deny:
+    name: cargo-deny (advisories + licenses)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      # The workspace manifest uses cargo-features = ["per-package-target"], which
+      # only parses on nightly — so cargo-deny (which shells `cargo metadata`) must
+      # run under nightly too, not the stable cargo the cargo-deny-action ships.
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny check advisories licenses bans sources
+
   lint:
     name: fmt + clippy (host)
     runs-on: ubuntu-24.04
