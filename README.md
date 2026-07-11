@@ -40,6 +40,19 @@ wireshark out.pcapng
 From a source checkout, `scripts/install_dissector.sh` needs no arguments —
 it installs the just-built `.so`, the in-tree corpus, and the profile.
 
+### Live capture
+
+`binderdump -w -` streams the pcapng to stdout (flushed per packet), so you can
+pipe it straight into Wireshark instead of pulling a file afterwards:
+
+```sh
+adb exec-out /data/local/tmp/binderdump -w - | wireshark -k -i -
+# or headless: ... | tshark -i -
+```
+
+`-w <path>` (default `/data/local/tmp/out.pcapng`) still writes a file. When
+streaming, status output goes to stderr so it can't corrupt the capture.
+
 ### Build from source
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full setup. Shortest path
