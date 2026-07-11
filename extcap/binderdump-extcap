@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Wireshark extcap for binderdump: capture Android binder live over adb, straight
+# into the Wireshark UI (one interface per adb device). Wireshark shells out to
+# this script through the extcap protocol; the capture phase runs
+# `adb exec-out <binderdump> -w -` and streams the pcapng to Wireshark's fifo.
+#
+# Install to the personal extcap dir (see `tshark -G folders`), e.g.
+#   ~/.local/lib/wireshark/extcap/binderdump-extcap
+# scripts/install_dissector.sh does this for you.
+set -euo pipefail
+
+HELP_URL="https://github.com/amirbou/binderdump"
+# LINKTYPE_WIRESHARK_UPPER_PDU — the encapsulation binderdump's pcapng uses.
+DLT_NUMBER=252
+DLT_NAME="wireshark-upper-pdu"
+DEFAULT_DEVICE_BIN="/data/local/tmp/binderdump"
+
+# --- argument parsing (extcap passes `--opt value` and bare flags) ---
+EXTCAP_INTERFACES=0 EXTCAP_DLTS=0 EXTCAP_CONFIG=0 DO_CAPTURE=0
+IFACE="" FIFO="" DEVICE_BIN="$DEFAULT_DEVICE_BIN"
+DURATION="" NO_REPLY_CORRELATION=0 REPLY_OFFSETS=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --extcap-interfaces) EXTCAP_INTERFACES=1; shift ;;
+        --extcap-dlts) EXTCAP_DLTS=1; shift ;;
+        --extcap-config) EXTCAP_CONFIG=1; shift ;;
+        --capture) DO_CAPTURE=1; shift ;;
+        --extcap-interface) IFACE="$2"; shift 2 ;;
+        --fifo) FIFO="$2"; shift 2 ;;
+        --device-binary) DEVICE_BIN="$2"; shift 2 ;;
+        --duration) DURATION="$2"; shift 2 ;;
+        --no-reply-correlation) NO_REPLY_CORRELATION=1; shift ;;
+        --reply-offsets) REPLY_OFFSETS="$2"; shift 2 ;;
+        # options we don't use but Wireshark may pass; ignore (with or without value).
+        --extcap-version|--extcap-control-in|--extcap-control-out) shift 2 ;;
+        *) shift ;;
+    esac
+done
+
+# device serial is encoded in the interface value: "binder-<serial>".
+serial_of() { printf '%s' "${1#binder-}"; }
+
+if [ "$EXTCAP_INTERFACES" = 1 ]; then
+    printf 'extcap {version=1.0}{help=%s}{display=Android binder}\n' "$HELP_URL"
+    # one interface per online adb device.
+    if command -v adb >/dev/null; then
+        adb devices | awk 'NR>1 && $2=="device" {print $1}' | while read -r s; do
+            [ -n "$s" ] || continue
+            printf 'interface {value=binder-%s}{display=Android binder (%s)}\n' "$s" "$s"
+        done
+    fi
+    exit 0
+fi
+
+if [ "$EXTCAP_DLTS" = 1 ]; then
+    printf 'dlt {number=%s}{name=%s}{display=Android binder IPC}\n' "$DLT_NUMBER" "$DLT_NAME"
+    exit 0
+fi
+
+if [ "$EXTCAP_CONFIG" = 1 ]; then
+    printf 'arg {number=0}{call=--device-binary}{display=binderdump path on device}{tooltip=Path to the pushed binderdump binary on the device}{type=string}{default=%s}\n' "$DEFAULT_DEVICE_BIN"
+    printf 'arg {number=1}{call=--duration}{display=Duration (seconds, blank = until stopped)}{tooltip=Stop the capture after this many seconds}{type=integer}{range=0,86400}\n'
+    printf 'arg {number=2}{call=--no-reply-correlation}{display=Disable reply correlation}{tooltip=Do not load the reply-correlation BPF program}{type=boolflag}\n'
+    printf 'arg {number=3}{call=--reply-offsets}{display=Manual reply offsets}{tooltip=to_thread=N,transaction_stack=N,debug_id=N (advanced; overrides CO-RE)}{type=string}\n'
+    exit 0
+fi
+
+if [ "$DO_CAPTURE" = 1 ]; then
+    [ -n "$IFACE" ] || { echo "extcap: --extcap-interface required for capture" >&2; exit 1; }
+    [ -n "$FIFO" ] || { echo "extcap: --fifo required for capture" >&2; exit 1; }
+    command -v adb >/dev/null || { echo "extcap: adb not found" >&2; exit 1; }
+    serial=$(serial_of "$IFACE")
+
+    # assemble the on-device binderdump arguments.
+    dev_args=(-w -)
+    [ -n "$DURATION" ] && dev_args+=(-t "$DURATION")
+    [ "$NO_REPLY_CORRELATION" = 1 ] && dev_args+=(--no-reply-correlation)
+    [ -n "$REPLY_OFFSETS" ] && dev_args+=(--reply-offsets "$REPLY_OFFSETS")
+
+    # exec-out gives a clean binary stdout (no pty translation); binderdump streams
+    # pcapng there, we redirect it into Wireshark's fifo. Kill the device process
+    # when Wireshark stops the capture (closes the fifo / signals us).
+    adb -s "$serial" exec-out "$DEVICE_BIN" "${dev_args[@]}" > "$FIFO" &
+    adb_pid=$!
+    trap 'kill "$adb_pid" 2>/dev/null; adb -s "$serial" shell "pkill -f $DEVICE_BIN" 2>/dev/null || true' EXIT INT TERM
+    wait "$adb_pid"
+    exit 0
+fi
+
+echo "binderdump-extcap: nothing to do (expected an --extcap-* or --capture phase)" >&2
+exit 1

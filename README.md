@@ -49,7 +49,17 @@ load into a different one — pick the artifact matching `wireshark --version`, 
 build from source against your installed `libwireshark-dev`.
 
 From a source checkout, `scripts/install_dissector.sh` needs no arguments —
-it installs the just-built `.so`, the in-tree corpus, and the profile.
+it installs the just-built `.so`, the in-tree corpus, the profile, and the extcap.
+
+### Live capture in the Wireshark UI
+
+`install_dissector.sh` also installs an [extcap](https://www.wireshark.org/docs/man-pages/extcap.html)
+helper (`binderdump-extcap`). With `adb` on `PATH` and the `binderdump` binary
+pushed to the device (`/data/local/tmp/binderdump` by default), each connected
+device shows up in Wireshark's interface list as **"Android binder (&lt;serial&gt;)"**
+— pick it to capture live, no adb-pull needed. The gear icon exposes the duration
+and reply-correlation options. Under the hood it runs
+`adb exec-out binderdump -w -` and streams the pcapng into Wireshark.
 
 ### Live capture
 
