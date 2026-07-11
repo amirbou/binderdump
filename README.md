@@ -134,6 +134,13 @@ activity.
   `sys_exit` + `transaction_received` events will be visible. We
   currently only handle whole-transaction captures.
 - **hwbinder** support has not been thoroughly tested.
+- **Corpus version skew.** The bundled AIDL/HIDL corpus is synced from the base
+  yearly AOSP release for each SDK (see
+  [binderdump-aidl/data/PROVENANCE.md](binderdump-aidl/data/PROVENANCE.md)).
+  Devices on later builds (Pixel QPRs) may add transaction codes or grow method
+  signatures; the dissector surfaces these in `binderdump.decode_status` rather
+  than mislabeling — a resolved method that leaves trailing bytes is flagged as
+  "trailing bytes … possibly a newer signature than the corpus".
 
 ## Contributing
 

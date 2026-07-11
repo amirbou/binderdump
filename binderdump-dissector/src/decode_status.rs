@@ -67,6 +67,10 @@ pub struct StatusInput<'a> {
     pub decoded_params: usize,
     pub raw_tail_reason: Option<&'a str>,
     pub undecoded_bytes: usize,
+    // bytes trailing past the last cleanly-decoded param/return (0 when a RawTail
+    // stopped decoding). >3 (beyond 4-byte parcel padding) signals the wire carried
+    // more than the corpus signature models — i.e. a device newer than the corpus.
+    pub trailing_bytes: usize,
     // set when a HIDL method was resolved but the HIDL decoder returned only a
     // top-level RawTail (e.g. the param type is not yet supported).
     pub payload_decoder_missing: bool,
@@ -110,6 +114,16 @@ pub fn build_status(i: &StatusInput) -> Option<Status> {
             };
             return incomplete(format!("reply: decode stopped at {}{}", r, bytes));
         }
+        if i.decoded_params > 0
+            && i.trailing_bytes > 3
+            && !i.is_hwbinder
+            && i.method_source != "native"
+        {
+            return incomplete(format!(
+                "reply: {} unmodeled trailing bytes after the return value (a newer signature than the corpus, or an unconsumed object; corpus sdk {})",
+                i.trailing_bytes, i.sdk
+            ));
+        }
         return None; // reply fully decoded
     }
 
@@ -149,6 +163,18 @@ pub fn build_status(i: &StatusInput) -> Option<Status> {
         return incomplete(format!(
             "method {}: parameters not modeled (opaque); {} bytes undecoded",
             method, i.undecoded_bytes
+        ));
+    }
+    // all params decoded but bytes remain past the last one — for a real AIDL method
+    // that usually means the device runs a newer build than the base-release corpus
+    // (an appended or grown parameter). Gated to AIDL: HIDL (hwbinder) trails its
+    // scatter-gather buffer region, and native synthetic stubs are deliberately
+    // incomplete, so trailing there is expected, not a version signal.
+    if i.decoded_params > 0 && i.trailing_bytes > 3 && !i.is_hwbinder && i.method_source != "native"
+    {
+        return incomplete(format!(
+            "method {}: {} unmodeled trailing bytes after all params (a newer signature than the corpus, or an unconsumed object; corpus sdk {})",
+            method, i.trailing_bytes, i.sdk
         ));
     }
     None
@@ -200,6 +226,7 @@ mod tests {
             decoded_params: 2,
             raw_tail_reason: None,
             undecoded_bytes: 0,
+            trailing_bytes: 0,
             payload_decoder_missing: false,
         }
     }
@@ -286,6 +313,60 @@ mod tests {
         i.decoded_params = 0;
         i.undecoded_bytes = 0;
         assert!(build_status(&i).is_none()); // genuine void method
+    }
+
+    #[test]
+    fn trailing_after_full_decode_flags_newer_device() {
+        let mut i = base();
+        i.decoded_params = 2;
+        i.trailing_bytes = 8; // an appended parameter the corpus doesn't model
+        let s = build_status(&i).unwrap();
+        assert!(matches!(s.severity, Severity::Incomplete));
+        assert!(
+            s.text.contains("trailing bytes") && s.text.contains("newer signature than the corpus")
+        );
+    }
+
+    #[test]
+    fn trailing_within_padding_is_none() {
+        let mut i = base();
+        i.decoded_params = 2;
+        i.trailing_bytes = 3; // 4-byte parcel alignment padding, not a real tail
+        assert!(build_status(&i).is_none());
+    }
+
+    #[test]
+    fn reply_trailing_after_return_flags_newer_device() {
+        let mut i = base();
+        i.is_reply = true;
+        i.decoded_params = 1;
+        i.trailing_bytes = 8;
+        let s = build_status(&i).unwrap();
+        assert!(matches!(s.severity, Severity::Incomplete));
+        assert!(s.text.contains("reply:") && s.text.contains("newer signature than the corpus"));
+    }
+
+    #[test]
+    fn native_reply_trailing_not_flagged() {
+        // native synthetic stubs are deliberately incomplete; their trailing bytes
+        // are expected, not a version signal — same exclusion as the request path.
+        let mut i = base();
+        i.is_reply = true;
+        i.method_source = "native";
+        i.decoded_params = 1;
+        i.trailing_bytes = 8;
+        assert!(build_status(&i).is_none());
+    }
+
+    #[test]
+    fn hwbinder_trailing_not_flagged() {
+        // HIDL replies trail their scatter-gather buffer region.
+        let mut i = base();
+        i.is_reply = true;
+        i.is_hwbinder = true;
+        i.decoded_params = 1;
+        i.trailing_bytes = 40;
+        assert!(build_status(&i).is_none());
     }
 
     #[test]
