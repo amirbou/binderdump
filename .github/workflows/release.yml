@@ -169,6 +169,15 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Generate SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist
+          # Checksum every artifact. SHA256SUMS itself does not exist yet, so the
+          # glob doesn't include it. Users verify with `sha256sum -c SHA256SUMS`.
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+
       - name: List artifacts
         run: ls -la dist/
 

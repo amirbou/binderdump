@@ -1,0 +1,37 @@
+# cargo-deny configuration. Run `cargo deny check` (CI runs it on every push/PR).
+# Security matters here: binderdump runs as root on-device and the host dissector
+# parses capture bytes, so a dependency advisory is worth failing the build over.
+
+[advisories]
+# Fail on any dependency with a known security advisory (default is `deny` in
+# recent cargo-deny; kept explicit for clarity). `unmaintained` is a warning so a
+# transitive dep going quiet doesn't block CI outright.
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+# The workspace is intentionally lean and permissively licensed; the bundled AOSP
+# corpus is Apache-2.0 (data, not linked). Allow the usual permissive set and
+# nothing copyleft — a GPL/AGPL dep creeping in should fail.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+]
+
+[bans]
+# Duplicate transitive versions are noise, not a security issue — warn, don't fail.
+multiple-versions = "warn"
+wildcards = "warn"
+
+[sources]
+# Only crates.io; an unexpected git or alternate-registry source should fail.
+unknown-registry = "deny"
+unknown-git = "deny"

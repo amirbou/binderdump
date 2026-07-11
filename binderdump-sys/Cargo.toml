@@ -2,6 +2,7 @@
 name = "binderdump-sys"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 
 [dependencies]
 plain = "0.2"
