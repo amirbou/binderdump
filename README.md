@@ -28,7 +28,7 @@ adb pull /data/local/tmp/out.pcapng .
 #    places all three in the right Wireshark directories.
 tar xzf binderdump-wireshark-profile-<tag>.tgz          # -> binderdump/
 ./install_dissector.sh \
-    --so libbinderdump-<tag>-x86_64-linux-gnu.so \
+    --so libbinderdump-<tag>-ws<X.Y>-x86_64-linux-gnu.so \
     --corpus binderdump-aidl-corpus-<tag>-all.tgz \
     --profile binderdump
 
@@ -36,6 +36,11 @@ tar xzf binderdump-wireshark-profile-<tag>.tgz          # -> binderdump/
 #    (bottom-right of the status bar) for the preset columns.
 wireshark out.pcapng
 ```
+
+The dissector `.so` is named for the Wireshark version it was built against
+(`ws<X.Y>`). An epan plugin is ABI-locked to a Wireshark major.minor and will not
+load into a different one — pick the artifact matching `wireshark --version`, or
+build from source against your installed `libwireshark-dev`.
 
 From a source checkout, `scripts/install_dissector.sh` needs no arguments —
 it installs the just-built `.so`, the in-tree corpus, and the profile.
