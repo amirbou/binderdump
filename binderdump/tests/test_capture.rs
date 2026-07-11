@@ -19,7 +19,7 @@ fn capture_for_one_second_terminates() -> Result<()> {
     let path = PathBuf::from("/data/local/tmp/binderdump_capture_test.pcapng");
     let output = std::fs::File::create(&path)?;
 
-    let mut packets = PacketGenerator::new(event_channel, output)?;
+    let mut packets = PacketGenerator::new(event_channel, output, false)?;
 
     let start = Instant::now();
     packets.capture(Some(Duration::from_secs(1)))?;

@@ -1,4 +1,3 @@
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -39,6 +38,17 @@ struct Args {
         conflicts_with = "no_reply_correlation"
     )]
     reply_offsets: Option<ReplyOffsets>,
+
+    /// Write the pcapng here. Use '-' to stream to stdout (pipe into
+    /// `wireshark -k -i -`); the stream is flushed per packet and status
+    /// output goes to stderr so it can't corrupt the capture.
+    #[arg(
+        short = 'w',
+        long = "write",
+        value_name = "PATH",
+        default_value = "/data/local/tmp/out.pcapng"
+    )]
+    output: String,
 }
 
 fn do_write(bwr: &BinderEventWriteRead) -> Result<()> {
@@ -57,18 +67,24 @@ fn do_read(bwr: &BinderEventWriteRead) -> Result<()> {
     Ok(())
 }
 
-fn run_pcap(path: &Path, duration: Option<Duration>, mode: ReplyCorrelationMode) -> Result<()> {
+fn run_pcap(output: &str, duration: Option<Duration>, mode: ReplyCorrelationMode) -> Result<()> {
     let mut binder_skel = attach_tracepoints(mode)?;
 
     let event_channel = create_events_channel(&mut binder_skel)?;
 
-    let output = std::fs::File::create(path)
-        .context(format!("failed to open output file: {}", path.display()))?;
+    // '-' streams pcapng to stdout (flushed per packet); anything else is a file.
+    let (writer, flush_each): (Box<dyn std::io::Write>, bool) = if output == "-" {
+        (Box::new(std::io::stdout().lock()), true)
+    } else {
+        let file = std::fs::File::create(output)
+            .context(format!("failed to open output file: {}", output))?;
+        (Box::new(file), false)
+    };
     match duration {
-        Some(d) => println!("capturing events for {}s", d.as_secs()),
-        None => println!("waiting for events"),
+        Some(d) => eprintln!("capturing events for {}s", d.as_secs()),
+        None => eprintln!("waiting for events"),
     }
-    let mut packets = packets::PacketGenerator::new(event_channel, output)?;
+    let mut packets = packets::PacketGenerator::new(event_channel, writer, flush_each)?;
     packets.capture(duration)?;
     Ok(())
 }
@@ -152,7 +168,7 @@ pub fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
 
     debug!("Hello");
-    println!("mypid: {}", std::process::id());
+    eprintln!("mypid: {}", std::process::id());
 
     let args = Args::parse();
     let duration = args.duration_secs.map(Duration::from_secs);
@@ -163,5 +179,5 @@ pub fn main() -> Result<()> {
     } else {
         ReplyCorrelationMode::Auto
     };
-    run_pcap(&PathBuf::from("/data/local/tmp/out.pcapng"), duration, mode)
+    run_pcap(&args.output, duration, mode)
 }

@@ -43,10 +43,14 @@ pub struct PacketGenerator<W: Write> {
     ongoing_txn: HashMap<i32, Transaction>,
     timeshift: Duration,
     android_sdk: u32,
+    // flush the underlying writer after the header and after every packet, so a
+    // consumer reading the stream live (e.g. Wireshark on a pipe) sees packets as
+    // they happen instead of waiting for the block buffer to fill.
+    flush_each: bool,
 }
 
 impl<W: Write> PacketGenerator<W> {
-    pub fn new(channel: EventChannel, writer: W) -> Result<Self> {
+    pub fn new(channel: EventChannel, writer: W, flush_each: bool) -> Result<Self> {
         let capture_info = CaptureInfo::new()?;
         let version_comment = format!("binderdump-version={}", env!("CARGO_PKG_VERSION"));
         let options = vec![
@@ -81,6 +85,12 @@ impl<W: Write> PacketGenerator<W> {
             pcap_writer.write_pcapng_block(interface_block)?;
         }
 
+        // Push the section header + interface blocks out immediately, so a live
+        // reader has the framing before the first packet arrives.
+        if flush_each {
+            pcap_writer.get_mut().flush()?;
+        }
+
         Ok(Self {
             pcap_writer,
             process_cache: ProcessCache::new(),
@@ -88,6 +98,7 @@ impl<W: Write> PacketGenerator<W> {
             ongoing_txn: HashMap::new(),
             timeshift: capture_info.get_timeshift().clone(),
             android_sdk: system_property::read_sdk_int(),
+            flush_each,
         })
     }
 
@@ -296,6 +307,9 @@ impl<W: Write> PacketGenerator<W> {
             options: vec![],
         };
         self.pcap_writer.write_block(&packet.into_block())?;
+        if self.flush_each {
+            self.pcap_writer.get_mut().flush()?;
+        }
         Ok(())
     }
 
@@ -318,9 +332,9 @@ impl<W: Write> PacketGenerator<W> {
             let proto = match self.handle_events(events) {
                 Ok(proto) => proto,
                 Err(err) => {
-                    // error!("Failed to handle events: {}", err);
-                    println!("Failed to handle events: {}", err);
-                    println!("events: {}", str);
+                    // diagnostics go to stderr so they never corrupt a pcapng stream on stdout.
+                    eprintln!("Failed to handle events: {}", err);
+                    eprintln!("events: {}", str);
                     continue;
                 }
             };
