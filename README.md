@@ -23,14 +23,22 @@ adb shell chmod +x /data/local/tmp/binderdump
 adb shell /data/local/tmp/binderdump -t 5      # 5-second capture
 adb pull /data/local/tmp/out.pcapng .
 
-# 2. install the dissector for Wireshark (Linux host)
-PLUGIN_DIR=$(tshark -G folders | awk -F'\t' '/^Personal Plugins:/ {print $2; exit}')
-mkdir -p "$PLUGIN_DIR/epan"
-cp libbinderdump-<tag>-x86_64-linux-gnu.so "$PLUGIN_DIR/epan/libbinderdump.so"
+# 2. install the dissector, AIDL/HIDL corpus, and column profile (Linux host).
+#    The corpus is required for method/param decoding — install_dissector.sh
+#    places all three in the right Wireshark directories.
+tar xzf binderdump-wireshark-profile-<tag>.tgz          # -> binderdump/
+./install_dissector.sh \
+    --so libbinderdump-<tag>-x86_64-linux-gnu.so \
+    --corpus binderdump-aidl-corpus-<tag>-all.tgz \
+    --profile binderdump
 
-# 3. open the pcapng in Wireshark
+# 3. open the pcapng in Wireshark, then switch to the "binderdump" profile
+#    (bottom-right of the status bar) for the preset columns.
 wireshark out.pcapng
 ```
+
+From a source checkout, `scripts/install_dissector.sh` needs no arguments —
+it installs the just-built `.so`, the in-tree corpus, and the profile.
 
 ### Build from source
 
