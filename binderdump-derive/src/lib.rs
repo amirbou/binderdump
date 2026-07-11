@@ -18,10 +18,6 @@ pub fn derive_epan_protocol(input: CompilerTokenStream) -> CompilerTokenStream {
         Err(err) => return syn::Error::into_compile_error(err).into(),
     };
 
-    // if let Err(err) = ctx.parse_container() {
-    //     return syn::Error::into_compile_error(err).into();
-    // }
-
     if let Err(err) = ctx.parse_fields() {
         return syn::Error::into_compile_error(err).into();
     }
