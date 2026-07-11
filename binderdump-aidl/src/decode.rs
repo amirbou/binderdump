@@ -627,6 +627,24 @@ fn decode_value(
                     1 => decode_bundle_body(reg, sdk, cur, label, start, depth + 1),
                     _ => None,
                 }
+            } else if is_intent(fqn) {
+                // Java-backend parcelable arg: int32 writeTypedObject presence, then the
+                // hand-written Intent body. Checked before parcelable_def so the corpus's
+                // structured-parcelable path never tries to read a (non-existent) size header.
+                match cur.read_i32()? {
+                    0 => Some(node(
+                        DecodedValue::Parcelable {
+                            fqn: fqn.clone(),
+                            null: true,
+                        },
+                        "Intent",
+                        start,
+                        cur.pos - start,
+                        vec![],
+                    )),
+                    1 => crate::native_struct::intent_body(reg, sdk, cur, start, depth + 1),
+                    _ => None,
+                }
             } else if let Some(e) = reg.enum_def(sdk, fqn) {
                 let repr = read_backing(cur, e.backing)?;
                 let variants: Vec<(i64, String)> =
@@ -1320,13 +1338,19 @@ fn bundle_label(fqn: &str) -> Option<&'static str> {
     }
 }
 
+// android.content.Intent — a hand-written Parcelable (no size header), decoded by
+// native_struct::intent_body. Match the full fqn to avoid colliding with any other Intent.
+fn is_intent(fqn: &str) -> bool {
+    fqn == "android.content.Intent"
+}
+
 // Decode a Bundle/PersistableBundle body. Cursor must be at the int32 length.
 // Wire (BaseBundle.writeToParcelInner): [int32 length][int32 magic][arraymap], where
 // length is the arraymap byte count only (excludes the 4-byte magic); length==0 is an
 // empty bundle with no magic; via writeBundle a null bundle is [int32 -1]. The arraymap
 // is [int32 N] + N x (String16 key, writeValue value). Best-effort: resync to the block
 // end regardless, so a later sibling value still decodes.
-fn decode_bundle_body(
+pub(crate) fn decode_bundle_body(
     reg: &Registry,
     sdk: u32,
     cur: &mut ParcelCursor,

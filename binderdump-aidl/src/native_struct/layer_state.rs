@@ -1,34 +1,13 @@
-// Hand-written decoders for native C++ structs that use bespoke write(Parcel&) layouts
-// (not the AIDL convention) — e.g. layer_state_t in ISurfaceComposer.
-// Dispatched by the final segment of a UserDefined type's fqn. front-half variants
-// are branched on sdk; every field is verified against per-sdk frameworks/native sources.
+// Native decoders for the ISurfaceComposer / SurfaceFlinger struct family — layer_state_t and
+// the small geometry structs it embeds (matrix22_t, FrameTimelineInfo, FloatRect crop). front-half
+// variants are branched on sdk; every field is verified against per-sdk frameworks/native sources.
 
 use crate::decode::{depth_exceeded, node, DecodedNode, DecodedValue, ParcelCursor};
-use crate::registry::Registry;
-
-// dispatch a UserDefined type to its hand-written decoder; None if not a known native struct.
-pub fn decode(
-    reg: &Registry,
-    sdk: u32,
-    cur: &mut ParcelCursor,
-    fqn: &str,
-    start: usize,
-    depth: u32,
-) -> Option<DecodedNode> {
-    let _ = reg;
-    match fqn.rsplit('.').next().unwrap_or(fqn) {
-        "matrix22_t" => matrix22(cur, start, depth),
-        "Rect" => rect(cur, start, depth),
-        "FrameTimelineInfo" => frame_timeline_info(cur, start, depth),
-        "ComposerState" | "layer_state_t" => layer_state(sdk, cur, start, depth),
-        _ => None,
-    }
-}
 
 // matrix22_t::write(Parcel&): 4 consecutive writeFloat calls, no header.
 // android15-release LayerState.cpp ~line 770–775. spec §7.
 // fields in order: dsdx, dtdx, dtdy, dsdy.
-fn matrix22(cur: &mut ParcelCursor, start: usize, depth: u32) -> Option<DecodedNode> {
+pub(super) fn matrix22(cur: &mut ParcelCursor, start: usize, depth: u32) -> Option<DecodedNode> {
     if depth_exceeded(depth) {
         return None;
     }
@@ -52,38 +31,16 @@ fn matrix22(cur: &mut ParcelCursor, start: usize, depth: u32) -> Option<DecodedN
     ))
 }
 
-// Rect (LightFlattenable-fixed): 16 B raw, no header.
-// android15-release: left, top, right, bottom as int32. spec §3 rows 11/55/56.
-fn rect(cur: &mut ParcelCursor, start: usize, depth: u32) -> Option<DecodedNode> {
-    if depth_exceeded(depth) {
-        return None;
-    }
-    let mut children = Vec::with_capacity(4);
-    for name in ["left", "top", "right", "bottom"] {
-        let fs = cur.pos;
-        let v = cur.read_i32()?;
-        let mut child = node(DecodedValue::I64(v as i64), "int", fs, 4, vec![]);
-        child.name = name.to_string();
-        children.push(child);
-    }
-    Some(node(
-        DecodedValue::Parcelable {
-            fqn: "Rect".to_string(),
-            null: false,
-        },
-        "Rect",
-        start,
-        cur.pos - start,
-        children,
-    ))
-}
-
 // FrameTimelineInfo (AIDL structured parcelable, written directly via writeToParcel — no presence flag).
 // android15-release FrameTimelineInfo.aidl. spec §2.
 // wire: [i32 aidl_size (incl itself)][i64 vsyncId][i32 inputEventId][i64 startTimeNanos]
 //       [i32 useForRefreshRateSelection][i64 skippedFrameVsyncId][i64 skippedFrameStartTimeNanos].
 // computed size = 44 bytes; always resyncs to aidl_size boundary for forward compat.
-fn frame_timeline_info(cur: &mut ParcelCursor, start: usize, depth: u32) -> Option<DecodedNode> {
+pub(super) fn frame_timeline_info(
+    cur: &mut ParcelCursor,
+    start: usize,
+    depth: u32,
+) -> Option<DecodedNode> {
     if depth_exceeded(depth) {
         return None;
     }
@@ -188,7 +145,12 @@ fn crop_floats(cur: &mut ParcelCursor, start: usize, depth: u32) -> Option<Decod
 //   output.write(what.data(), what.dataSize()) = 16 bytes raw, no length prefix.
 //   crop = FloatRect (same as sdk 36).
 // unknown sdk: falls through to {34,35} baseline.
-fn layer_state(sdk: u32, cur: &mut ParcelCursor, start: usize, depth: u32) -> Option<DecodedNode> {
+pub(super) fn layer_state(
+    sdk: u32,
+    cur: &mut ParcelCursor,
+    start: usize,
+    depth: u32,
+) -> Option<DecodedNode> {
     if depth_exceeded(depth) {
         return None;
     }
@@ -317,7 +279,7 @@ fn layer_state(sdk: u32, cur: &mut ParcelCursor, start: usize, depth: u32) -> Op
         let mut rn = if sdk >= 36 {
             crop_floats(cur, rs, depth + 1)?
         } else {
-            rect(cur, rs, depth + 1)?
+            super::rect(cur, rs, depth + 1)?
         };
         rn.name = "crop".to_string();
         children.push(rn);
@@ -354,19 +316,19 @@ mod tests {
     fn call(fqn: &str, buf: &[u8]) -> Option<DecodedNode> {
         let reg = Registry::empty();
         let mut cur = ParcelCursor::new(buf, 0);
-        decode(&reg, 35, &mut cur, fqn, 0, 0)
+        super::super::decode(&reg, 35, &mut cur, fqn, 0, 0)
     }
 
     fn call_with_offsets(fqn: &str, buf: &[u8], offsets: &[u8]) -> Option<DecodedNode> {
         let reg = Registry::empty();
         let mut cur = ParcelCursor::new(buf, 0).with_offsets(offsets);
-        decode(&reg, 35, &mut cur, fqn, 0, 0)
+        super::super::decode(&reg, 35, &mut cur, fqn, 0, 0)
     }
 
     fn call_sdk(sdk: u32, fqn: &str, buf: &[u8], offsets: &[u8]) -> Option<DecodedNode> {
         let reg = Registry::empty();
         let mut cur = ParcelCursor::new(buf, 0).with_offsets(offsets);
-        decode(&reg, sdk, &mut cur, fqn, 0, 0)
+        super::super::decode(&reg, sdk, &mut cur, fqn, 0, 0)
     }
 
     // append a 24-byte flat_binder_object (BINDER type, strong local binder) to buf.
@@ -487,7 +449,7 @@ mod tests {
 
         let reg = Registry::empty();
         let mut cur = ParcelCursor::new(&buf, 0);
-        let n = decode(&reg, 35, &mut cur, "FrameTimelineInfo", 0, 0).unwrap();
+        let n = super::super::decode(&reg, 35, &mut cur, "FrameTimelineInfo", 0, 0).unwrap();
         assert_eq!(n.children.len(), 6);
         // cursor must sit at offset 52 (start of sentinel)
         assert_eq!(cur.pos, 52);
