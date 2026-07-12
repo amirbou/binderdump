@@ -153,8 +153,15 @@ pub fn dissect_transaction_data(
                 }
                 // short/garbled payload: fall through to the "method unknown" status
             }
+            // PING/DUMP/SHELL/… replies carry no AIDL payload (a driver status int
+            // or nothing at all); the request frame stays silent via the special-code
+            // path, so silence the reply too rather than flagging "method unknown".
+            let origin_special = state
+                .method_name
+                .as_deref()
+                .is_some_and(binderdump_aidl::registry::is_special_method_name);
             let input = decode_status::StatusInput {
-                method_source: "aosp",
+                method_source: if origin_special { "special" } else { "aosp" },
                 is_hwbinder: false,
                 interface: None,
                 method_name: None,
