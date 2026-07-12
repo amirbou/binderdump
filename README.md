@@ -10,7 +10,7 @@ the pcapng in Wireshark with the bundled dissector plugin and you get a
 normal protocol tree for every binder ioctl, write, read, transaction,
 and reply.
 
-![binderdump in Wireshark](docs/images/wireshark.png)
+![binderdump live capture in Wireshark](docs/images/live-capture.webp)
 
 Interfaces and methods are resolved from the interface token and a bundled
 AIDL/HIDL corpus (`android.frameworks.stats.IStats.reportVendorAtom()`,
