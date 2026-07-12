@@ -2,14 +2,15 @@
 # Installed to ~/.config/wireshark/profiles/binderdump/ by scripts/install_dissector.sh.
 # Select it via the profile switcher (bottom-right of the Wireshark status bar).
 
-# Packet-list columns surfacing the load-bearing binderdump fields. The Source/Dest
-# columns use the stable per-endpoint convenience fields (identical on a transaction's
-# send and receive frames); Decode shows why a frame is not fully decoded, if it isn't.
+# Packet-list columns surfacing the load-bearing binderdump fields. Source/Dest use
+# the built-in address columns the dissector fills as "<pid>:<tid>:<cmdline>" (and
+# KERNEL for the driver side); Decode shows why a frame is not fully decoded, if it
+# isn't.
 gui.column.format:
 	"No.", "%m",
 	"Time", "%t",
-	"Source", "%Cus:binderdump.src.cmdline:0:R",
-	"Dest", "%Cus:binderdump.dst.cmdline:0:R",
+	"Source", "%s",
+	"Dest", "%d",
 	"Interface", "%Cus:binderdump.iface:0:R",
 	"Method", "%Cus:binderdump.ioctl_data.bwr.transaction.method_name:0:R",
 	"Decode", "%Cus:binderdump.decode_status:0:R",
