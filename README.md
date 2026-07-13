@@ -61,6 +61,13 @@ device shows up in Wireshark's interface list as **"Android binder (&lt;serial&g
 and reply-correlation options. Under the hood it runs
 `adb exec-out binderdump -w -` and streams the pcapng into Wireshark.
 
+binderdump needs root on the device. On a `userdebug` build with `adb root`
+that is automatic. On a **production build rooted with Magisk**, set the gear
+icon's **Root wrapper** field (or the `BINDERDUMP_SU` env var before launching
+Wireshark) to the full command that runs a shell command as root on the device
+— `adb exec-out su -c`. The extcap exports `ANDROID_SERIAL` for the selected
+device and runs the capture through it.
+
 ### Live capture
 
 `binderdump -w -` streams the pcapng to stdout (flushed per packet), so you can
@@ -69,10 +76,20 @@ pipe it straight into Wireshark instead of pulling a file afterwards:
 ```sh
 adb exec-out /data/local/tmp/binderdump -w - | wireshark -k -i -
 # or headless: ... | tshark -i -
+
+# On a production build (root via Magisk), wrap the on-device run in `su -c`.
+# Silence binderdump's stderr on the device: su folds it into stdout, which
+# would corrupt the pcapng stream.
+adb exec-out su -c '/data/local/tmp/binderdump -w - 2>/dev/null' | wireshark -k -i -
 ```
 
 `-w <path>` (default `/data/local/tmp/out.pcapng`) still writes a file. When
 streaming, status output goes to stderr so it can't corrupt the capture.
+
+`scripts/run.sh` (the `cargo run` runner) takes the same `BINDERDUMP_SU`
+env var, so `BINDERDUMP_SU="adb exec-out su -c" cargo run -p binderdump -- -t 5`
+captures on a Magisk device and reads the root-owned pcapng back through the
+wrapper.
 
 ### Build from source
 

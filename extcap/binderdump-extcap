@@ -4,6 +4,15 @@
 # this script through the extcap protocol; the capture phase runs
 # `adb exec-out <binderdump> -w -` and streams the pcapng to Wireshark's fifo.
 #
+# binderdump needs root on the device. On a userdebug build with `adb root`,
+# adbd is already root and the binary runs directly. On a production build you
+# root through a wrapper: set the BINDERDUMP_SU env var or the "Root wrapper"
+# config field to the full command that runs a shell command as root on the
+# device, e.g. `adb exec-out su -c` for Magisk (or any custom helper). It
+# receives the whole binderdump invocation as one shell-command string; the
+# extcap exports ANDROID_SERIAL so the wrapper's own `adb` targets the device
+# picked in Wireshark.
+#
 # Install to the personal extcap dir (see `tshark -G folders`), e.g.
 #   ~/.local/lib/wireshark/extcap/binderdump-extcap
 # scripts/install_dissector.sh does this for you.
@@ -19,6 +28,8 @@ DEFAULT_DEVICE_BIN="/data/local/tmp/binderdump"
 EXTCAP_INTERFACES=0 EXTCAP_DLTS=0 EXTCAP_CONFIG=0 DO_CAPTURE=0
 IFACE="" FIFO="" DEVICE_BIN="$DEFAULT_DEVICE_BIN"
 DURATION="" NO_REPLY_CORRELATION=0 REPLY_OFFSETS=""
+# Root wrapper: env default, overridable by the --su-command config field.
+SU_COMMAND="${BINDERDUMP_SU:-}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -32,6 +43,7 @@ while [ $# -gt 0 ]; do
         --duration) DURATION="$2"; shift 2 ;;
         --no-reply-correlation) NO_REPLY_CORRELATION=1; shift ;;
         --reply-offsets) REPLY_OFFSETS="$2"; shift 2 ;;
+        --su-command) SU_COMMAND="$2"; shift 2 ;;
         # options we don't use but Wireshark may pass; ignore (with or without value).
         --extcap-version|--extcap-control-in|--extcap-control-out) shift 2 ;;
         *) shift ;;
@@ -63,6 +75,7 @@ if [ "$EXTCAP_CONFIG" = 1 ]; then
     printf 'arg {number=1}{call=--duration}{display=Duration (seconds, blank = until stopped)}{tooltip=Stop the capture after this many seconds}{type=integer}{range=0,86400}\n'
     printf 'arg {number=2}{call=--no-reply-correlation}{display=Disable reply correlation}{tooltip=Do not load the reply-correlation BPF program}{type=boolflag}\n'
     printf 'arg {number=3}{call=--reply-offsets}{display=Manual reply offsets}{tooltip=to_thread=N,transaction_stack=N,debug_id=N (advanced; overrides CO-RE)}{type=string}\n'
+    printf 'arg {number=4}{call=--su-command}{display=Root wrapper}{tooltip=Full command that runs a shell command as root on the device (ANDROID_SERIAL selects it), e.g. "adb exec-out su -c" for Magisk. Leave blank on userdebug/adb-root builds. Defaults to the BINDERDUMP_SU env var.}{type=string}{default=%s}\n' "$SU_COMMAND"
     exit 0
 fi
 
@@ -70,7 +83,9 @@ if [ "$DO_CAPTURE" = 1 ]; then
     [ -n "$IFACE" ] || { echo "extcap: --extcap-interface required for capture" >&2; exit 1; }
     [ -n "$FIFO" ] || { echo "extcap: --fifo required for capture" >&2; exit 1; }
     command -v adb >/dev/null || { echo "extcap: adb not found" >&2; exit 1; }
-    serial=$(serial_of "$IFACE")
+    # Select the device for every adb invocation — ours and the root wrapper's.
+    export ANDROID_SERIAL
+    ANDROID_SERIAL=$(serial_of "$IFACE")
 
     # assemble the on-device binderdump arguments.
     dev_args=(-w -)
@@ -78,13 +93,41 @@ if [ "$DO_CAPTURE" = 1 ]; then
     [ "$NO_REPLY_CORRELATION" = 1 ] && dev_args+=(--no-reply-correlation)
     [ -n "$REPLY_OFFSETS" ] && dev_args+=(--reply-offsets "$REPLY_OFFSETS")
 
-    # exec-out gives a clean binary stdout (no pty translation); binderdump streams
-    # pcapng there, we redirect it into Wireshark's fifo. Kill the device process
-    # when Wireshark stops the capture (closes the fifo / signals us).
-    adb -s "$serial" exec-out "$DEVICE_BIN" "${dev_args[@]}" > "$FIFO" &
+    # binderdump streams pcapng to a clean binary stdout, which we redirect into
+    # Wireshark's fifo. Kill the device process when Wireshark stops the capture
+    # (closes the fifo / signals us).
+    if [ -n "$SU_COMMAND" ]; then
+        # SU_COMMAND is a full command that runs a shell command as root on the
+        # device (e.g. `adb exec-out su -c`); it must yield a clean binary stdout.
+        # A root wrapper folds the child's stderr into stdout, which would corrupt
+        # the pcapng stream, so silence binderdump's stderr on the device.
+        # SU_COMMAND is left unquoted so a multi-word command splits into its argv.
+        $SU_COMMAND "$DEVICE_BIN ${dev_args[*]} 2>/dev/null" > "$FIFO" &
+    else
+        # adbd is already root (userdebug / `adb root`): run the binary directly and
+        # let its stderr stay on the host stderr for diagnostics.
+        adb exec-out "$DEVICE_BIN" "${dev_args[@]}" > "$FIFO" &
+    fi
     adb_pid=$!
-    trap 'kill "$adb_pid" 2>/dev/null; adb -s "$serial" shell "pkill -f $DEVICE_BIN" 2>/dev/null || true' EXIT INT TERM
-    wait "$adb_pid"
+    # Tear down on exit: kill the host adb pipe and the device-side binderdump
+    # (through the wrapper, since a root-owned process isn't killable as shell).
+    # Every step is best-effort — the stream self-exiting on `-t` leaves nothing
+    # to kill, and that must not surface as a capture error. Returns 0 so the
+    # EXIT trap can't set a non-zero status.
+    cleanup() {
+        kill "$adb_pid" 2>/dev/null || true
+        if [ -n "$SU_COMMAND" ]; then
+            $SU_COMMAND "pkill -f $DEVICE_BIN" 2>/dev/null || true
+        else
+            adb shell "pkill -f $DEVICE_BIN" 2>/dev/null || true
+        fi
+        return 0
+    }
+    trap cleanup EXIT INT TERM
+    # A closed fifo (Wireshark stopped the capture) makes the stream process exit
+    # non-zero via SIGPIPE, and a root wrapper reports its own code — neither is a
+    # capture failure, so don't let `set -e` turn a finished stream into an error.
+    wait "$adb_pid" || true
     exit 0
 fi
 
