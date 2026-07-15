@@ -421,4 +421,14 @@ mod tests {
         i.method_source = "special";
         assert!(build_status(&i).is_none());
     }
+
+    #[test]
+    fn special_origin_reply_is_none() {
+        // a reply to a special transaction (PING/DUMP/SHELL/…) carries no AIDL
+        // payload — the request frame stays silent, so its reply must too.
+        let mut i = base();
+        i.is_reply = true;
+        i.method_source = "special";
+        assert!(build_status(&i).is_none());
+    }
 }
