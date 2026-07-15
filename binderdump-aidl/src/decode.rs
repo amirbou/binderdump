@@ -101,8 +101,17 @@ impl<'a> ParcelCursor<'a> {
     // A strong-binder arg is a flat_binder_object written inline in the data buffer, its byte
     // offset listed in the transaction offsets array. 64-bit kernel: 8-byte LE offset entries;
     // flat_binder_object = [u32 type][u32 flags][u64 binder|handle][u64 cookie] = 24 bytes
-    // (<linux/android/binder.h>). If the cursor sits at a listed binder/handle object, returns
-    // (value, strong) and advances 24 bytes; otherwise None (caller halts).
+    // (<linux/android/binder.h>), immediately followed by an int32 binder-stability value that
+    // libbinder appends after every strong binder (Parcel::finishFlattenBinder ->
+    // writeInt32(Stability::getRepr); frameworks/native/libs/binder/Parcel.cpp). If the cursor
+    // sits at a listed binder/handle object, returns (value, strong) and advances 28 bytes (the
+    // 24-byte object plus the stability int) so a field following the binder stays aligned;
+    // otherwise None (caller halts).
+    //
+    // The stability trailer shipped in Android 11 (API 30); Android 10 and earlier wrote the
+    // bare 24-byte object with no trailer. Consuming it unconditionally is safe here because
+    // binderdump's ring-buffer capture needs kernel >= 5.8, which already rules out those
+    // releases.
     pub fn read_binder_object(&mut self) -> Option<(u64, bool)> {
         let pos = self.pos;
         if !binder_object::offset_entries(self.offsets).any(|o| o == pos) {
@@ -117,6 +126,7 @@ impl<'a> ParcelCursor<'a> {
         let _flags = self.read_u32()?;
         let value = self.read_u64()?; // local binder ptr, or remote handle in the low 32 bits
         let _cookie = self.read_u64()?;
+        let _stability = self.read_i32()?; // Parcel::finishFlattenBinder trailer
         Some((value, strong))
     }
 
@@ -446,6 +456,35 @@ pub fn decode_aidl_reply(
     }
     if has_return_value(method) {
         if let Some(rt) = &method.return_type {
+            // A union return is written via writeParcelable, which prefixes an int32
+            // presence marker (0 = null, 1 = present). A parcelable return carries the
+            // same marker but decode_parcelable_arg disambiguates it from a size header
+            // (a real size is >= 4); a union has no size header to lean on, so consume the
+            // marker here before the tag.
+            if let TypeRef::UserDefined(fqn) = rt {
+                if reg.union_def(sdk, fqn).is_some() {
+                    let before = cur.pos;
+                    match cur.read_i32() {
+                        Some(0) => {
+                            let mut n = node(
+                                DecodedValue::Union {
+                                    fqn: fqn.clone(),
+                                    null: true,
+                                },
+                                fqn,
+                                before,
+                                cur.pos - before,
+                                vec![],
+                            );
+                            n.name = "return".to_string();
+                            nodes.push(n);
+                            return nodes;
+                        }
+                        Some(_) => {} // present: decode the tag + member below
+                        None => return nodes,
+                    }
+                }
+            }
             let before = cur.pos;
             cur.overran = false;
             match decode_value(reg, sdk, &mut cur, rt, 0) {
@@ -3015,15 +3054,17 @@ mod tests {
 
     #[test]
     fn reads_binder_handle_object() {
-        // flat_binder_object: type=HANDLE, flags=0, handle=0x1f, cookie=0; offset entry [0].
+        // flat_binder_object: type=HANDLE, flags=0, handle=0x1f, cookie=0, then the int32
+        // stability trailer; offset entry [0]. read_binder_object consumes all 28 bytes.
         let mut data = binder_object::HANDLE.to_le_bytes().to_vec();
         data.extend_from_slice(&0u32.to_le_bytes());
         data.extend_from_slice(&0x1fu64.to_le_bytes());
         data.extend_from_slice(&0u64.to_le_bytes());
+        data.extend_from_slice(&0i32.to_le_bytes()); // stability
         let offsets = 0u64.to_le_bytes();
         let mut cur = ParcelCursor::new(&data, 0).with_offsets(&offsets);
         assert_eq!(cur.read_binder_object(), Some((0x1f, false)));
-        assert_eq!(cur.pos, 24);
+        assert_eq!(cur.pos, 28);
     }
 
     #[test]
@@ -3032,6 +3073,7 @@ mod tests {
         data.extend_from_slice(&0u32.to_le_bytes());
         data.extend_from_slice(&0xdead_0000u64.to_le_bytes());
         data.extend_from_slice(&0u64.to_le_bytes());
+        data.extend_from_slice(&0i32.to_le_bytes()); // stability
         let offsets = 0u64.to_le_bytes();
         let mut cur = ParcelCursor::new(&data, 0).with_offsets(&offsets);
         assert_eq!(cur.read_binder_object(), Some((0xdead_0000, true)));
@@ -3051,11 +3093,13 @@ mod tests {
             in_param("display", TypeRef::IBinder),
             in_param("mode", TypeRef::Primitive(Prim::I32)),
         ]);
-        // flat_binder_object (HANDLE, handle=2) then int32 mode=1; binder object at data offset 0.
+        // flat_binder_object (HANDLE, handle=2) + int32 stability, then int32 mode=1; binder
+        // object at data offset 0.
         let mut buf = binder_object::HANDLE.to_le_bytes().to_vec();
         buf.extend_from_slice(&0u32.to_le_bytes());
         buf.extend_from_slice(&2u64.to_le_bytes());
         buf.extend_from_slice(&0u64.to_le_bytes());
+        buf.extend_from_slice(&0i32.to_le_bytes()); // stability trailer
         buf.extend_from_slice(&1i32.to_le_bytes());
         let offsets = 0u64.to_le_bytes();
         let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &offsets);
@@ -3083,6 +3127,66 @@ mod tests {
         buf.extend_from_slice(&1i32.to_le_bytes());
         let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &[]); // no offsets -> halt
         assert!(matches!(nodes[0].value, DecodedValue::RawTail { .. }));
+    }
+
+    // Real checkService2 reply captured from a release Android 17 device (aosp_oriole),
+    // frame 29 of the verify capture. Exercises the two libbinder wire details the decoder
+    // must model: the int32 presence marker before a union return, and the int32 stability
+    // trailer libbinder appends after the embedded strong binder. The 52 bytes decode to
+    // Service::serviceWithMetadata { service = <handle 0x8d>, isLazyService = false }.
+    #[test]
+    fn decodes_corpus_checkservice2_reply_real_capture() {
+        fn hex(s: &str) -> Vec<u8> {
+            (0..s.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+                .collect()
+        }
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let reg = Registry::with_aosp_dir(std::path::PathBuf::from(manifest_dir).join("data/aosp"));
+        let sdk = 37u32;
+
+        let mut method = None;
+        for code in 1..40u32 {
+            if let crate::registry::Lookup::Hit { method: m, .. } =
+                reg.resolve(sdk, "android.os.IServiceManager", code)
+            {
+                if m.name == "checkService2" {
+                    method = Some(m.clone());
+                    break;
+                }
+            }
+        }
+        let method = method.expect("checkService2 not resolved from corpus");
+
+        // status=0 | present=1 | tag=0 (serviceWithMetadata) | present=1 | size=36 |
+        // flat_binder_object HANDLE handle=0x8d | stability=12 | isLazyService=0
+        let data = hex("0000000001000000000000000100000024000000852a6873000000008d0000000000000000000000000000000c00000000000000");
+        let offsets = 20u64.to_le_bytes().to_vec(); // flat_binder_object at byte 20
+
+        let nodes = decode_aidl_reply(&reg, sdk, &method, &data, 0, &offsets);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "return");
+        assert!(matches!(
+            &nodes[0].value,
+            DecodedValue::Union { fqn, null: false } if fqn == "android.os.Service"
+        ));
+        let swm = &nodes[0].children[0];
+        assert_eq!(swm.name, "serviceWithMetadata");
+        assert!(matches!(
+            &swm.value,
+            DecodedValue::Parcelable { fqn, null: false } if fqn == "android.os.ServiceWithMetadata"
+        ));
+        assert_eq!(swm.children[0].name, "service");
+        assert!(matches!(
+            swm.children[0].value,
+            DecodedValue::Binder {
+                handle: 0x8d,
+                strong: false
+            }
+        ));
+        assert_eq!(swm.children[1].name, "isLazyService");
+        assert!(matches!(swm.children[1].value, DecodedValue::Bool(false)));
     }
 
     // build a registry with a single interface fqn
@@ -3122,11 +3226,12 @@ mod tests {
             ),
             in_param("x", TypeRef::Primitive(Prim::I32)),
         ]);
-        // flat_binder_object (HANDLE, handle=7) at offset 0, then i32=42
+        // flat_binder_object (HANDLE, handle=7) + stability at offset 0, then i32=42
         let mut buf = binder_object::HANDLE.to_le_bytes().to_vec();
         buf.extend_from_slice(&0u32.to_le_bytes()); // flags
         buf.extend_from_slice(&7u64.to_le_bytes()); // handle
         buf.extend_from_slice(&0u64.to_le_bytes()); // cookie
+        buf.extend_from_slice(&0i32.to_le_bytes()); // stability trailer
         buf.extend_from_slice(&42i32.to_le_bytes()); // x
         let offsets = 0u64.to_le_bytes();
         let nodes = decode_aidl_params(&reg, 34, &m, &buf, 0, &offsets);
