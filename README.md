@@ -10,6 +10,28 @@ the pcapng in Wireshark with the bundled dissector plugin and you get a
 normal protocol tree for every binder ioctl, write, read, transaction,
 and reply.
 
+![binderdump live capture in Wireshark](docs/images/live-capture.webp)
+
+Interfaces and methods are resolved from the interface token and a bundled
+AIDL/HIDL corpus (`android.frameworks.stats.IStats.reportVendorAtom()`,
+`android.os.IServiceManager.getService2()`, …), and transaction payloads are
+decoded — including hand-written Parcelables like `Intent`:
+
+```
+Method: scheduleReceiver
+    intent: android.content.Intent
+        intent.action: android.intent.action.BATTERY_LEVEL_CHANGED
+        intent.component: com.android.settings/…/BatteryUsageBroadcastReceiver
+        intent.flags: 16777232
+        intent.contentUserHint: -2
+        extras:
+            android.os.extra.EVENTS:
+                …CAPACITY_LEVEL: -1
+                …EVENT_TIMESTAMP: 14778
+                health: 3
+                status: 1
+```
+
 ## Quickstart
 
 ### Use prebuilt binaries
