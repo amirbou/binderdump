@@ -331,14 +331,16 @@ mod tests {
         super::super::decode(&reg, sdk, &mut cur, fqn, 0, 0)
     }
 
-    // append a 24-byte flat_binder_object (BINDER type, strong local binder) to buf.
-    // returns the byte offset where the object starts (for the offsets array).
+    // append a flat_binder_object (BINDER type, strong local binder) plus its int32
+    // stability trailer to buf. returns the byte offset where the object starts (for
+    // the offsets array).
     fn push_binder(buf: &mut Vec<u8>, value: u64) -> usize {
         let off = buf.len();
         buf.extend_from_slice(&crate::binder_object::BINDER.to_le_bytes());
         buf.extend_from_slice(&0u32.to_le_bytes()); // flags
         buf.extend_from_slice(&value.to_le_bytes()); // binder ptr
         buf.extend_from_slice(&0u64.to_le_bytes()); // cookie
+        buf.extend_from_slice(&0i32.to_le_bytes()); // stability trailer
         off
     }
 
@@ -497,8 +499,9 @@ mod tests {
             &n.value,
             DecodedValue::Parcelable { fqn, null: false } if fqn == "layer_state_t"
         ));
-        // total length = front (24+4+8+4+4+4+4+4+4+16+16=92) + back_half
-        assert_eq!(n.len, 92 + back_half_len);
+        // total length = front (28+4+8+4+4+4+4+4+4+16+16=96; the surface binder is a
+        // 24-byte flat_binder_object plus its 4-byte stability trailer) + back_half
+        assert_eq!(n.len, 96 + back_half_len);
 
         let f = |name: &str| n.children.iter().find(|c| c.name == name).unwrap();
         assert!(matches!(

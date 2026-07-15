@@ -1981,6 +1981,7 @@ mod tests {
         buf.extend_from_slice(&0u32.to_le_bytes()); // flags
         buf.extend_from_slice(&7u64.to_le_bytes()); // handle = 7
         buf.extend_from_slice(&0u64.to_le_bytes()); // cookie
+        buf.extend_from_slice(&0i32.to_le_bytes()); // stability trailer
         let offsets = binder_off.to_le_bytes();
         let nodes = decode_native_reply(&reg, 34, method, &buf, 0, &offsets);
         assert_eq!(nodes.len(), 1);
@@ -2098,6 +2099,7 @@ mod tests {
         buf.extend_from_slice(&0u32.to_le_bytes()); // flags
         buf.extend_from_slice(&3u64.to_le_bytes()); // handle = 3
         buf.extend_from_slice(&0u64.to_le_bytes()); // cookie
+        buf.extend_from_slice(&0i32.to_le_bytes()); // stability trailer
         buf.extend_from_slice(&string8("wlan0")); // iface (String8)
         let offsets = binder_off.to_le_bytes();
         let nodes = decode_aidl_params(&reg, 34, method, &buf, 0, &offsets);
