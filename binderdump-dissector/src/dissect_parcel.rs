@@ -848,16 +848,32 @@ fn sanitize(s: &str) -> String {
         .collect()
 }
 
-// register (or fetch) a plain scalar per-param field. abbrev is
-// binderdump.parcel.<iface>.<method>.<leaf>; display name is the bare leaf.
-// returns -1 if the proto handle isn't available yet.
-fn fqn_handle(iface: &str, method: &str, leaf: &str, node: &DecodedNode) -> c_int {
-    let abbrev = format!(
+// Build the per-param field abbrev binderdump.parcel.<iface>.<method>.<leaf> and
+// normalize it. Wireshark rejects a leading, duplicated, or trailing '.', which an
+// empty name segment produces — e.g. an empty Bundle key, which sanitizes to "" and
+// would leave a `..` in the path. Drop empty segments so the abbrev stays valid.
+fn parcel_abbrev(iface: &str, method: &str, leaf: &str) -> String {
+    let raw = format!(
         "binderdump.parcel.{}.{}.{}",
         sanitize(iface),
         sanitize(method),
         sanitize(leaf),
     );
+    let mut out = String::with_capacity(raw.len());
+    for seg in raw.split('.').filter(|s| !s.is_empty()) {
+        if !out.is_empty() {
+            out.push('.');
+        }
+        out.push_str(seg);
+    }
+    out
+}
+
+// register (or fetch) a plain scalar per-param field. abbrev is
+// binderdump.parcel.<iface>.<method>.<leaf>; display name is the bare leaf.
+// returns -1 if the proto handle isn't available yet.
+fn fqn_handle(iface: &str, method: &str, leaf: &str, node: &DecodedNode) -> c_int {
+    let abbrev = parcel_abbrev(iface, method, leaf);
 
     let mut map = match dyn_fields().lock() {
         Ok(m) => m,
@@ -913,12 +929,7 @@ fn fqn_handle(iface: &str, method: &str, leaf: &str, node: &DecodedNode) -> c_in
 fn fqn_handle_enum(iface: &str, method: &str, leaf: &str, variants: &[(i64, String)]) -> c_int {
     use binderdump_epan_sys::{field_display_e, ftenum};
 
-    let abbrev = format!(
-        "binderdump.parcel.{}.{}.{}",
-        sanitize(iface),
-        sanitize(method),
-        sanitize(leaf),
-    );
+    let abbrev = parcel_abbrev(iface, method, leaf);
 
     let mut map = match dyn_fields().lock() {
         Ok(m) => m,
@@ -996,8 +1007,27 @@ fn fqn_handle_enum(iface: &str, method: &str, leaf: &str, variants: &[(i64, Stri
 
 #[cfg(test)]
 mod tests {
-    use super::decode_stats;
+    use super::{decode_stats, parcel_abbrev};
     use binderdump_aidl::{DecodedNode, DecodedValue};
+
+    #[test]
+    fn parcel_abbrev_drops_empty_segments() {
+        // an empty name segment (e.g. an empty Bundle key) would leave a `..`, and a
+        // trailing empty leaf a trailing '.' — both rejected by Wireshark.
+        assert_eq!(
+            parcel_abbrev("android.app.IFoo", "bar", "state..android_v"),
+            "binderdump.parcel.android.app.IFoo.bar.state.android_v"
+        );
+        assert_eq!(
+            parcel_abbrev("android.app.IFoo", "bar", "state."),
+            "binderdump.parcel.android.app.IFoo.bar.state"
+        );
+        // a normal leaf is unchanged; non-name chars still fold to '_'.
+        assert_eq!(
+            parcel_abbrev("a.IFoo", "bar", "android:v"),
+            "binderdump.parcel.a.IFoo.bar.android_v"
+        );
+    }
 
     fn leaf(name: &str, start: usize, len: usize) -> DecodedNode {
         DecodedNode {
