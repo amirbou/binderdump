@@ -83,6 +83,13 @@ device shows up in Wireshark's interface list as **"Android binder (&lt;serial&g
 and reply-correlation options. Under the hood it runs
 `adb exec-out binderdump -w -` and streams the pcapng into Wireshark.
 
+To push the binary automatically instead of doing it by hand, set the gear icon's
+**Host binary to push** field (or the `BINDERDUMP_BIN` env var) to the host path of
+the built binderdump; the extcap `adb push`es it before each capture. Before
+streaming it also checks the binary is present and running as root, and fails with
+a plain message (pointing at the Root wrapper) rather than letting a non-root
+error corrupt the capture.
+
 binderdump needs root on the device. On a `userdebug` build with `adb root`
 that is automatic. On a **production build rooted with Magisk**, set the gear
 icon's **Root wrapper** field (or the `BINDERDUMP_SU` env var before launching

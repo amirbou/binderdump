@@ -13,6 +13,11 @@
 # extcap exports ANDROID_SERIAL so the wrapper's own `adb` targets the device
 # picked in Wireshark.
 #
+# The binary must be on the device (default /data/local/tmp/binderdump). To push
+# it automatically, set the BINDERDUMP_BIN env var or the "Host binary to push"
+# config field to the host path of the built binderdump; the extcap adb-pushes it
+# before each capture.
+#
 # Install to the personal extcap dir (see `tshark -G folders`), e.g.
 #   ~/.local/lib/wireshark/extcap/binderdump-extcap
 # scripts/install_dissector.sh does this for you.
@@ -28,8 +33,9 @@ DEFAULT_DEVICE_BIN="/data/local/tmp/binderdump"
 EXTCAP_INTERFACES=0 EXTCAP_DLTS=0 EXTCAP_CONFIG=0 DO_CAPTURE=0
 IFACE="" FIFO="" DEVICE_BIN="$DEFAULT_DEVICE_BIN"
 DURATION="" NO_REPLY_CORRELATION=0 REPLY_OFFSETS=""
-# Root wrapper: env default, overridable by the --su-command config field.
+# Root wrapper and host binary: env defaults, overridable by config fields.
 SU_COMMAND="${BINDERDUMP_SU:-}"
+HOST_BIN="${BINDERDUMP_BIN:-}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -44,6 +50,7 @@ while [ $# -gt 0 ]; do
         --no-reply-correlation) NO_REPLY_CORRELATION=1; shift ;;
         --reply-offsets) REPLY_OFFSETS="$2"; shift 2 ;;
         --su-command) SU_COMMAND="$2"; shift 2 ;;
+        --host-binary) HOST_BIN="$2"; shift 2 ;;
         # options we don't use but Wireshark may pass; ignore (with or without value).
         --extcap-version|--extcap-control-in|--extcap-control-out) shift 2 ;;
         *) shift ;;
@@ -52,6 +59,18 @@ done
 
 # device serial is encoded in the interface value: "binder-<serial>".
 serial_of() { printf '%s' "${1#binder-}"; }
+
+# Run a shell command as root on the device via the chosen path. SU_COMMAND is a
+# full command (e.g. `adb exec-out su -c`) that takes one shell-command string;
+# unset means adbd is already root (userdebug / `adb root`), so run it directly.
+# SU_COMMAND is left unquoted so a multi-word command splits into its own argv.
+run_root() {
+    if [ -n "$SU_COMMAND" ]; then
+        $SU_COMMAND "$1"
+    else
+        adb exec-out "$1"
+    fi
+}
 
 if [ "$EXTCAP_INTERFACES" = 1 ]; then
     printf 'extcap {version=1.0}{help=%s}{display=Android binder}\n' "$HELP_URL"
@@ -76,6 +95,7 @@ if [ "$EXTCAP_CONFIG" = 1 ]; then
     printf 'arg {number=2}{call=--no-reply-correlation}{display=Disable reply correlation}{tooltip=Do not load the reply-correlation BPF program}{type=boolflag}\n'
     printf 'arg {number=3}{call=--reply-offsets}{display=Manual reply offsets}{tooltip=to_thread=N,transaction_stack=N,debug_id=N (advanced; overrides CO-RE)}{type=string}\n'
     printf 'arg {number=4}{call=--su-command}{display=Root wrapper}{tooltip=Full command that runs a shell command as root on the device (ANDROID_SERIAL selects it), e.g. "adb exec-out su -c" for Magisk. Leave blank on userdebug/adb-root builds. Defaults to the BINDERDUMP_SU env var.}{type=string}{default=%s}\n' "$SU_COMMAND"
+    printf 'arg {number=5}{call=--host-binary}{display=Host binary to push}{tooltip=Host path to the built binderdump binary; the extcap adb-pushes it to the device path above before each capture. Leave blank if the binary is already on the device. Defaults to the BINDERDUMP_BIN env var.}{type=fileselect}{default=%s}\n' "$HOST_BIN"
     exit 0
 fi
 
@@ -87,27 +107,48 @@ if [ "$DO_CAPTURE" = 1 ]; then
     export ANDROID_SERIAL
     ANDROID_SERIAL=$(serial_of "$IFACE")
 
+    # Optionally push the host binary to the device first. adb push writes to the
+    # shell-writable /data/local/tmp; the binary runs as root later via the wrapper.
+    if [ -n "$HOST_BIN" ]; then
+        [ -f "$HOST_BIN" ] || { echo "binderdump-extcap: host binary not found: $HOST_BIN" >&2; exit 1; }
+        if ! adb push "$HOST_BIN" "$DEVICE_BIN" >/dev/null 2>&1; then
+            echo "binderdump-extcap: failed to push $HOST_BIN to $DEVICE_BIN on device $ANDROID_SERIAL." >&2
+            exit 1
+        fi
+        adb shell chmod 755 "$DEVICE_BIN" 2>/dev/null || true
+    fi
+
     # assemble the on-device binderdump arguments.
     dev_args=(-w -)
     [ -n "$DURATION" ] && dev_args+=(-t "$DURATION")
     [ "$NO_REPLY_CORRELATION" = 1 ] && dev_args+=(--no-reply-correlation)
     [ -n "$REPLY_OFFSETS" ] && dev_args+=(--reply-offsets "$REPLY_OFFSETS")
 
-    # binderdump streams pcapng to a clean binary stdout, which we redirect into
-    # Wireshark's fifo. Kill the device process when Wireshark stops the capture
-    # (closes the fifo / signals us).
-    if [ -n "$SU_COMMAND" ]; then
-        # SU_COMMAND is a full command that runs a shell command as root on the
-        # device (e.g. `adb exec-out su -c`); it must yield a clean binary stdout.
-        # A root wrapper folds the child's stderr into stdout, which would corrupt
-        # the pcapng stream, so silence binderdump's stderr on the device.
-        # SU_COMMAND is left unquoted so a multi-word command splits into its argv.
-        $SU_COMMAND "$DEVICE_BIN ${dev_args[*]} 2>/dev/null" > "$FIFO" &
-    else
-        # adbd is already root (userdebug / `adb root`): run the binary directly and
-        # let its stderr stay on the host stderr for diagnostics.
-        adb exec-out "$DEVICE_BIN" "${dev_args[@]}" > "$FIFO" &
+    # Pre-flight: binderdump needs root, and the binary must be present. Fail here
+    # with a clear message instead of streaming an error into Wireshark — adb
+    # exec-out (and any su wrapper) folds the device's stderr into stdout, so a
+    # non-root binderdump's log line would otherwise reach the fifo and Wireshark
+    # would reject it as a bad pcapng magic.
+    if ! run_root "[ -x '$DEVICE_BIN' ]" >/dev/null 2>&1; then
+        echo "binderdump-extcap: binderdump not found or not executable at $DEVICE_BIN on device $ANDROID_SERIAL." >&2
+        echo "Push it there (adb push ... $DEVICE_BIN; adb shell chmod +x $DEVICE_BIN) or set the 'binderdump path on device' field." >&2
+        exit 1
     fi
+    uid=$(run_root "id -u" 2>/dev/null | tr -dc '0-9')
+    if [ "$uid" != "0" ]; then
+        echo "binderdump-extcap: the capture command runs as uid ${uid:-unknown}, not root, on device $ANDROID_SERIAL — binderdump needs root." >&2
+        if [ -n "$SU_COMMAND" ]; then
+            echo "The configured root wrapper did not yield root: $SU_COMMAND" >&2
+        else
+            echo "No root wrapper is set. On a userdebug build run 'adb root' first; on a production build (e.g. Magisk) set the 'Root wrapper' field (gear icon), or export BINDERDUMP_SU before launching Wireshark, to a command that runs a shell command as root — e.g. 'adb exec-out su -c'." >&2
+        fi
+        exit 1
+    fi
+
+    # Stream pcapng to the fifo. Silence binderdump's stderr on the device: adb
+    # exec-out and any su wrapper fold it into stdout, which would corrupt the
+    # stream. Kill the device process when Wireshark stops the capture.
+    run_root "$DEVICE_BIN ${dev_args[*]} 2>/dev/null" > "$FIFO" &
     adb_pid=$!
     # Tear down on exit: kill the host adb pipe and the device-side binderdump
     # (through the wrapper, since a root-owned process isn't killable as shell).
@@ -116,11 +157,7 @@ if [ "$DO_CAPTURE" = 1 ]; then
     # EXIT trap can't set a non-zero status.
     cleanup() {
         kill "$adb_pid" 2>/dev/null || true
-        if [ -n "$SU_COMMAND" ]; then
-            $SU_COMMAND "pkill -f $DEVICE_BIN" 2>/dev/null || true
-        else
-            adb shell "pkill -f $DEVICE_BIN" 2>/dev/null || true
-        fi
+        run_root "pkill -f $DEVICE_BIN" 2>/dev/null || true
         return 0
     }
     trap cleanup EXIT INT TERM
