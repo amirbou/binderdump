@@ -53,6 +53,18 @@ done
 # device serial is encoded in the interface value: "binder-<serial>".
 serial_of() { printf '%s' "${1#binder-}"; }
 
+# Run a shell command as root on the device via the chosen path. SU_COMMAND is a
+# full command (e.g. `adb exec-out su -c`) that takes one shell-command string;
+# unset means adbd is already root (userdebug / `adb root`), so run it directly.
+# SU_COMMAND is left unquoted so a multi-word command splits into its own argv.
+run_root() {
+    if [ -n "$SU_COMMAND" ]; then
+        $SU_COMMAND "$1"
+    else
+        adb exec-out "$1"
+    fi
+}
+
 if [ "$EXTCAP_INTERFACES" = 1 ]; then
     printf 'extcap {version=1.0}{help=%s}{display=Android binder}\n' "$HELP_URL"
     # one interface per online adb device.
@@ -93,21 +105,31 @@ if [ "$DO_CAPTURE" = 1 ]; then
     [ "$NO_REPLY_CORRELATION" = 1 ] && dev_args+=(--no-reply-correlation)
     [ -n "$REPLY_OFFSETS" ] && dev_args+=(--reply-offsets "$REPLY_OFFSETS")
 
-    # binderdump streams pcapng to a clean binary stdout, which we redirect into
-    # Wireshark's fifo. Kill the device process when Wireshark stops the capture
-    # (closes the fifo / signals us).
-    if [ -n "$SU_COMMAND" ]; then
-        # SU_COMMAND is a full command that runs a shell command as root on the
-        # device (e.g. `adb exec-out su -c`); it must yield a clean binary stdout.
-        # A root wrapper folds the child's stderr into stdout, which would corrupt
-        # the pcapng stream, so silence binderdump's stderr on the device.
-        # SU_COMMAND is left unquoted so a multi-word command splits into its argv.
-        $SU_COMMAND "$DEVICE_BIN ${dev_args[*]} 2>/dev/null" > "$FIFO" &
-    else
-        # adbd is already root (userdebug / `adb root`): run the binary directly and
-        # let its stderr stay on the host stderr for diagnostics.
-        adb exec-out "$DEVICE_BIN" "${dev_args[@]}" > "$FIFO" &
+    # Pre-flight: binderdump needs root, and the binary must be present. Fail here
+    # with a clear message instead of streaming an error into Wireshark — adb
+    # exec-out (and any su wrapper) folds the device's stderr into stdout, so a
+    # non-root binderdump's log line would otherwise reach the fifo and Wireshark
+    # would reject it as a bad pcapng magic.
+    if ! run_root "[ -x '$DEVICE_BIN' ]" >/dev/null 2>&1; then
+        echo "binderdump-extcap: binderdump not found or not executable at $DEVICE_BIN on device $ANDROID_SERIAL." >&2
+        echo "Push it there (adb push ... $DEVICE_BIN; adb shell chmod +x $DEVICE_BIN) or set the 'binderdump path on device' field." >&2
+        exit 1
     fi
+    uid=$(run_root "id -u" 2>/dev/null | tr -dc '0-9')
+    if [ "$uid" != "0" ]; then
+        echo "binderdump-extcap: the capture command runs as uid ${uid:-unknown}, not root, on device $ANDROID_SERIAL — binderdump needs root." >&2
+        if [ -n "$SU_COMMAND" ]; then
+            echo "The configured root wrapper did not yield root: $SU_COMMAND" >&2
+        else
+            echo "No root wrapper is set. On a userdebug build run 'adb root' first; on a production build (e.g. Magisk) set the 'Root wrapper' field (gear icon), or export BINDERDUMP_SU before launching Wireshark, to a command that runs a shell command as root — e.g. 'adb exec-out su -c'." >&2
+        fi
+        exit 1
+    fi
+
+    # Stream pcapng to the fifo. Silence binderdump's stderr on the device: adb
+    # exec-out and any su wrapper fold it into stdout, which would corrupt the
+    # stream. Kill the device process when Wireshark stops the capture.
+    run_root "$DEVICE_BIN ${dev_args[*]} 2>/dev/null" > "$FIFO" &
     adb_pid=$!
     # Tear down on exit: kill the host adb pipe and the device-side binderdump
     # (through the wrapper, since a root-owned process isn't killable as shell).
@@ -116,11 +138,7 @@ if [ "$DO_CAPTURE" = 1 ]; then
     # EXIT trap can't set a non-zero status.
     cleanup() {
         kill "$adb_pid" 2>/dev/null || true
-        if [ -n "$SU_COMMAND" ]; then
-            $SU_COMMAND "pkill -f $DEVICE_BIN" 2>/dev/null || true
-        else
-            adb shell "pkill -f $DEVICE_BIN" 2>/dev/null || true
-        fi
+        run_root "pkill -f $DEVICE_BIN" 2>/dev/null || true
         return 0
     }
     trap cleanup EXIT INT TERM
