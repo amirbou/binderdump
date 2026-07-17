@@ -13,6 +13,11 @@
 # extcap exports ANDROID_SERIAL so the wrapper's own `adb` targets the device
 # picked in Wireshark.
 #
+# The binary must be on the device (default /data/local/tmp/binderdump). To push
+# it automatically, set the BINDERDUMP_BIN env var or the "Host binary to push"
+# config field to the host path of the built binderdump; the extcap adb-pushes it
+# before each capture.
+#
 # Install to the personal extcap dir (see `tshark -G folders`), e.g.
 #   ~/.local/lib/wireshark/extcap/binderdump-extcap
 # scripts/install_dissector.sh does this for you.
@@ -28,8 +33,9 @@ DEFAULT_DEVICE_BIN="/data/local/tmp/binderdump"
 EXTCAP_INTERFACES=0 EXTCAP_DLTS=0 EXTCAP_CONFIG=0 DO_CAPTURE=0
 IFACE="" FIFO="" DEVICE_BIN="$DEFAULT_DEVICE_BIN"
 DURATION="" NO_REPLY_CORRELATION=0 REPLY_OFFSETS=""
-# Root wrapper: env default, overridable by the --su-command config field.
+# Root wrapper and host binary: env defaults, overridable by config fields.
 SU_COMMAND="${BINDERDUMP_SU:-}"
+HOST_BIN="${BINDERDUMP_BIN:-}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -44,6 +50,7 @@ while [ $# -gt 0 ]; do
         --no-reply-correlation) NO_REPLY_CORRELATION=1; shift ;;
         --reply-offsets) REPLY_OFFSETS="$2"; shift 2 ;;
         --su-command) SU_COMMAND="$2"; shift 2 ;;
+        --host-binary) HOST_BIN="$2"; shift 2 ;;
         # options we don't use but Wireshark may pass; ignore (with or without value).
         --extcap-version|--extcap-control-in|--extcap-control-out) shift 2 ;;
         *) shift ;;
@@ -88,6 +95,7 @@ if [ "$EXTCAP_CONFIG" = 1 ]; then
     printf 'arg {number=2}{call=--no-reply-correlation}{display=Disable reply correlation}{tooltip=Do not load the reply-correlation BPF program}{type=boolflag}\n'
     printf 'arg {number=3}{call=--reply-offsets}{display=Manual reply offsets}{tooltip=to_thread=N,transaction_stack=N,debug_id=N (advanced; overrides CO-RE)}{type=string}\n'
     printf 'arg {number=4}{call=--su-command}{display=Root wrapper}{tooltip=Full command that runs a shell command as root on the device (ANDROID_SERIAL selects it), e.g. "adb exec-out su -c" for Magisk. Leave blank on userdebug/adb-root builds. Defaults to the BINDERDUMP_SU env var.}{type=string}{default=%s}\n' "$SU_COMMAND"
+    printf 'arg {number=5}{call=--host-binary}{display=Host binary to push}{tooltip=Host path to the built binderdump binary; the extcap adb-pushes it to the device path above before each capture. Leave blank if the binary is already on the device. Defaults to the BINDERDUMP_BIN env var.}{type=fileselect}{default=%s}\n' "$HOST_BIN"
     exit 0
 fi
 
@@ -98,6 +106,17 @@ if [ "$DO_CAPTURE" = 1 ]; then
     # Select the device for every adb invocation — ours and the root wrapper's.
     export ANDROID_SERIAL
     ANDROID_SERIAL=$(serial_of "$IFACE")
+
+    # Optionally push the host binary to the device first. adb push writes to the
+    # shell-writable /data/local/tmp; the binary runs as root later via the wrapper.
+    if [ -n "$HOST_BIN" ]; then
+        [ -f "$HOST_BIN" ] || { echo "binderdump-extcap: host binary not found: $HOST_BIN" >&2; exit 1; }
+        if ! adb push "$HOST_BIN" "$DEVICE_BIN" >/dev/null 2>&1; then
+            echo "binderdump-extcap: failed to push $HOST_BIN to $DEVICE_BIN on device $ANDROID_SERIAL." >&2
+            exit 1
+        fi
+        adb shell chmod 755 "$DEVICE_BIN" 2>/dev/null || true
+    fi
 
     # assemble the on-device binderdump arguments.
     dev_args=(-w -)
