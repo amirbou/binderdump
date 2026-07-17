@@ -159,6 +159,20 @@ fn dissect_br_data(
                     br_dissect,
                     br_tree
                 )?,
+                binder_return::BinderReturn::FrozenBinder(_) => br_dissect_arm!(
+                    binder_return::FrozenStateInfo,
+                    "frozen_state_info",
+                    offset,
+                    br_dissect,
+                    br_tree
+                )?,
+                binder_return::BinderReturn::ClearFreezeNotificationDone(_) => br_dissect_arm!(
+                    binder_return::FreezeNotificationDone,
+                    "clear_freeze_done",
+                    offset,
+                    br_dissect,
+                    br_tree
+                )?,
 
                 _ => (),
             }
@@ -476,6 +490,14 @@ impl AddBinderTypes for ProtocolBuilder {
             .add_extra_type::<binder_return::ClearDeathNotificationDone>(
                 "Clear Death Notification Done",
                 br_prefix!("clear_death_done"),
+            )
+            .add_extra_type::<binder_return::FrozenStateInfo>(
+                "Frozen State Info",
+                br_prefix!("frozen_state_info"),
+            )
+            .add_extra_type::<binder_return::FreezeNotificationDone>(
+                "Clear Freeze Notification Done",
+                br_prefix!("clear_freeze_done"),
             )
             .add_extra_type::<binder_return::TransactionSecCtx>(
                 "TransactionSecCtx",

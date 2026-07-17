@@ -12,7 +12,8 @@
 #define BR_TRANSACTION_PENDING_FROZEN 0x7214 // _IO('r', 20)
 // _IOR('r', 21, struct binder_frozen_state_info); sizeof == 16 (u64 cookie + 2x u32).
 #define BR_FROZEN_BINDER 0x80107215
-#define BR_CLEAR_FREEZE_NOTIFICATION_DONE 0x7216 // _IO('r', 22)
+// _IOR('r', 22, binder_uintptr_t); the ack carries the cleared notification's cookie.
+#define BR_CLEAR_FREEZE_NOTIFICATION_DONE 0x80087216
 
 // BC constants: added to enum binder_driver_command_protocol (kernel 6.x).
 // _IOW('c', nr, struct binder_handle_cookie); sizeof(binder_handle_cookie) == 12
