@@ -112,21 +112,28 @@ impl<'a> ParcelCursor<'a> {
     // bare 24-byte object with no trailer. Consuming it unconditionally is safe here because
     // binderdump's ring-buffer capture needs kernel >= 5.8, which already rules out those
     // releases.
+    //
+    // A null strong binder (writeStrongBinder(null)) is written inline as a flat_binder_object
+    // with a zero binder value but is NOT recorded in the offsets array — the driver has no
+    // object to translate, so there is nothing to list. We still consume it (as handle 0);
+    // otherwise the offset requirement stays, so bytes that merely resemble a type tag aren't
+    // misread as an object.
     pub fn read_binder_object(&mut self) -> Option<(u64, bool)> {
         let pos = self.pos;
-        if !binder_object::offset_entries(self.offsets).any(|o| o == pos) {
-            return None;
-        }
-        let type_tag = self.read_u32()?;
+        let has_offset = binder_object::offset_entries(self.offsets).any(|o| o == pos);
+        // peek the type tag and binder value without committing
+        let type_tag = u32::from_le_bytes(self.buf.get(pos..pos + 4)?.try_into().ok()?);
         let strong = match binder_object::classify(type_tag) {
             binder_object::Kind::Binder => true,
             binder_object::Kind::Handle => false,
             _ => return None, // fd/ptr/fda/unknown: not a plain IBinder
         };
-        let _flags = self.read_u32()?;
-        let value = self.read_u64()?; // local binder ptr, or remote handle in the low 32 bits
-        let _cookie = self.read_u64()?;
-        let _stability = self.read_i32()?; // Parcel::finishFlattenBinder trailer
+        let value = u64::from_le_bytes(self.buf.get(pos + 8..pos + 16)?.try_into().ok()?);
+        if !has_offset && value != 0 {
+            return None; // a non-null object must be listed in the offsets array
+        }
+        // flat_binder_object (24 B) + the int32 stability trailer.
+        self.skip(28)?;
         Some((value, strong))
     }
 
@@ -682,6 +689,25 @@ fn decode_value(
                         vec![],
                     )),
                     1 => crate::native_struct::intent_body(reg, sdk, cur, start, depth + 1),
+                    _ => None,
+                }
+            } else if crate::native_struct::is_framework_parcelable(fqn) {
+                // Framework Java Parcelable arg (ComponentName, Uri, …): int32
+                // writeTypedObject presence, then the type's writeToParcel body. Like
+                // Intent, checked before parcelable_def so the corpus forward-declared
+                // parcelable never tries to read a (non-existent) size header.
+                match cur.read_i32()? {
+                    0 => Some(node(
+                        DecodedValue::Parcelable {
+                            fqn: fqn.clone(),
+                            null: true,
+                        },
+                        fqn,
+                        start,
+                        cur.pos - start,
+                        vec![],
+                    )),
+                    1 => crate::native_struct::framework_body(cur, fqn, start),
                     _ => None,
                 }
             } else if let Some(e) = reg.enum_def(sdk, fqn) {
@@ -3084,6 +3110,31 @@ mod tests {
         let data = binder_object::HANDLE.to_le_bytes();
         let mut cur = ParcelCursor::new(&data, 0); // empty offsets
         assert_eq!(cur.read_binder_object(), None);
+    }
+
+    #[test]
+    fn reads_null_binder_without_offset() {
+        // A null strong binder (BINDER type, zero value) is written inline but not
+        // listed in the offsets array; it still decodes to handle 0, consuming 28 B.
+        let mut data = binder_object::BINDER.to_le_bytes().to_vec();
+        data.extend_from_slice(&0x13u32.to_le_bytes()); // flags
+        data.extend_from_slice(&0u64.to_le_bytes()); // binder = null
+        data.extend_from_slice(&0u64.to_le_bytes()); // cookie
+        data.extend_from_slice(&0i32.to_le_bytes()); // stability
+        let mut cur = ParcelCursor::new(&data, 0); // no offsets
+        assert_eq!(cur.read_binder_object(), Some((0, true)));
+        assert_eq!(cur.pos, 28);
+
+        // a non-null binder that isn't in the offsets array is still rejected, and
+        // the cursor is left where it started.
+        let mut d2 = binder_object::BINDER.to_le_bytes().to_vec();
+        d2.extend_from_slice(&0u32.to_le_bytes());
+        d2.extend_from_slice(&0x1234u64.to_le_bytes()); // non-null
+        d2.extend_from_slice(&0u64.to_le_bytes());
+        d2.extend_from_slice(&0i32.to_le_bytes());
+        let mut cur2 = ParcelCursor::new(&d2, 0);
+        assert_eq!(cur2.read_binder_object(), None);
+        assert_eq!(cur2.pos, 0);
     }
 
     #[test]

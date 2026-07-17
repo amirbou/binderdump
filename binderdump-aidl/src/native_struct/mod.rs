@@ -3,10 +3,12 @@
 // The per-family decoders live in the submodules; `rect` is shared (layer_state geometry and
 // Intent.sourceBounds both decode an android.graphics.Rect).
 
+mod framework;
 mod intent;
 mod layer_state;
 mod transaction_stats;
 
+pub(crate) use framework::{body as framework_body, is_framework_parcelable};
 pub(crate) use intent::intent_body;
 
 use crate::decode::{depth_exceeded, node, DecodedNode, DecodedValue, ParcelCursor};
