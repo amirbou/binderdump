@@ -86,11 +86,36 @@ pub struct ClearDeathNotificationDone {
     cookie: u64,
 }
 
+// Payload of BR_FROZEN_BINDER: `struct binder_frozen_state_info` (16 bytes) from
+// <linux/android/binder.h>. bindgen doesn't emit the struct (it's only named by
+// the BR_FROZEN_BINDER _IOR macro), so mirror it here.
+#[allow(unused)]
+#[derive(Debug, Clone, Copy, Default, EpanProtocol, ConstOffsets)]
+#[repr(C)]
+pub struct FrozenStateInfo {
+    #[epan(display = Hex)]
+    cookie: u64,
+    is_frozen: u32,
+    reserved: u32,
+}
+
+// Payload of BR_CLEAR_FREEZE_NOTIFICATION_DONE: a binder_uintptr_t (8 bytes) — the
+// cookie of the freeze notification whose clear was acknowledged.
+#[allow(unused)]
+#[derive(Debug, Clone, Copy, Default, EpanProtocol, ConstOffsets)]
+#[repr(C)]
+pub struct FreezeNotificationDone {
+    #[epan(display = Hex)]
+    cookie: u64,
+}
+
 unsafe impl Plain for ErrorReturn {}
 unsafe impl Plain for TransactionSecCtx {}
 unsafe impl Plain for RefReturn {}
 unsafe impl Plain for DeadBinder {}
 unsafe impl Plain for ClearDeathNotificationDone {}
+unsafe impl Plain for FrozenStateInfo {}
+unsafe impl Plain for FreezeNotificationDone {}
 
 #[derive(Debug)]
 pub enum BinderReturn {
@@ -113,8 +138,8 @@ pub enum BinderReturn {
     FrozenReply,
     OnewaySpamSuspect,
     TransactionPendingFrozen,
-    FrozenBinder,
-    ClearFreezeNotificationDone,
+    FrozenBinder(FrozenStateInfo),
+    ClearFreezeNotificationDone(FreezeNotificationDone),
     // currently not supported
     // AcquireResult(),
     // AttemptCookie(),
@@ -135,6 +160,8 @@ impl Bwr for BinderReturn {
             | BinderReturn::DecRefs(_) => size_of::<RefReturn>(),
             BinderReturn::DeadBinder(_) => size_of::<DeadBinder>(),
             BinderReturn::ClearDeathNotificationDone(_) => size_of::<ClearDeathNotificationDone>(),
+            BinderReturn::FrozenBinder(_) => size_of::<FrozenStateInfo>(),
+            BinderReturn::ClearFreezeNotificationDone(_) => size_of::<FreezeNotificationDone>(),
             BinderReturn::Ok
             | BinderReturn::DeadReply
             | BinderReturn::Noop
@@ -143,9 +170,7 @@ impl Bwr for BinderReturn {
             | BinderReturn::FailedReply
             | BinderReturn::FrozenReply
             | BinderReturn::OnewaySpamSuspect
-            | BinderReturn::TransactionPendingFrozen
-            | BinderReturn::FrozenBinder
-            | BinderReturn::ClearFreezeNotificationDone => 0,
+            | BinderReturn::TransactionPendingFrozen => 0,
         };
         4 + inner_size
     }
@@ -207,8 +232,16 @@ impl Bwr for BinderReturn {
             binder_return::BR_FROZEN_REPLY => Self::FrozenReply,
             binder_return::BR_ONEWAY_SPAM_SUSPECT => Self::OnewaySpamSuspect,
             binder_return::BR_TRANSACTION_PENDING_FROZEN => Self::TransactionPendingFrozen,
-            binder_return::BR_FROZEN_BINDER => Self::FrozenBinder,
-            binder_return::BR_CLEAR_FREEZE_NOTIFICATION_DONE => Self::ClearFreezeNotificationDone,
+            binder_return::BR_FROZEN_BINDER => {
+                let mut ret = FrozenStateInfo::default();
+                ret.copy_from_bytes(data)?;
+                Self::FrozenBinder(ret)
+            }
+            binder_return::BR_CLEAR_FREEZE_NOTIFICATION_DONE => {
+                let mut ret = FreezeNotificationDone::default();
+                ret.copy_from_bytes(data)?;
+                Self::ClearFreezeNotificationDone(ret)
+            }
         };
         Ok(result)
     }
@@ -245,8 +278,8 @@ impl Bwr for BinderReturn {
             BinderReturn::FrozenReply => binder_return::BR_FROZEN_REPLY,
             BinderReturn::OnewaySpamSuspect => binder_return::BR_ONEWAY_SPAM_SUSPECT,
             BinderReturn::TransactionPendingFrozen => binder_return::BR_TRANSACTION_PENDING_FROZEN,
-            BinderReturn::FrozenBinder => binder_return::BR_FROZEN_BINDER,
-            BinderReturn::ClearFreezeNotificationDone => {
+            BinderReturn::FrozenBinder(_) => binder_return::BR_FROZEN_BINDER,
+            BinderReturn::ClearFreezeNotificationDone(_) => {
                 binder_return::BR_CLEAR_FREEZE_NOTIFICATION_DONE
             }
         }
@@ -275,16 +308,42 @@ mod tests {
     #[test]
     fn parses_br_frozen_binder() {
         // _IOR('r', 21, struct binder_frozen_state_info), sizeof == 16:
-        // (2 << 30) | (16 << 16) | ('r' << 8) | 21.
-        let buf = 0x8010_7215u32.to_ne_bytes();
+        // (2 << 30) | (16 << 16) | ('r' << 8) | 21. The 16-byte payload follows the
+        // 4-byte header, so the whole command is 20 bytes.
+        let mut buf = 0x8010_7215u32.to_ne_bytes().to_vec();
+        buf.extend_from_slice(&0x7fdeadbeefu64.to_le_bytes()); // cookie
+        buf.extend_from_slice(&1u32.to_le_bytes()); // is_frozen
+        buf.extend_from_slice(&0u32.to_le_bytes()); // reserved
         let r = BinderReturn::from_bytes(&buf).expect("must parse new opcode");
-        assert!(matches!(r, BinderReturn::FrozenBinder));
+        assert!(matches!(r, BinderReturn::FrozenBinder(_)));
+        assert_eq!(r.size(), 4 + 16);
+    }
+
+    // BR_FROZEN_BINDER carries a 16-byte payload; a size() of 4 (ignoring it) would
+    // misalign the next command in the stream and read its cookie as a bogus header
+    // ("Failed to cast Header to enum"). Verify the trailing command still parses.
+    #[test]
+    fn br_frozen_binder_keeps_stream_aligned() {
+        let mut buf = 0x8010_7215u32.to_ne_bytes().to_vec(); // BR_FROZEN_BINDER
+        buf.extend_from_slice(&0x7fd457a0u64.to_le_bytes()); // cookie (a device pointer)
+        buf.extend_from_slice(&1u32.to_le_bytes()); // is_frozen
+        buf.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        let next_at = buf.len();
+        buf.extend_from_slice(&29204u32.to_ne_bytes()); // BR_TRANSACTION_PENDING_FROZEN
+
+        let first = BinderReturn::from_bytes(&buf).expect("frozen binder");
+        assert_eq!(first.size(), next_at);
+        let second = BinderReturn::from_bytes(&buf[first.size()..]).expect("cmd after frozen");
+        assert!(matches!(second, BinderReturn::TransactionPendingFrozen));
     }
 
     #[test]
     fn parses_br_clear_freeze_notification_done() {
-        let buf = 29206u32.to_ne_bytes();
+        // _IOR('r', 22, binder_uintptr_t) = 0x80087216, followed by the 8-byte cookie.
+        let mut buf = 0x8008_7216u32.to_ne_bytes().to_vec();
+        buf.extend_from_slice(&0x7fdeadbeefu64.to_le_bytes()); // cookie
         let r = BinderReturn::from_bytes(&buf).expect("must parse new opcode");
-        assert!(matches!(r, BinderReturn::ClearFreezeNotificationDone));
+        assert!(matches!(r, BinderReturn::ClearFreezeNotificationDone(_)));
+        assert_eq!(r.size(), 4 + 8);
     }
 }
