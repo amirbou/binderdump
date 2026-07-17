@@ -6,3 +6,8 @@ src/bpf-skel
 /static_libs
 tmp/
 .worktrees/
+.claude/
+binder2.c
+.DS_Store
+*.swp
+*.swo

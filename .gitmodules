@@ -3,4 +3,4 @@
 	url = https://android.googlesource.com/platform/external/elfutils
 [submodule "libbpf"]
 	path = libbpf
-	url = git@github.com:libbpf/libbpf.git
+	url = https://github.com/libbpf/libbpf.git

@@ -26,9 +26,11 @@ The two leaf crates that link host libraries (`binderdump-epan-sys`, `binderdump
 
 ## Style guide
 
-Use the `binderdump-style` skill before writing or editing any code in this workspace — Rust, BPF C, build scripts, tests, commit messages, or PR bodies. It documents the project's commit-message form, Rust idioms, error handling, comment voice, BPF C rules, dissector field registration, serde/wire-format invariants, and hard don'ts (no `unwrap` outside tests, no doc-comment ceremony, no file-header banners, etc.). Read it once at the start of a coding session and consult it whenever introducing a new file, helper, or dependency.
-
-After opening a PR (and after any later change to it), run a review cycle over the PR's diff: open the `binderdump-style` skill and the maintainer-CR-patterns notes and check the diff against each item as a literal checklist (squash same-branch fixups, no `Co-Authored-By`, tests in `mod tests`, sentinel-zero comments, fixtures via the dedicated script, helpers extend existing files, etc.). Fix what it surfaces and re-run until clean before declaring the PR ready. Raise any conflict between the request and the style guide at design time, not after building.
+Follow the conventions already present in the surrounding code: match its
+commit-message form, Rust idioms, error handling, comment voice, BPF C rules,
+dissector field registration, and serde/wire-format invariants. Hard don'ts: no
+`unwrap` outside tests, no doc-comment ceremony, no file-header banners. See
+`CONTRIBUTING.md` for the contributor workflow.
 
 ## Approach Verification
 
@@ -112,4 +114,3 @@ This is why touching a field in `binderdump-structs` typically requires no chang
 - **Two cargo targets in one workspace.** Top-level `cargo build` cross-compiles to aarch64-android. The dissector and its sys crate force themselves to the host target. `cargo build --workspace` therefore builds for *both* targets in one invocation; expect long first builds.
 - **Compat (32-bit) tracking.** The BPF program tracks per-task compat-syscall state (`raw_tp/sys_enter` + `sys_exit` set `in_compat_syscall_map`) so it can correctly interpret 32-bit binder structs on 64-bit kernels. The `g_loader_pid` global is set to the loader's pid from userspace at attach time (`tracepoints.rs`) and used to skip events from the loader itself.
 - **Test execution requires a device.** Tests for `binderdump` run on-device through `scripts/run.sh`. Pure-logic crates (`binderdump-structs`, `binderdump-derive`, `binderdump-trait`) test fine on the host.
-- **The `binder2.c` file in `src/bpf/` is currently untracked scratch work** (see `git status`) and is not part of the build — `build.rs` only compiles files matching `*.bpf.c`.
