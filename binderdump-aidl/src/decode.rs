@@ -684,6 +684,25 @@ fn decode_value(
                     1 => crate::native_struct::intent_body(reg, sdk, cur, start, depth + 1),
                     _ => None,
                 }
+            } else if crate::native_struct::is_framework_parcelable(fqn) {
+                // Framework Java Parcelable arg (ComponentName, Uri, …): int32
+                // writeTypedObject presence, then the type's writeToParcel body. Like
+                // Intent, checked before parcelable_def so the corpus forward-declared
+                // parcelable never tries to read a (non-existent) size header.
+                match cur.read_i32()? {
+                    0 => Some(node(
+                        DecodedValue::Parcelable {
+                            fqn: fqn.clone(),
+                            null: true,
+                        },
+                        fqn,
+                        start,
+                        cur.pos - start,
+                        vec![],
+                    )),
+                    1 => crate::native_struct::framework_body(cur, fqn, start),
+                    _ => None,
+                }
             } else if let Some(e) = reg.enum_def(sdk, fqn) {
                 let repr = read_backing(cur, e.backing)?;
                 let variants: Vec<(i64, String)> =
