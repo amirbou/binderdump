@@ -707,7 +707,7 @@ fn decode_value(
                         cur.pos - start,
                         vec![],
                     )),
-                    1 => crate::native_struct::framework_body(cur, fqn, start),
+                    1 => crate::native_struct::framework_body(reg, sdk, cur, fqn, start, depth + 1),
                     _ => None,
                 }
             } else if let Some(e) = reg.enum_def(sdk, fqn) {
@@ -954,7 +954,7 @@ fn decode_parcelable_arg(
 
 // decode a structured AIDL parcelable: int32 size (incl. itself), fields in
 // declaration order guarded by the boundary, then resync to start+size.
-fn decode_parcelable(
+pub(crate) fn decode_parcelable(
     reg: &Registry,
     sdk: u32,
     cur: &mut ParcelCursor,
