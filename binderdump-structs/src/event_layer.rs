@@ -111,3 +111,90 @@ impl IoctlProtocol {
         self.fd
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::binder_serde::{de::from_bytes, ser::to_bytes};
+    use crate::binder_types::binder_ioctl;
+
+    fn comm(name: &[u8]) -> [u8; 16] {
+        let mut c = [0u8; 16];
+        c[..name.len()].copy_from_slice(name);
+        c
+    }
+
+    #[test]
+    fn ioctl_protocol_new_exposes_fd() {
+        let ioctl = IoctlProtocol::new(
+            7,
+            binder_ioctl::BINDER_WRITE_READ,
+            0xcafe,
+            0,
+            1000,
+            1000,
+            42,
+            false,
+            None,
+        );
+        assert_eq!(ioctl.fd(), 7);
+    }
+
+    #[test]
+    fn event_protocol_round_trips_and_accessors_read_back() {
+        let ioctl = IoctlProtocol::new(
+            3,
+            binder_ioctl::BINDER_WRITE_READ,
+            0x1000,
+            0,
+            0,
+            0,
+            99,
+            true,
+            None,
+        );
+        let event = EventProtocol::new(
+            123_456,
+            111,
+            222,
+            comm(b"system_server"),
+            EventType::FinishedIoctl,
+            BinderInterface::HWBINDER,
+            34,
+            b"/system/bin/foo".to_vec(),
+            Some(ioctl),
+        );
+
+        let bytes = to_bytes(&event).unwrap();
+        let decoded: EventProtocol = from_bytes(&bytes).unwrap();
+
+        // No PartialEq on the wire structs; re-serializing must reproduce bytes.
+        assert_eq!(bytes, to_bytes(&decoded).unwrap());
+        assert_eq!(decoded.timestamp(), 123_456);
+        assert_eq!(decoded.android_sdk(), 34);
+        assert!(matches!(
+            decoded.binder_interface(),
+            BinderInterface::HWBINDER
+        ));
+        assert_eq!(decoded.ioctl_data.as_ref().unwrap().fd(), 3);
+    }
+
+    #[test]
+    fn event_protocol_round_trips_without_ioctl_data() {
+        let event = EventProtocol::new(
+            1,
+            2,
+            3,
+            comm(b"init"),
+            EventType::DeadThread,
+            BinderInterface::BINDER,
+            0,
+            Vec::new(),
+            None,
+        );
+        let bytes = to_bytes(&event).unwrap();
+        let decoded: EventProtocol = from_bytes(&bytes).unwrap();
+        assert_eq!(bytes, to_bytes(&decoded).unwrap());
+        assert!(decoded.ioctl_data.is_none());
+    }
+}

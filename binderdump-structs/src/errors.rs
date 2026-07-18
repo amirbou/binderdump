@@ -13,3 +13,20 @@ impl ToAnyhow for plain::Error {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn too_short_carries_msg_and_reason() {
+        let err = plain::Error::TooShort.to_anyhow("reading header");
+        assert_eq!(err.to_string(), "reading header - not enough data");
+    }
+
+    #[test]
+    fn bad_alignment_carries_msg_and_reason() {
+        let err = plain::Error::BadAlignment.to_anyhow("reading header");
+        assert_eq!(err.to_string(), "reading header - bad alignment");
+    }
+}
