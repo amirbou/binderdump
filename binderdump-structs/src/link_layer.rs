@@ -20,3 +20,23 @@ pub fn get_pdu_header() -> [u8; 20] {
         .clone_from_slice(&EXP_PDU_TAG_END_OF_OPT_VALUE.to_be_bytes());
     value
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pdu_header_is_the_exported_pdu_tlv() {
+        // tag=DISSECTOR_NAME(12), len=12 (10 chars padded to 4), "binderdump" +
+        // 2 pad bytes, then the end-of-options tag(0) + value(0).
+        let expected: [u8; 20] = [
+            0x00, 0x0c, // EXP_PDU_TAG_DISSECTOR_NAME
+            0x00, 0x0c, // aligned length
+            b'b', b'i', b'n', b'd', b'e', b'r', b'd', b'u', b'm', b'p', // dissector name
+            0x00, 0x00, // padding to 4-byte alignment
+            0x00, 0x00, // EXP_PDU_TAG_END_OF_OPT
+            0x00, 0x00, // EXP_PDU_TAG_END_OF_OPT_VALUE
+        ];
+        assert_eq!(get_pdu_header(), expected);
+    }
+}

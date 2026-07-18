@@ -118,3 +118,61 @@ pub struct PtrPayload {
     #[epan(display = SepSpace)]
     pub data: Vec<u8>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::binder_serde::{de::from_bytes, ser::to_bytes};
+
+    #[test]
+    fn read_write_type_predicates() {
+        assert!(BinderWriteReadType::Read.is_read());
+        assert!(!BinderWriteReadType::Read.is_write());
+        assert!(BinderWriteReadType::Write.is_write());
+        assert!(!BinderWriteReadType::Write.is_read());
+    }
+
+    #[test]
+    fn protocol_predicates_delegate_to_type_and_transaction() {
+        let mut bwr = BinderWriteReadProtocol {
+            bwr_type: BinderWriteReadType::Write,
+            transaction: None,
+            ..Default::default()
+        };
+        assert!(bwr.is_write());
+        assert!(!bwr.is_read());
+        assert!(!bwr.is_transaction());
+
+        bwr.bwr_type = BinderWriteReadType::Read;
+        bwr.transaction = Some(TransactionProtocol::default());
+        assert!(bwr.is_read());
+        assert!(bwr.is_transaction());
+    }
+
+    #[test]
+    fn bwr_protocol_round_trips_through_binder_serde() {
+        let bwr = BinderWriteReadProtocol {
+            bwr_type: BinderWriteReadType::Read,
+            write_size: 1,
+            write_consumed: 2,
+            write_buffer: 0xdead_beef,
+            read_size: 3,
+            read_consumed: 4,
+            read_buffer: 0xfeed_face,
+            data: vec![1, 2, 3, 4, 5],
+            transaction: Some(TransactionProtocol {
+                debug_id: 42,
+                code: 7,
+                data: vec![9, 9, 9],
+                offsets: vec![0, 0, 0, 0],
+                ..Default::default()
+            }),
+        };
+        let bytes = to_bytes(&bwr).unwrap();
+        let decoded: BinderWriteReadProtocol = from_bytes(&bytes).unwrap();
+        // No PartialEq on the wire structs; re-serializing must reproduce the bytes.
+        assert_eq!(bytes, to_bytes(&decoded).unwrap());
+        assert!(decoded.is_read());
+        assert!(decoded.is_transaction());
+    }
+}

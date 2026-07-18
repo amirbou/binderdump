@@ -333,4 +333,167 @@ mod tests {
         let r = BinderCommand::from_bytes(&buf).expect("must parse new opcode");
         assert!(matches!(r, BinderCommand::FreezeNotificationDone(_)));
     }
+
+    fn parse(header: u32, payload: impl Copy) -> BinderCommand {
+        BinderCommand::from_bytes(&make_buf(header, payload)).expect("parse")
+    }
+
+    #[test]
+    fn parses_ref_commands_and_reports_size() {
+        use binderdump_sys as sys;
+        let cases = [
+            (
+                sys::binder_driver_command_protocol_BC_INCREFS,
+                binder_command::BC_INCREFS,
+            ),
+            (
+                sys::binder_driver_command_protocol_BC_ACQUIRE,
+                binder_command::BC_ACQUIRE,
+            ),
+            (
+                sys::binder_driver_command_protocol_BC_RELEASE,
+                binder_command::BC_RELEASE,
+            ),
+            (
+                sys::binder_driver_command_protocol_BC_DECREFS,
+                binder_command::BC_DECREFS,
+            ),
+        ];
+        for (header, want) in cases {
+            let cmd = parse(header, RefCommand { target: 5 });
+            assert!(matches!(
+                (&cmd, want),
+                (BinderCommand::IncRefs(_), binder_command::BC_INCREFS)
+                    | (BinderCommand::Acquire(_), binder_command::BC_ACQUIRE)
+                    | (BinderCommand::Release(_), binder_command::BC_RELEASE)
+                    | (BinderCommand::DecRefs(_), binder_command::BC_DECREFS)
+            ));
+            assert!(!cmd.is_transaction());
+            assert_eq!(cmd.size(), 4 + std::mem::size_of::<RefCommand>());
+        }
+    }
+
+    #[test]
+    fn parses_ref_done_and_free_buffer() {
+        use binderdump_sys as sys;
+        let inc = parse(
+            sys::binder_driver_command_protocol_BC_INCREFS_DONE,
+            RefDoneCommand {
+                node_ptr: 1,
+                cookie: 2,
+            },
+        );
+        assert!(matches!(inc, BinderCommand::IncRefsDone(_)));
+        assert_eq!(inc.size(), 4 + std::mem::size_of::<RefDoneCommand>());
+
+        let acq = parse(
+            sys::binder_driver_command_protocol_BC_ACQUIRE_DONE,
+            RefDoneCommand {
+                node_ptr: 3,
+                cookie: 4,
+            },
+        );
+        assert!(matches!(acq, BinderCommand::AcquireDone(_)));
+
+        let fb = parse(
+            sys::binder_driver_command_protocol_BC_FREE_BUFFER,
+            FreeBufferCommand { data_ptr: 0xabcd },
+        );
+        assert!(matches!(fb, BinderCommand::FreeBuffer(_)));
+        assert_eq!(fb.size(), 4 + std::mem::size_of::<FreeBufferCommand>());
+        assert!(matches!(fb.get_header(), binder_command::BC_FREE_BUFFER));
+    }
+
+    #[test]
+    fn parses_death_and_dead_binder_done() {
+        use binderdump_sys as sys;
+        let req = parse(
+            sys::binder_driver_command_protocol_BC_REQUEST_DEATH_NOTIFICATION,
+            DeathCommand {
+                target: 1,
+                cookie: 2,
+            },
+        );
+        assert!(matches!(req, BinderCommand::RequestDeathNotification(_)));
+        assert_eq!(req.size(), 4 + std::mem::size_of::<DeathCommand>());
+
+        let clr = parse(
+            sys::binder_driver_command_protocol_BC_CLEAR_DEATH_NOTIFICATION,
+            DeathCommand {
+                target: 3,
+                cookie: 4,
+            },
+        );
+        assert!(matches!(clr, BinderCommand::ClearDeathNotification(_)));
+
+        let done = parse(
+            sys::binder_driver_command_protocol_BC_DEAD_BINDER_DONE,
+            DeathDoneCommand { cookie: 9 },
+        );
+        assert!(matches!(done, BinderCommand::DeadBinderDone(_)));
+        assert_eq!(done.size(), 4 + std::mem::size_of::<DeathDoneCommand>());
+    }
+
+    #[test]
+    fn parses_looper_commands_with_no_payload() {
+        use binderdump_sys as sys;
+        let reg = parse(sys::binder_driver_command_protocol_BC_REGISTER_LOOPER, ());
+        assert!(matches!(reg, BinderCommand::RegisterLooper));
+        assert_eq!(reg.size(), 4);
+        assert!(matches!(
+            reg.get_header(),
+            binder_command::BC_REGISTER_LOOPER
+        ));
+        assert!(matches!(
+            parse(sys::binder_driver_command_protocol_BC_ENTER_LOOPER, ()),
+            BinderCommand::EnterLooper
+        ));
+        assert!(matches!(
+            parse(sys::binder_driver_command_protocol_BC_EXIT_LOOPER, ()),
+            BinderCommand::ExitLooper
+        ));
+    }
+
+    #[test]
+    fn parses_transactions_and_marks_them_as_transactions() {
+        use binderdump_sys as sys;
+        let txn = parse(
+            sys::binder_driver_command_protocol_BC_TRANSACTION,
+            Transaction::default(),
+        );
+        assert!(matches!(txn, BinderCommand::Transaction(_)));
+        assert!(txn.is_transaction());
+        assert_eq!(txn.size(), 4 + std::mem::size_of::<Transaction>());
+        assert!(matches!(txn.get_header(), binder_command::BC_TRANSACTION));
+
+        let reply = parse(
+            sys::binder_driver_command_protocol_BC_REPLY,
+            Transaction::default(),
+        );
+        assert!(matches!(reply, BinderCommand::Reply(_)));
+
+        let sg = parse(
+            sys::binder_driver_command_protocol_BC_TRANSACTION_SG,
+            TransactionSg::default(),
+        );
+        assert!(matches!(sg, BinderCommand::TransactionSg(_)));
+        assert!(sg.is_transaction());
+        assert_eq!(sg.size(), 4 + std::mem::size_of::<TransactionSg>());
+
+        let reply_sg = parse(
+            sys::binder_driver_command_protocol_BC_REPLY_SG,
+            TransactionSg::default(),
+        );
+        assert!(matches!(reply_sg, BinderCommand::ReplySg(_)));
+    }
+
+    #[test]
+    fn try_from_slice_dispatches_to_from_bytes() {
+        let buf = make_buf(
+            binderdump_sys::binder_driver_command_protocol_BC_ACQUIRE,
+            RefCommand { target: 0 },
+        );
+        let cmd = BinderCommand::try_from(buf.as_slice()).expect("try_from");
+        assert!(matches!(cmd, BinderCommand::Acquire(_)));
+    }
 }

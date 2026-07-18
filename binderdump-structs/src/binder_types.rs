@@ -194,3 +194,43 @@ pub struct FlatFda {
     // for each fd value at a separate tvb offset.
     pub fds: i32,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::BinderInterface;
+    use std::path::PathBuf;
+
+    fn iface(path: &str) -> Result<BinderInterface, anyhow::Error> {
+        BinderInterface::try_from(PathBuf::from(path))
+    }
+
+    #[test]
+    fn recognizes_the_three_binder_devices_and_binderfs_aliases() {
+        assert!(matches!(iface("/dev/binder"), Ok(BinderInterface::BINDER)));
+        assert!(matches!(
+            iface("/dev/binderfs/binder"),
+            Ok(BinderInterface::BINDER)
+        ));
+        assert!(matches!(
+            iface("/dev/hwbinder"),
+            Ok(BinderInterface::HWBINDER)
+        ));
+        assert!(matches!(
+            iface("/dev/binderfs/hwbinder"),
+            Ok(BinderInterface::HWBINDER)
+        ));
+        assert!(matches!(
+            iface("/dev/vndbinder"),
+            Ok(BinderInterface::VNDBINDER)
+        ));
+        assert!(matches!(
+            iface("/dev/binderfs/vndbinder"),
+            Ok(BinderInterface::VNDBINDER)
+        ));
+    }
+
+    #[test]
+    fn rejects_non_binder_paths() {
+        assert!(iface("/dev/null").is_err());
+    }
+}

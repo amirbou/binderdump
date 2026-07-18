@@ -176,3 +176,45 @@ impl ConstOffsets for Transaction {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Transaction, TransactionSg};
+    use binderdump_trait::{ConstOffsets, EpanProtocol};
+
+    #[test]
+    fn default_transaction_is_zeroed_and_accessible() {
+        let txn = Transaction::default();
+        assert_eq!(txn.data().code, 0);
+        assert_eq!(txn.data().flags, 0);
+    }
+
+    #[test]
+    fn transaction_sg_exposes_its_inner_transaction() {
+        let sg = TransactionSg::default();
+        assert_eq!(sg.transaction().data().code, 0);
+    }
+
+    #[test]
+    fn get_info_registers_all_transaction_fields() {
+        let info = Transaction::get_info(
+            "Transaction".into(),
+            "binder.transaction".into(),
+            None,
+            None,
+        );
+        assert_eq!(info.len(), 12);
+        // abbrevs are the parent abbrev joined with the field name.
+        assert!(info
+            .iter()
+            .any(|f| f.abbrev == "binder.transaction.target.handle"));
+    }
+
+    #[test]
+    fn const_offsets_cover_all_transaction_fields() {
+        let offsets = Transaction::get_offsets(0).expect("Transaction has offsets");
+        assert_eq!(offsets.name, "Transaction");
+        assert_eq!(offsets.size, std::mem::size_of::<Transaction>());
+        assert_eq!(offsets.fields.len(), 12);
+    }
+}
