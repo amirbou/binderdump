@@ -346,4 +346,142 @@ mod tests {
         assert!(matches!(r, BinderReturn::ClearFreezeNotificationDone(_)));
         assert_eq!(r.size(), 4 + 8);
     }
+
+    fn make_buf<T: Copy>(header: u32, payload: T) -> Vec<u8> {
+        let mut buf = header.to_ne_bytes().to_vec();
+        let payload_bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(&payload as *const _ as *const u8, std::mem::size_of::<T>())
+        };
+        buf.extend_from_slice(payload_bytes);
+        buf
+    }
+
+    fn parse(header: u32, payload: impl Copy) -> BinderReturn {
+        BinderReturn::from_bytes(&make_buf(header, payload)).expect("parse")
+    }
+
+    #[test]
+    fn parses_payloadless_returns() {
+        use binderdump_sys as sys;
+        let cases: [(u32, fn(&BinderReturn) -> bool); 8] = [
+            (sys::binder_driver_return_protocol_BR_OK, |r| {
+                matches!(r, BinderReturn::Ok)
+            }),
+            (sys::binder_driver_return_protocol_BR_DEAD_REPLY, |r| {
+                matches!(r, BinderReturn::DeadReply)
+            }),
+            (
+                sys::binder_driver_return_protocol_BR_TRANSACTION_COMPLETE,
+                |r| matches!(r, BinderReturn::TransactionComplete),
+            ),
+            (sys::binder_driver_return_protocol_BR_NOOP, |r| {
+                matches!(r, BinderReturn::Noop)
+            }),
+            (sys::binder_driver_return_protocol_BR_SPAWN_LOOPER, |r| {
+                matches!(r, BinderReturn::SpawnLooper)
+            }),
+            (sys::binder_driver_return_protocol_BR_FAILED_REPLY, |r| {
+                matches!(r, BinderReturn::FailedReply)
+            }),
+            (sys::binder_driver_return_protocol_BR_FROZEN_REPLY, |r| {
+                matches!(r, BinderReturn::FrozenReply)
+            }),
+            (
+                sys::binder_driver_return_protocol_BR_ONEWAY_SPAM_SUSPECT,
+                |r| matches!(r, BinderReturn::OnewaySpamSuspect),
+            ),
+        ];
+        for (header, want) in cases {
+            let r = parse(header, ());
+            assert!(want(&r), "unexpected variant for header {header:#x}: {r:?}");
+            assert_eq!(r.size(), 4);
+            assert!(!r.is_transaction());
+        }
+    }
+
+    #[test]
+    fn parses_error_return() {
+        let r = parse(
+            binderdump_sys::binder_driver_return_protocol_BR_ERROR,
+            ErrorReturn { code: -1 },
+        );
+        assert!(matches!(r, BinderReturn::Error(_)));
+        assert_eq!(r.size(), 4 + std::mem::size_of::<ErrorReturn>());
+        assert!(matches!(r.get_header(), binder_return::BR_ERROR));
+    }
+
+    #[test]
+    fn parses_ref_returns() {
+        use binderdump_sys as sys;
+        for header in [
+            sys::binder_driver_return_protocol_BR_INCREFS,
+            sys::binder_driver_return_protocol_BR_ACQUIRE,
+            sys::binder_driver_return_protocol_BR_RELEASE,
+            sys::binder_driver_return_protocol_BR_DECREFS,
+        ] {
+            let r = parse(header, RefReturn { ptr: 1, cookie: 2 });
+            assert!(matches!(
+                r,
+                BinderReturn::IncRefs(_)
+                    | BinderReturn::Acquire(_)
+                    | BinderReturn::Release(_)
+                    | BinderReturn::DecRefs(_)
+            ));
+            assert_eq!(r.size(), 4 + std::mem::size_of::<RefReturn>());
+        }
+    }
+
+    #[test]
+    fn parses_transaction_returns_and_sec_ctx() {
+        use binderdump_sys as sys;
+        let txn = parse(
+            sys::binder_driver_return_protocol_BR_TRANSACTION,
+            Transaction::default(),
+        );
+        assert!(matches!(txn, BinderReturn::Transaction(_)));
+        assert!(txn.is_transaction());
+        assert_eq!(txn.size(), 4 + std::mem::size_of::<Transaction>());
+
+        let reply = parse(
+            sys::binder_driver_return_protocol_BR_REPLY,
+            Transaction::default(),
+        );
+        assert!(matches!(reply, BinderReturn::Reply(_)));
+
+        let sec = parse(
+            sys::binder_driver_return_protocol_BR_TRANSACTION_SEC_CTX,
+            TransactionSecCtx::default(),
+        );
+        assert!(matches!(sec, BinderReturn::TransactionSecCtx(_)));
+        assert!(sec.is_transaction());
+        assert_eq!(sec.size(), 4 + std::mem::size_of::<TransactionSecCtx>());
+    }
+
+    #[test]
+    fn parses_dead_binder_and_clear_death_done() {
+        use binderdump_sys as sys;
+        let dead = parse(
+            sys::binder_driver_return_protocol_BR_DEAD_BINDER,
+            DeadBinder { cookie: 9 },
+        );
+        assert!(matches!(dead, BinderReturn::DeadBinder(_)));
+        assert_eq!(dead.size(), 4 + std::mem::size_of::<DeadBinder>());
+
+        let clr = parse(
+            sys::binder_driver_return_protocol_BR_CLEAR_DEATH_NOTIFICATION_DONE,
+            ClearDeathNotificationDone { cookie: 10 },
+        );
+        assert!(matches!(clr, BinderReturn::ClearDeathNotificationDone(_)));
+        assert!(matches!(
+            clr.get_header(),
+            binder_return::BR_CLEAR_DEATH_NOTIFICATION_DONE
+        ));
+    }
+
+    #[test]
+    fn try_from_slice_dispatches_to_from_bytes() {
+        let buf = make_buf(binderdump_sys::binder_driver_return_protocol_BR_NOOP, ());
+        let r = BinderReturn::try_from(buf.as_slice()).expect("try_from");
+        assert!(matches!(r, BinderReturn::Noop));
+    }
 }
