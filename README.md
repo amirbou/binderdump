@@ -44,34 +44,63 @@ binary runs as root):
 sha256sum -c SHA256SUMS   # in the directory holding the downloaded artifacts
 ```
 
+The quickest path is the single grab-and-go bundle, `binderdump-<tag>.tgz`. It
+carries the dissector, the AIDL/HIDL corpus, the column profile, the
+live-capture extcap, and the Android capture binary:
+
 ```sh
-# 1. on a host with adb access to a rooted device
+tar xzf binderdump-<tag>.tgz
+cd binderdump-<tag>
+./install.sh          # installs into your personal Wireshark directories
+```
+
+`install.sh` picks the bundled dissector matching your installed Wireshark
+version and installs the capture binary under
+`~/.config/wireshark/binderdump/bin/`. For live capture, pick an
+**"Android binder (&lt;serial&gt;)"** interface in Wireshark (see below); to
+dissect a file, open the `.pcapng` and switch to the **binderdump** profile
+(bottom-right of the status bar) for the preset columns.
+
+```sh
+wireshark out.pcapng
+```
+
+#### Advanced: install from a source checkout
+
+Advanced users install from a source checkout instead of the bundle — the
+checkout provides `scripts/install_dissector.sh`, the column profile, and the
+extcap (which no longer ship as loose release files). The dissector `.so` is
+named for the Wireshark version it was built against (`ws<X.Y>`) — an epan
+plugin is ABI-locked to a Wireshark major.minor and will not load into a
+different one, so pick the one matching `wireshark --version`, or build from
+source against your installed `libwireshark-dev`.
+
+From a source checkout, `scripts/install_dissector.sh` needs no arguments — it
+installs the just-built `.so`, the in-tree corpus, the profile, and the extcap:
+
+```sh
+git clone https://github.com/amirbou/binderdump && cd binderdump
+./scripts/install_dissector.sh
+```
+
+To skip building the dissector and corpus, point the same script at the loose
+release downloads — the individual `.so` and a per-version corpus tgz (the
+profile and extcap still come from the checkout):
+
+```sh
+./scripts/install_dissector.sh \
+    --so libbinderdump-<tag>-ws<X.Y>-x86_64-linux-gnu.so \
+    --corpus binderdump-aidl-corpus-<tag>-android-37.tgz
+```
+
+To capture manually over adb without the extcap:
+
+```sh
 adb push binderdump-<tag>-aarch64-linux-android /data/local/tmp/binderdump
 adb shell chmod +x /data/local/tmp/binderdump
 adb shell /data/local/tmp/binderdump -t 5      # 5-second capture
 adb pull /data/local/tmp/out.pcapng .
-
-# 2. install the dissector, AIDL/HIDL corpus, and column profile (Linux host).
-#    The corpus is required for method/param decoding — install_dissector.sh
-#    places all three in the right Wireshark directories.
-tar xzf binderdump-wireshark-profile-<tag>.tgz          # -> binderdump/
-./install_dissector.sh \
-    --so libbinderdump-<tag>-ws<X.Y>-x86_64-linux-gnu.so \
-    --corpus binderdump-aidl-corpus-<tag>-all.tgz \
-    --profile binderdump
-
-# 3. open the pcapng in Wireshark, then switch to the "binderdump" profile
-#    (bottom-right of the status bar) for the preset columns.
-wireshark out.pcapng
 ```
-
-The dissector `.so` is named for the Wireshark version it was built against
-(`ws<X.Y>`). An epan plugin is ABI-locked to a Wireshark major.minor and will not
-load into a different one — pick the artifact matching `wireshark --version`, or
-build from source against your installed `libwireshark-dev`.
-
-From a source checkout, `scripts/install_dissector.sh` needs no arguments —
-it installs the just-built `.so`, the in-tree corpus, the profile, and the extcap.
 
 ### Live capture in the Wireshark UI
 
@@ -82,6 +111,8 @@ device shows up in Wireshark's interface list as **"Android binder (&lt;serial&g
 — pick it to capture live, no adb-pull needed. The gear icon exposes the duration
 and reply-correlation options. Under the hood it runs
 `adb exec-out binderdump -w -` and streams the pcapng into Wireshark.
+A bundle install (`install.sh`) auto-pushes its version-matched binary before
+each capture, so the manual push above is only needed for non-bundle installs.
 
 To push the binary automatically instead of doing it by hand, set the gear icon's
 **Host binary to push** field (or the `BINDERDUMP_BIN` env var) to the host path of

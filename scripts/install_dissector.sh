@@ -21,13 +21,14 @@ Installs into the Wireshark personal config (respects XDG_CONFIG_HOME).
 USAGE
 }
 
-SO="" CORPUS="" PROFILE="" EXTCAP=""
+SO="" CORPUS="" PROFILE="" EXTCAP="" BUNDLE=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --so) [ $# -ge 2 ] || { echo "missing value for --so" >&2; exit 2; }; SO="$2"; shift 2 ;;
         --corpus) [ $# -ge 2 ] || { echo "missing value for --corpus" >&2; exit 2; }; CORPUS="$2"; shift 2 ;;
         --profile) [ $# -ge 2 ] || { echo "missing value for --profile" >&2; exit 2; }; PROFILE="$2"; shift 2 ;;
         --extcap) [ $# -ge 2 ] || { echo "missing value for --extcap" >&2; exit 2; }; EXTCAP="$2"; shift 2 ;;
+        --bundle) BUNDLE=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -36,13 +37,33 @@ done
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 
-# Defaults from the repo layout when a flag wasn't given.
-if [ -z "$SO" ]; then
-    SO="$repo_root/target/x86_64-unknown-linux-gnu/release/libbinderdump_dissector.so"
+if [ "$BUNDLE" = 1 ]; then
+    # Bundle layout is rooted at this script's own directory.
+    bundle_dir="$script_dir"
+    # Pick the .so matching the installed Wireshark major.minor.
+    ws=$(pkg-config --modversion wireshark 2>/dev/null | cut -d. -f1,2 || true)
+    [ -n "$ws" ] || ws=$(tshark --version 2>/dev/null | sed -n '1s/.*Wireshark[^0-9]*\([0-9]\{1,\}\.[0-9]\{1,\}\).*/\1/p' || true)
+    [ -n "$ws" ] || { echo "could not determine the installed Wireshark version" >&2; exit 1; }
+    # shellcheck disable=SC2012
+    SO=$(ls "$bundle_dir"/dissector/*-ws"$ws"-*.so 2>/dev/null | head -n1 || true)
+    if [ -z "$SO" ]; then
+        echo "no bundled dissector for Wireshark $ws. Bundle carries:" >&2
+        ls "$bundle_dir"/dissector/ >&2 || true
+        echo "install a matching Wireshark, or build the dissector from source against your libwireshark-dev." >&2
+        exit 1
+    fi
+    CORPUS="$bundle_dir/corpus"
+    PROFILE="$bundle_dir/profile/binderdump"
+    EXTCAP="$bundle_dir/extcap/binderdump-extcap"
+else
+    # Defaults from the repo layout when a flag wasn't given.
+    if [ -z "$SO" ]; then
+        SO="$repo_root/target/x86_64-unknown-linux-gnu/release/libbinderdump_dissector.so"
+    fi
+    [ -n "$CORPUS" ] || CORPUS="$repo_root/binderdump-aidl/data"
+    [ -n "$PROFILE" ] || PROFILE="$repo_root/wireshark/profiles/binderdump"
+    [ -n "$EXTCAP" ] || EXTCAP="$repo_root/extcap/binderdump-extcap"
 fi
-[ -n "$CORPUS" ] || CORPUS="$repo_root/binderdump-aidl/data"
-[ -n "$PROFILE" ] || PROFILE="$repo_root/wireshark/profiles/binderdump"
-[ -n "$EXTCAP" ] || EXTCAP="$repo_root/extcap/binderdump-extcap"
 
 [ -f "$SO" ] || { echo "dissector .so not found: $SO" >&2; echo "build it first: cargo build --release -p binderdump-dissector" >&2; exit 1; }
 command -v tshark >/dev/null || { echo "tshark not found; install Wireshark first" >&2; exit 1; }
@@ -58,8 +79,23 @@ extcap_dir=$(echo "$folders" | awk -F'\t' '/^Personal Extcap path:/ {print $2; e
 # 1. plugin .so -> Wireshark personal epan plugin dir (version-specific path).
 [ -n "$plugin_dir" ] || { echo "could not determine the Wireshark personal plugin dir from 'tshark -G folders'" >&2; exit 1; }
 mkdir -p "$plugin_dir/epan"
-install -m 0644 "$SO" "$plugin_dir/epan/libbinderdump.so"
-echo "installed dissector -> $plugin_dir/epan/libbinderdump.so"
+# Version-stamp only in bundle mode: a stamped name signals to the extcap that a
+# matching capture binary was installed alongside (step 5). Loose/repo installs
+# stay unversioned so the extcap keeps its device-side fallback.
+if [ "$BUNDLE" = 1 ]; then
+    so_base=$(basename "$SO")
+    case "$so_base" in
+        libbinderdump-*-ws*) tag=${so_base#libbinderdump-}; tag=${tag%%-ws*} ;;
+        *) tag="" ;;
+    esac
+else
+    tag=""
+fi
+if [ -n "$tag" ]; then dest_so="libbinderdump-$tag.so"; else dest_so="libbinderdump.so"; fi
+# Only one binderdump plugin may be present; two -> duplicate hf registration.
+rm -f "$plugin_dir/epan/"libbinderdump*.so
+install -m 0644 "$SO" "$plugin_dir/epan/$dest_so"
+echo "installed dissector -> $plugin_dir/epan/$dest_so"
 
 # 2. corpus -> $config_dir/binderdump/{aosp,native}
 dest_corpus="$config_dir/binderdump"
@@ -99,6 +135,19 @@ if [ -f "$EXTCAP" ] && [ -n "$extcap_dir" ]; then
     echo "installed extcap  -> $extcap_dir/binderdump-extcap"
 else
     echo "extcap not installed (script $EXTCAP or extcap dir missing)" >&2
+fi
+
+# 5. android capture binary -> $config_dir/binderdump/bin (bundle mode only).
+# Kept under its full version-stamped name so the extcap can select the build
+# that matches the installed dissector; existing versions are left in place.
+if [ "$BUNDLE" = 1 ]; then
+    dest_bin="$config_dir/binderdump/bin"
+    mkdir -p "$dest_bin"
+    for b in "$bundle_dir"/android/binderdump-*-linux-android; do
+        [ -f "$b" ] || continue
+        install -m 0755 "$b" "$dest_bin/$(basename "$b")"
+        echo "installed capture  -> $dest_bin/$(basename "$b")"
+    done
 fi
 
 echo

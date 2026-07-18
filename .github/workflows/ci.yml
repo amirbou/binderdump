@@ -220,6 +220,17 @@ jobs:
           path: target/x86_64-unknown-linux-gnu/release/libbinderdump_dissector.so
           if-no-files-found: error
 
+  install-scripts:
+    name: install/extcap smoke tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run offline installer + extcap smoke tests
+        run: |
+          set -euo pipefail
+          scripts/test_bundle_install.sh
+          scripts/test_extcap_resolve.sh
+
   pre-commit:
     name: pre-commit hooks
     runs-on: ubuntu-24.04
