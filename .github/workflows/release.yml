@@ -172,15 +172,89 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  bundle:
+    name: assemble grab-and-go bundle
+    needs: [android-binaries, dissector, aidl-corpus]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: incoming
+          merge-multiple: true
+
+      - name: Assemble bundle
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          root="binderdump-${tag}"
+          mkdir -p "$root"/{dissector,corpus,profile,extcap,android}
+
+          # installer + wrapper (from the checkout, not the loose artifact)
+          cp scripts/install.sh scripts/install_dissector.sh "$root"/
+          chmod +x "$root/install.sh" "$root/install_dissector.sh"
+
+          # dissector .so(s)
+          cp incoming/libbinderdump-*-ws*-x86_64-linux-gnu.so "$root/dissector/"
+
+          # corpus: all-versions tgz expands to aosp/ native/
+          tar xzf "incoming/binderdump-aidl-corpus-${tag}-all.tgz" -C "$root/corpus"
+
+          # profile: tgz expands to binderdump/
+          tar xzf "incoming/binderdump-wireshark-profile-${tag}.tgz" -C "$root/profile"
+
+          # extcap
+          cp incoming/binderdump-extcap "$root/extcap/"
+          chmod +x "$root/extcap/binderdump-extcap"
+
+          # android capture binary + offset_finder
+          cp incoming/binderdump-"${tag}"-*-linux-android "$root/android/"
+          cp incoming/offset_finder-"${tag}"-*-linux-android "$root/android/"
+          chmod +x "$root"/android/*
+
+          # quickstart
+          cp scripts/bundle_readme.txt "$root/README.txt"
+
+          # inner checksums: write to a temp file outside the tree, then move it
+          # in, so the sums file is never read while being written (SC2094) and
+          # never checksums itself.
+          sums=$(mktemp)
+          ( cd "$root" && find . -type f ! -name SHA256SUMS -print0 \
+              | sort -z | xargs -0 sha256sum ) > "$sums"
+          mv "$sums" "$root/SHA256SUMS"
+
+          tar czf "binderdump-${tag}.tgz" "$root"
+          ls -la
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle
+          path: binderdump-*.tgz
+          if-no-files-found: error
+
   publish:
     name: publish GitHub Release
-    needs: [android-binaries, dissector, aidl-corpus]
+    needs: [android-binaries, dissector, aidl-corpus, bundle]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+
+      - name: Trim loose artifacts now shipped inside the bundle
+        run: |
+          set -euo pipefail
+          cd dist
+          # Keep the minimal loose set for advanced users: per-version corpus
+          # tgzs, the individual .so(s), and the Android binaries. Everything
+          # below now lives inside binderdump-<tag>.tgz.
+          rm -f install_dissector.sh
+          rm -f binderdump-extcap
+          rm -f binderdump-wireshark-profile-*.tgz
+          rm -f binderdump-aidl-corpus-*-all.tgz
+          ls -la
 
       - name: Generate SHA256SUMS
         run: |

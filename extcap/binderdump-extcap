@@ -107,6 +107,44 @@ if [ "$DO_CAPTURE" = 1 ]; then
     export ANDROID_SERIAL
     ANDROID_SERIAL=$(serial_of "$IFACE")
 
+    # If the user hasn't pinned a host binary, match one to the installed
+    # dissector's release so capture and dissector share a wire format. The
+    # installed .so is version-stamped (libbinderdump-<tag>.so); the capture
+    # binary is at $config_dir/binderdump/bin/binderdump-<tag>-<arch>-linux-android.
+    if [ -z "$HOST_BIN" ] && command -v tshark >/dev/null; then
+        folders=$(tshark -G folders 2>/dev/null || true)
+        plugin_dir=$(printf '%s\n' "$folders" | awk -F'\t' '/^Personal Plugins:/ {print $2; exit}')
+        config_dir=$(printf '%s\n' "$folders" | awk -F'\t' '/^Personal configuration:/ {print $2; exit}')
+        [ -n "$config_dir" ] || config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/wireshark"
+        so=""
+        if [ -n "$plugin_dir" ]; then
+            for f in "$plugin_dir"/epan/libbinderdump-*.so; do
+                if [ -f "$f" ]; then so="$f"; break; fi
+            done
+        fi
+        if [ -n "$so" ]; then
+            tag=$(basename "$so"); tag=${tag#libbinderdump-}; tag=${tag%.so}
+            if ! abi=$(adb shell getprop ro.product.cpu.abi 2>/dev/null | tr -d '\r\n') || [ -z "$abi" ]; then
+                echo "binderdump-extcap: could not read the device CPU ABI (adb shell getprop) on device $ANDROID_SERIAL — is it connected and authorized?" >&2
+                exit 1
+            fi
+            case "$abi" in
+                arm64-v8a) arch=aarch64 ;;
+                x86_64)    arch=x86_64 ;;
+                armeabi*)  arch=armv7 ;;
+                *)         arch="$abi" ;;
+            esac
+            cand="$config_dir/binderdump/bin/binderdump-$tag-$arch-linux-android"
+            if [ -f "$cand" ]; then
+                HOST_BIN="$cand"
+            else
+                echo "binderdump-extcap: installed dissector is release $tag but no matching capture binary at $cand." >&2
+                echo "Reinstall the $tag bundle, or set the 'Host binary to push' field / BINDERDUMP_BIN to the binary to push." >&2
+                exit 1
+            fi
+        fi
+    fi
+
     # Optionally push the host binary to the device first. adb push writes to the
     # shell-writable /data/local/tmp; the binary runs as root later via the wrapper.
     if [ -n "$HOST_BIN" ]; then
