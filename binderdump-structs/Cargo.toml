@@ -1,6 +1,6 @@
 [package]
 name = "binderdump-structs"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 license.workspace = true
 
@@ -16,8 +16,8 @@ serde = { version = "1.0.203", features = ["derive"] }
 serde_repr = "0.1.19"
 thiserror = "2.0.18"
 byteorder = "1.5.0"
-binderdump-derive = { version = "1.0.0", path = "../binderdump-derive" }
-binderdump-trait = { version = "1.0.0", path = "../binderdump-trait" }
+binderdump-derive = { version = "1.0.1", path = "../binderdump-derive" }
+binderdump-trait = { version = "1.0.1", path = "../binderdump-trait" }
 
 [dev-dependencies]
 pretty_assertions = "1.4.0"

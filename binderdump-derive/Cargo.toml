@@ -1,6 +1,6 @@
 [package]
 name = "binderdump-derive"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 license.workspace = true
 
@@ -8,7 +8,7 @@ license.workspace = true
 proc-macro = true
 
 [dependencies]
-binderdump-trait = { version = "1.0.0", path = "../binderdump-trait" }
+binderdump-trait = { version = "1.0.1", path = "../binderdump-trait" }
 proc-macro2 = "1.0.86"
 quote = "1.0.36"
 syn = { version = "2.0.68", features = ["extra-traits"] }

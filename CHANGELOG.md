@@ -8,6 +8,13 @@ the public API, and breaking changes to either bump the major version.
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-07-18
+
+### Added
+- A single grab-and-go release bundle (`binderdump-<tag>.tgz`) installed with a
+  bare `./install.sh`; the extcap auto-selects and pushes the capture binary
+  matching the installed dissector release.
+
 ## [1.0.0] - 2026-07-18
 
 First public release. The pcapng wire format and the `binderdump.*` dissector
